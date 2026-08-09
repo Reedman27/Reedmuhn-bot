@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Temp Voice - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Temporary Voice</h1>
+<section class="card">
+    <h2>Voice hub</h2>
+    <form method="post" action="/guild/{{ guild_id }}/tempvoice/hub">
+        <label for="hub_channel_id">People join this voice channel to create their own temporary room</label>
+        <select id="hub_channel_id" name="channel_id" required><option value="" disabled {% if not hub_channel_id %}selected{% endif %}>Choose a voice channel…</option>{% if hub_channel_id and not voice_channels|selectattr(0, 'equalto', hub_channel_id)|list %}<option value="{{ hub_channel_id }}" selected>Deleted channel ({{ hub_channel_id }})</option>{% endif %}{% for cid, name, ctype, pos in voice_channels %}<option value="{{ cid }}" {% if hub_channel_id == cid %}selected{% endif %}>🔊 {{ name }}</option>{% endfor %}</select>
+        <button type="submit">Save hub</button>
+    </form>
+    {% if hub_channel_id %}<p class="hint">Current hub: {{ hub_channel_name }}</p><form method="post" action="/guild/{{ guild_id }}/tempvoice/remove" class="add-form"><button type="submit" class="danger">Remove hub</button></form>{% endif %}
+</section>
+<section class="card"><h2>Active temporary channels</h2>{% if active_channels %}<table><thead><tr><th>Channel</th><th>Owner</th></tr></thead><tbody>{% for cid, owner_name, channel_name in active_channels %}<tr><td>{{ channel_name }}</td><td>{{ owner_name }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No temporary voice channels are active.</p>{% endif %}</section>
+{% endblock %}

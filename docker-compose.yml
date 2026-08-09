@@ -1,0 +1,24 @@
+services:
+  discord-bot:
+    build: .
+    container_name: mybot
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DB_PATH=/app/data/bot.db
+      - DEV_GUILD_ID=${DEV_GUILD_ID}
+    volumes:
+      - ./data:/app/data
+
+  webui:
+    build: ./webui
+    container_name: mybot-webui
+    restart: unless-stopped
+    environment:
+      - WEBUI_PASSWORD=${WEBUI_PASSWORD}
+      - DB_PATH=/app/data/bot.db
+      - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8490:8080"

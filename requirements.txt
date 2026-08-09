@@ -1,0 +1,3 @@
+discord.py>=2.4
+Pillow>=10.4
+feedparser>=6.0

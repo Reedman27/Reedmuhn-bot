@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Moderation - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Moderation</h1>
+<p class="muted">Manage warnings and temporary punishments from one place. Discord IDs stay behind the scenes; choose members by name.</p>
+
+<div class="tabs">
+    <a class="tab {{ 'active' if tab == 'overview' else '' }}" href="/guild/{{ guild_id }}/moderation">Overview</a>
+    <a class="tab {{ 'active' if tab == 'warnings' else '' }}" href="/guild/{{ guild_id }}/moderation?tab=warnings">Warnings</a>
+    <a class="tab {{ 'active' if tab == 'tempbans' else '' }}" href="/guild/{{ guild_id }}/moderation?tab=tempbans">Temp Bans{% if tempbans %} <span class="tab-count">{{ tempbans|length }}</span>{% endif %}</a>
+</div>
+
+{% if tab == 'overview' %}
+<section class="stat-grid">
+    <div class="stat-card"><div class="stat-value">{{ tempbans|length }}</div><div class="stat-label">Active temp bans</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=tempbans">Manage temp bans →</a></div>
+    <div class="stat-card"><div class="stat-value">{{ members|length }}</div><div class="stat-label">Cached members</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=warnings">Review warnings →</a></div>
+</section>
+<section class="card"><h2>Moderation tools</h2><p>Use the Discord commands for immediate actions such as <code>/warn</code>, <code>/warnings</code>, <code>/clearwarns</code>, <code>/mute</code>, <code>/unmute</code>, <code>/kick</code>, <code>/ban</code>, <code>/tempban</code>, and <code>/tempnick</code>.</p><p class="hint">The dashboard is for configuration and moderation history; the bot remains the authority for live Discord actions.</p></section>
+{% elif tab == 'warnings' %}
+<section class="card"><h2>Look up warnings</h2><form method="get" action="/guild/{{ guild_id }}/moderation"><input type="hidden" name="tab" value="warnings"><label for="user_id">Member</label><select id="user_id" name="user_id" required><option value="" disabled {% if not looked_up_user_id %}selected{% endif %}>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}" {% if looked_up_user_id == uid %}selected{% endif %}>{{ display }}</option>{% endfor %}</select><button type="submit">Look up warnings</button></form>
+{% if looked_up_user_id %}<hr><p><strong>{{ looked_up_user_name }}</strong></p>{% if warns %}<table><thead><tr><th>Date</th><th>Moderator</th><th>Reason</th></tr></thead><tbody>{% for warn_id, moderator_id, moderator_name, reason, date_str in warns %}<tr><td>{{ date_str }}</td><td>{{ moderator_name }}</td><td>{{ reason }}</td></tr>{% endfor %}</tbody></table><form method="post" action="/guild/{{ guild_id }}/moderation/clear-warns" class="add-form"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><button type="submit" class="danger">Clear all {{ warns|length }} warning{{ 's' if warns|length != 1 }}</button></form>{% else %}<p class="muted">No warnings for this member.</p>{% endif %}{% endif %}</section>
+{% else %}
+<section class="card"><h2>Active temporary bans</h2><p class="muted">Temporary bans automatically expire through the bot scheduler. You can lift one early without copying a Discord ID.</p>{% if tempbans %}<table><thead><tr><th>Member</th><th>Auto-unban</th><th>Action</th></tr></thead><tbody>{% for t in tempbans %}<tr><td>{{ t.user_name }}</td><td>{{ t.unban_at }}</td><td><form method="post" action="/guild/{{ guild_id }}/moderation/tempbans/unban" class="inline"><input type="hidden" name="event_id" value="{{ t.id }}"><button type="submit">Unban now</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No active temporary bans.</p>{% endif %}</section>
+{% endif %}
+{% endblock %}

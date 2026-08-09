@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Automod - {{ guild_id }}{% endblock %}
+{% block content %}
+<h1>Automod</h1>
+
+<section class="card">
+    <form method="post" action="/guild/{{ guild_id }}/automod/enabled">
+        <label>
+            <input type="checkbox" name="enabled" {{ "checked" if cfg.enabled }}>
+            Automod enabled
+        </label>
+        <button type="submit">Save</button>
+    </form>
+    <p class="hint">Manage Messages no longer grants an automatic exemption. Administrators are exempt, and you can explicitly add exemption roles below.</p>
+</section>
+
+<section class="card">
+    <h2>Invite links</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/invites">
+        <label>
+            <input type="checkbox" name="block_invites" {{ "checked" if cfg.block_invites }}>
+            Block Discord invite links
+        </label>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Banned words</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/words">
+        <label for="words">Comma-separated, whole-word match</label>
+        <textarea id="words" name="words" rows="3">{{ cfg.banned_words|join(", ") }}</textarea>
+        <button type="submit">Save word list</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Excessive caps</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/caps">
+        <label for="caps_percent">Percent of the message that must be capitals</label>
+        <input type="number" id="caps_percent" name="percent" min="1" max="100" value="{{ cfg.caps_percent }}" required>
+        <label for="caps_min_len">Minimum number of capital letters</label>
+        <input type="number" id="caps_min_len" name="min_len" min="1" value="{{ cfg.caps_min_len }}" required>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Mention spam</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/mentions">
+        <label for="mention_threshold">Unique mentions in one message to trigger (0 = off)</label>
+        <input type="number" id="mention_threshold" name="threshold" min="0" value="{{ cfg.mention_threshold }}" required>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Message spam rate</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/spam">
+        <label for="spam_count">Messages (0 = off)</label>
+        <input type="number" id="spam_count" name="count" min="0" value="{{ cfg.spam_count }}" required>
+        <label for="spam_window">Within seconds</label>
+        <input type="number" id="spam_window" name="window_seconds" min="1" value="{{ cfg.spam_window_seconds }}" required>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Duplicate messages</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/duplicates">
+        <label for="dup_count">Identical messages in a row (0 = off)</label>
+        <input type="number" id="dup_count" name="count" min="0" value="{{ cfg.duplicate_count }}" required>
+        <label for="dup_window">Within seconds</label>
+        <input type="number" id="dup_window" name="window_seconds" min="1" value="{{ cfg.duplicate_window_seconds }}" required>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Escalation</h2>
+    <form method="post" action="/guild/{{ guild_id }}/automod/escalation">
+        <label for="esc_threshold">Violations before an auto-mute</label>
+        <input type="number" id="esc_threshold" name="threshold" min="1" value="{{ cfg.violation_mute_threshold }}" required>
+        <label for="esc_window">Within seconds</label>
+        <input type="number" id="esc_window" name="window_seconds" min="1" value="{{ cfg.violation_window_seconds }}" required>
+        <label for="esc_duration">Mute duration (seconds)</label>
+        <input type="number" id="esc_duration" name="mute_duration_seconds" min="1" value="{{ cfg.violation_mute_duration_seconds }}" required>
+        <button type="submit">Save</button>
+    </form>
+</section> 
+<section class="card">
+  <h2>AutoMod exemption roles</h2>
+  <p class="hint">Members with these roles bypass AutoMod. Manage Messages by itself does not bypass AutoMod.</p>
+  {% if exempt_roles %}
+    <table><thead><tr><th>Role</th><th></th></tr></thead><tbody>
+    {% for role_id, role_name in exempt_roles %}
+      <tr><td>{{ role_name }}</td><td><form method="post" action="/guild/{{ guild_id }}/automod/exempt-roles/delete"><input type="hidden" name="role_id" value="{{ role_id }}"><button type="submit">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+  {% else %}
+    <p class="hint">No exemption roles configured.</p>
+  {% endif %}
+  <form method="post" action="/guild/{{ guild_id }}/automod/exempt-roles/add" class="add-form">
+    <label for="automod-exempt-role">Add exemption role</label>
+    <select id="automod-exempt-role" name="role_id" required>
+      <option value="" disabled selected>Choose a role</option>
+      {% for role_id, role_name, position in role_choices %}
+        <option value="{{ role_id }}">{{ role_name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Add role</button>
+  </form>
+</section>
+{% endblock %}
