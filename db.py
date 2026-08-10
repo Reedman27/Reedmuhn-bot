@@ -3,9 +3,14 @@ schema is intentionally small and direct - an ORM would add dependency weight
 without much benefit for this self-hosted bot.
 """
 import json
+import logging
 import os
 import sqlite3
+import time
 from typing import Optional
+
+
+logger = logging.getLogger("db")
 
 
 class Db:
@@ -97,6 +102,26 @@ class Db:
                 announce_channel_id INTEGER NOT NULL,
                 last_video_id TEXT,
                 PRIMARY KEY (guild_id, yt_channel_id)
+            )"""
+        )
+        # youtube_watches predates channel_name/role_id/mode - add them for
+        # anyone upgrading from an older db without wiping their data.
+        yt_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(youtube_watches)")}
+        if "channel_name" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN channel_name TEXT")
+        if "role_id" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN role_id INTEGER")
+        if "mode" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN mode TEXT NOT NULL DEFAULT 'embed'")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS reaction_role_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             )"""
         )
         self.conn.execute(
@@ -212,6 +237,40 @@ class Db:
                 created_at INTEGER NOT NULL
             )"""
         )
+        # Durable institutional memory. These tables are intentionally separate
+        # from transient/cache tables so code updates never need to recreate or
+        # overwrite the bot's history.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS member_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                actor_id INTEGER,
+                reason TEXT,
+                details TEXT,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_member_history_user
+               ON member_history (guild_id, user_id, created_at DESC)"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS bot_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                event_type TEXT NOT NULL,
+                actor_id INTEGER,
+                target_id INTEGER,
+                details TEXT,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_bot_events_created
+               ON bot_events (created_at DESC)"""
+        )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS counting (
                 guild_id INTEGER PRIMARY KEY,
@@ -230,6 +289,8 @@ class Db:
             self.conn.execute("ALTER TABLE counting ADD COLUMN save_milestone INTEGER NOT NULL DEFAULT 50")
         if "max_saves" not in counting_cols:
             self.conn.execute("ALTER TABLE counting ADD COLUMN max_saves INTEGER NOT NULL DEFAULT 3")
+        if "high_score_alerts" not in counting_cols:
+            self.conn.execute("ALTER TABLE counting ADD COLUMN high_score_alerts INTEGER NOT NULL DEFAULT 0")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS counting_users (
                 guild_id INTEGER NOT NULL,
@@ -550,6 +611,7 @@ class Db:
             (guild_id, user_id, moderator_id, reason, created_at),
         )
         self.conn.commit()
+        self.record_member_history(guild_id, user_id, "warn", moderator_id, reason, f"warning_id={cur.lastrowid}", created_at)
         return cur.lastrowid
 
     def list_warns(self, guild_id: int, user_id: int) -> list[tuple[int, int, str, int]]:
@@ -582,6 +644,57 @@ class Db:
         )
         self.conn.commit()
         return cur.rowcount
+
+    # ---- durable memory / audit journal ----
+
+    def record_member_history(
+        self, guild_id: int, user_id: int, event_type: str, actor_id: Optional[int] = None,
+        reason: Optional[str] = None, details: Optional[str] = None, created_at: Optional[int] = None,
+    ) -> int:
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        cur = self.conn.execute(
+            """INSERT INTO member_history
+               (guild_id, user_id, event_type, actor_id, reason, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (guild_id, user_id, event_type, actor_id, reason, details, created_at),
+        )
+        self.conn.commit()
+        logger.info("member history: guild=%s user=%s event=%s actor=%s reason=%s", guild_id, user_id, event_type, actor_id, reason)
+        return cur.lastrowid
+
+    def list_member_history(self, guild_id: int, user_id: int, limit: int = 100):
+        limit = max(1, min(int(limit), 500))
+        cur = self.conn.execute(
+            """SELECT id, event_type, actor_id, reason, details, created_at
+               FROM member_history WHERE guild_id = ? AND user_id = ?
+               ORDER BY created_at DESC, id DESC LIMIT ?""",
+            (guild_id, user_id, limit),
+        )
+        return cur.fetchall()
+
+    def record_bot_event(
+        self, event_type: str, guild_id: Optional[int] = None, actor_id: Optional[int] = None,
+        target_id: Optional[int] = None, details: Optional[str] = None, created_at: Optional[int] = None,
+    ) -> int:
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        cur = self.conn.execute(
+            """INSERT INTO bot_events
+               (guild_id, event_type, actor_id, target_id, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, event_type, actor_id, target_id, details, created_at),
+        )
+        self.conn.commit()
+        logger.info("bot event: type=%s guild=%s actor=%s target=%s details=%s", event_type, guild_id, actor_id, target_id, details)
+        return cur.lastrowid
+
+    def recent_bot_events(self, limit: int = 500):
+        limit = max(1, min(int(limit), 5000))
+        cur = self.conn.execute(
+            """SELECT id, guild_id, event_type, actor_id, target_id, details, created_at
+               FROM bot_events ORDER BY created_at DESC, id DESC LIMIT ?""",
+            (limit,),
+        )
+        return cur.fetchall()
 
     # ---- birthdays ----
 
@@ -645,7 +758,8 @@ class Db:
 
     def get_counting(self, guild_id: int) -> Optional[dict]:
         cur = self.conn.execute(
-            """SELECT channel_id, current_number, last_user_id, high_score, save_milestone, max_saves
+            """SELECT channel_id, current_number, last_user_id, high_score, save_milestone, max_saves,
+                      high_score_alerts
                FROM counting WHERE guild_id = ?""",
             (guild_id,),
         )
@@ -659,7 +773,16 @@ class Db:
             "high_score": row[3],
             "save_milestone": row[4],
             "max_saves": row[5],
+            "high_score_alerts": bool(row[6]),
         }
+
+    def set_high_score_alerts(self, guild_id: int, enabled: bool) -> None:
+        self.conn.execute(
+            """INSERT INTO counting (guild_id, channel_id, high_score_alerts) VALUES (?, 0, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET high_score_alerts = excluded.high_score_alerts""",
+            (guild_id, int(enabled)),
+        )
+        self.conn.commit()
 
     def set_counting_channel(self, guild_id: int, channel_id: int) -> None:
         # Changing the channel only touches channel_id - existing progress
@@ -701,6 +824,8 @@ class Db:
             (guild_id,),
         )
         self.conn.commit()
+        self.record_bot_event("counting.reset", guild_id, None, None, "current_number=0")
+        self.record_bot_event("counting.advance", guild_id, user_id, None, f"number={new_number}")
 
     # ---- counting saves (earned by personal correct-count milestones) ----
 
@@ -747,10 +872,26 @@ class Db:
     # ---- youtube notifications ----
 
     def add_youtube_watch(self, guild_id: int, yt_channel_id: str, announce_channel_id: int) -> None:
+        # Re-adding an already-watched channel (e.g. just to change the
+        # announce channel) must preserve last_video_id, channel_name,
+        # role_id, and mode - INSERT OR REPLACE would silently wipe all of
+        # those back to defaults, so every preserved field is carried over
+        # via a self-referencing subquery instead.
         self.conn.execute(
-            """INSERT OR REPLACE INTO youtube_watches (guild_id, yt_channel_id, announce_channel_id, last_video_id)
-               VALUES (?, ?, ?, (SELECT last_video_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?))""",
-            (guild_id, yt_channel_id, announce_channel_id, guild_id, yt_channel_id),
+            """INSERT OR REPLACE INTO youtube_watches
+                   (guild_id, yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode)
+               VALUES (
+                   ?, ?, ?,
+                   (SELECT last_video_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
+                   (SELECT channel_name FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
+                   (SELECT role_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
+                   COALESCE((SELECT mode FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?), 'embed')
+               )""",
+            (
+                guild_id, yt_channel_id, announce_channel_id,
+                guild_id, yt_channel_id, guild_id, yt_channel_id,
+                guild_id, yt_channel_id, guild_id, yt_channel_id,
+            ),
         )
         self.conn.commit()
 
@@ -762,17 +903,19 @@ class Db:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def list_youtube_watches(self, guild_id: int) -> list[tuple[str, int, Optional[str]]]:
+    def list_youtube_watches(self, guild_id: int) -> list[tuple[str, int, Optional[str], Optional[str], Optional[int], str]]:
         cur = self.conn.execute(
-            "SELECT yt_channel_id, announce_channel_id, last_video_id FROM youtube_watches WHERE guild_id = ?",
+            """SELECT yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode
+               FROM youtube_watches WHERE guild_id = ?""",
             (guild_id,),
         )
         return cur.fetchall()
 
-    def all_youtube_watches(self) -> list[tuple[int, str, int, Optional[str]]]:
+    def all_youtube_watches(self) -> list[tuple[int, str, int, Optional[str], Optional[str], Optional[int], str]]:
         """Every watch across every guild - used by the background poller."""
         cur = self.conn.execute(
-            "SELECT guild_id, yt_channel_id, announce_channel_id, last_video_id FROM youtube_watches"
+            """SELECT guild_id, yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode
+               FROM youtube_watches"""
         )
         return cur.fetchall()
 
@@ -782,6 +925,60 @@ class Db:
             (video_id, guild_id, yt_channel_id),
         )
         self.conn.commit()
+
+    def set_youtube_channel_name(self, guild_id: int, yt_channel_id: str, name: str) -> None:
+        self.conn.execute(
+            "UPDATE youtube_watches SET channel_name = ? WHERE guild_id = ? AND yt_channel_id = ?",
+            (name, guild_id, yt_channel_id),
+        )
+        self.conn.commit()
+
+    def set_youtube_role(self, guild_id: int, yt_channel_id: str, role_id: Optional[int]) -> None:
+        self.conn.execute(
+            "UPDATE youtube_watches SET role_id = ? WHERE guild_id = ? AND yt_channel_id = ?",
+            (role_id, guild_id, yt_channel_id),
+        )
+        self.conn.commit()
+
+    def set_youtube_mode(self, guild_id: int, yt_channel_id: str, mode: str) -> None:
+        self.conn.execute(
+            "UPDATE youtube_watches SET mode = ? WHERE guild_id = ? AND yt_channel_id = ?",
+            (mode, guild_id, yt_channel_id),
+        )
+        self.conn.commit()
+
+    # ---- reaction role live-action queue ----
+    # The web UI runs in a separate process with no Discord connection, so
+    # it can't add/remove a Discord reaction itself. Instead it drops a row
+    # here, and the bot's own background loop (reactionroles.py) polls this
+    # table and performs the actual Discord API call. This is the same
+    # "the database is the only shared state" pattern the rest of the
+    # project already uses between the two processes.
+
+    def enqueue_reaction_role_action(
+        self, guild_id: int, channel_id: int, message_id: int, emoji: str, action: str
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO reaction_role_actions (guild_id, channel_id, message_id, emoji, action, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, channel_id, message_id, emoji, action, int(time.time())),
+        )
+        self.conn.commit()
+
+    def pop_pending_reaction_role_actions(self, limit: int = 20) -> list[tuple[int, int, int, int, str, str]]:
+        """Returns and deletes up to `limit` pending actions in one go, so
+        a slow bot-side handler can't process the same row twice."""
+        cur = self.conn.execute(
+            "SELECT id, guild_id, channel_id, message_id, emoji, action FROM reaction_role_actions ORDER BY id LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+        if rows:
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            self.conn.execute(f"DELETE FROM reaction_role_actions WHERE id IN ({placeholders})", ids)
+            self.conn.commit()
+        return rows
 
     # ---- temp voice channels ----
 

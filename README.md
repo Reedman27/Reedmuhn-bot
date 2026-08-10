@@ -2,8 +2,7 @@
 
 A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite, and a companion FastAPI web dashboard.
 
-> Built primarily with [Claude](https://claude.ai) across an extended development session (architecture, cogs, database layer, web dashboard, security fixes). ChatGPT assisted with a later round of features and documentation, including parts of this README.
-
+> Built primarily with [Claude](https://claude.ai/) across an extended development session (architecture, cogs, database layer, web dashboard, security fixes). ChatGPT assisted with later rounds of features, bug fixes, auditing, and documentation.
 
 ## What it does
 
@@ -17,7 +16,7 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 - 📺 YouTube upload notifications through RSS (no YouTube API key)
 - 🎙️ Temporary voice channels
 - 🎭 Reaction roles - react to a message to get a role, un-react to remove it
-- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel
+- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans, role/channel/server changes, and voice activity, each routed to its own configurable channel
 - 🎉 Fun commands
 - 🌐 Web dashboard for configuration
 
@@ -40,7 +39,7 @@ The dashboard is designed for people who **do not want to copy Discord IDs every
    - **Message Content Intent**
 6. Save the changes.
 
-Reedmuhn requests both intents because member events power welcome/autorole and the message content intent is needed for custom commands and automod.
+ReedMuhn requests both intents because member events power welcome/autorole and the message content intent is needed for custom commands and automod.
 
 ## 2. Invite the bot
 
@@ -84,24 +83,29 @@ cp .env.example .env
 
 Edit `.env`:
 
-```dotenv
+```env
 DISCORD_TOKEN=your_bot_token_here
 WEBUI_PASSWORD=use-a-long-random-dashboard-password
 DEV_GUILD_ID=
 ```
 
 ### `DISCORD_TOKEN`
+
 Your Discord bot token from the Developer Portal.
 
 ### `WEBUI_PASSWORD`
-The password used to access the self-hosted dashboard. Use a long, unique password. This dashboard currently uses a shared password rather than Discord OAuth, so anyone who knows this password can administer every server the bot can see.
+
+The password used to access the self-hosted dashboard. Use a long, unique password.
+
+This dashboard currently uses a shared password rather than Discord OAuth, so anyone who knows this password can administer every server the bot can see through the dashboard.
 
 ### `DEV_GUILD_ID` (optional)
+
 Put a Discord server ID here while actively developing/testing slash commands. Commands are synced to that server immediately. Leave it blank for normal global command sync.
 
 You **do not need Developer Mode or a server ID for normal dashboard configuration**. The dashboard lists the servers it sees by name.
 
-## 4. Start Reedmuhn
+## 4. Start ReedMuhn
 
 From the project directory:
 
@@ -208,10 +212,13 @@ If a saved object was later deleted or a member left, the dashboard shows a clea
 - Dashboard responses include common browser security headers.
 - The arithmetic command uses a restricted AST evaluator rather than Python `eval()`.
 - User-controlled SQL values are passed through SQLite parameter binding rather than string concatenation.
+- WebUI origin validation is restricted to prevent malformed or malicious origins from being accepted.
 
 ### Important deployment limitation
 
-The dashboard is a **trusted-admin interface**. It currently uses one shared password instead of Discord OAuth, so it cannot tell which Discord account is using the dashboard. If you expose it to the public internet, put it behind HTTPS and an additional access-control layer (VPN, reverse proxy authentication, or a future Discord OAuth implementation). Do not treat the shared password as per-user Discord authorization.
+The dashboard is a **trusted-admin interface**. It currently uses one shared password instead of Discord OAuth, so it cannot tell which Discord account is using the dashboard.
+
+If you expose it to the public internet, put it behind HTTPS and an additional access-control layer (VPN, reverse proxy authentication, or a future Discord OAuth implementation). Do not treat the shared password as per-user Discord authorization.
 
 ## Development
 
@@ -224,18 +231,21 @@ python -m py_compile bot.py db.py scheduler.py utils.py automod_checks.py
 python -m py_compile cogs/*.py webui/main.py webui/db.py
 ```
 
+For Discord feature changes, test the behavior against a running bot/server whenever possible rather than relying exclusively on static code inspection.
+
 ## Third-party source and compatibility
 
-Reedmuhn Bot is intentionally designed as a Python/`discord.py` bot rather than a fork of another bot framework. The project has been developed with **Red-DiscordBot** as a compatibility and implementation reference for moderation/scheduled-action patterns, and with **Sapphire Framework** as a reference for modular command/store/listener architecture. Red-DiscordBot is GPL-3.0 and Sapphire Framework is MIT; their notices and license texts are preserved under [`third_party/`](third_party/).
+ReedMuhn Bot is intentionally designed as a Python/`discord.py` bot rather than a fork of another bot framework. The project has been developed with **Red-DiscordBot** as a compatibility and implementation reference for moderation/scheduled-action patterns, and with **Sapphire Framework** as a reference for modular command/store/listener architecture.
+
+Red-DiscordBot is GPL-3.0 and Sapphire Framework is MIT; their notices and license texts are preserved under [`third_party/`](https://github.com/Reedman27/Reedmuhn-bot/blob/main/third_party).
 
 The uploaded Sapphire TypeScript source is not left inside the runtime project: non-Python framework concepts are translated into Python so Reedmuhn remains a single Python application. Red-DiscordBot itself is not installed as a runtime dependency.
 
-If you redistribute or modify Reedmuhn, keep the AGPL-3.0 license and the third-party notices intact. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and source references.
+If you redistribute or modify Reedmuhn, keep the AGPL-3.0 license and the third-party notices intact. See [`THIRD_PARTY_NOTICES.md`](https://github.com/Reedman27/Reedmuhn-bot/blob/main/THIRD_PARTY_NOTICES.md) for attribution and source references.
 
 ## License
 
-AGPL-3.0. See [`LICENSE`](LICENSE).
-
+AGPL-3.0. See [`LICENSE`](https://github.com/Reedman27/Reedmuhn-bot/blob/main/LICENSE).
 
 ### Permissions and AutoMod exemptions
 
@@ -244,12 +254,12 @@ AGPL-3.0. See [`LICENSE`](LICENSE).
 - AutoMod **does not automatically exempt Manage Messages**. AutoMod exemptions are explicitly configured by role in the WebUI; Administrators are always exempt.
 - The WebUI itself remains protected by `WEBUI_PASSWORD` because this self-hosted build does not use Discord OAuth to identify the logged-in browser user. Selecting a Bot Manager role controls Discord bot management, not WebUI login.
 
-
 ## Muted role configuration
 
 The `/mute` command uses a configurable Discord role rather than Discord's native timeout. Server administrators can choose an existing role or let the bot create/reuse a `Muted` role. The WebUI and Discord both expose the same configuration.
 
 Discord commands:
+
 - `/muterole set <role>` — use an existing role.
 - `/muterole create` — create/reuse and configure the `Muted` role.
 - `/muterole settings` — choose whether the role blocks messages, reactions, threads, voice connection, speaking, and streaming.

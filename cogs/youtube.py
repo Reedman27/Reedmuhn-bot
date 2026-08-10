@@ -131,18 +131,22 @@ class YouTube(commands.Cog):
         if video_id == last_video_id:
             return  # nothing new since last check
 
-        self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
-
         if last_video_id is None:
-            # First time watching this channel - just start tracking from
-            # here rather than announcing whatever their latest video
-            # already was (which could be old and would look like spam).
+            # First time watching this channel - establish a baseline only.
+            self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
+            self.bot.db.record_bot_event("youtube.baseline", guild_id, None, None, f"channel={yt_channel_id} video={video_id}")
             return
 
         channel = self.bot.get_channel(announce_channel_id)
         if channel is None:
+            logger.warning("youtube announcement channel %s is unavailable for guild %s", announce_channel_id, guild_id)
             return
+
+        # Only advance the cursor after Discord accepts the announcement. A
+        # transient Discord outage must not permanently lose a notification.
         await channel.send(f"📺 New video from **{author}**: {title}\n{url}")
+        self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
+        self.bot.db.record_bot_event("youtube.announced", guild_id, None, announce_channel_id, f"channel={yt_channel_id} video={video_id}")
 
     @check_feeds.before_loop
     async def before_check_feeds(self):

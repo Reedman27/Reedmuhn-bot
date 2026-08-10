@@ -7,12 +7,15 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="centered">
-    <form method="post" action="/login" class="card login-card">
+    <div class="card login-card">
         <h1>🤖 Bot Dashboard</h1>
         {% if error %}<p class="error">{{ error }}</p>{% endif %}
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" autofocus required>
-        <button type="submit">Log in</button>
-    </form>
+        <p class="hint">Enter the WebUI password configured in your .env file.</p>
+        <form method="post" action="/login">
+            <label for="password">Dashboard password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+            <button type="submit" class="button">Log in</button>
+        </form>
+    </div>
 </body>
 </html>

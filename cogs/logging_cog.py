@@ -122,6 +122,14 @@ class LoggingCog(commands.Cog, name="Logging"):
 
     # ---- dispatch helper ----
 
+    async def log_event(self, guild: discord.Guild, category: str, embed: discord.Embed) -> None:
+        """Public entry point for other cogs to log actions that have no
+        native Discord event to hook - warns and role-based mutes/unmutes
+        don't fire anything discord.py can listen for on their own, unlike
+        a real kick/ban which shows up via on_member_remove/on_member_ban
+        and gets resolved through the audit log already."""
+        await self._log(guild, category, embed)
+
     async def _log(self, guild: discord.Guild, category: str, embed: discord.Embed) -> None:
         channel_id = self.bot.db.get_log_channel(guild.id, category)
         if channel_id is None:

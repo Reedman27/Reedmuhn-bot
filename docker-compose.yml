@@ -15,6 +15,7 @@ services:
     container_name: mybot-webui
     restart: unless-stopped
     environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - WEBUI_PASSWORD=${WEBUI_PASSWORD}
       - DB_PATH=/app/data/bot.db
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}

@@ -7,7 +7,7 @@
 <form method="post" action="/guild/{{ guild_id }}/permissions/tempnick-roles/add" class="add-form"><label for="role_id">Add role</label><select id="role_id" name="role_id" required><option value="" disabled selected>Choose a role…</option>{% for rid, name, pos in role_choices %}<option value="{{ rid }}">@{{ name }}</option>{% endfor %}</select><button type="submit">Add role</button></form></section> 
 <section class="card">
   <h2>Bot Manager roles</h2>
-  <p class="hint">Administrators always have full bot management access. Members with any role below can also use the bot's configuration and management commands, even when they lack the command's normal Discord permission.</p>
+  <p class="hint">Server owners and Administrators always have full access to this dashboard and the bot's management commands. Members with any role below get that same access too - both here in the WebUI and for the bot's configuration/management commands in Discord - even when they lack the command's normal Discord permission or aren't an Administrator. Nobody else can log into this dashboard for this server.</p>
   {% if bot_manager_roles %}
     <table><thead><tr><th>Role</th><th></th></tr></thead><tbody>
     {% for role_id, role_name in bot_manager_roles %}

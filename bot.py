@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 
 import discord
 from discord.ext import commands
@@ -9,8 +10,27 @@ import scheduler
 from db import Db
 from framework import Feature, FeatureStore
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger("bot")
+
+
+def configure_persistent_logging(db_path: str) -> str:
+    """Persist application logs beside the durable SQLite database.
+
+    The directory is normally a Docker-mounted volume, so replacing the bot
+    code does not replace the log. Rotation prevents a runaway error loop from
+    filling the disk while keeping ten historical 10 MB log files.
+    """
+    data_dir = os.path.dirname(os.path.abspath(db_path)) or os.getcwd()
+    os.makedirs(data_dir, exist_ok=True)
+    log_path = os.path.join(data_dir, "bot.log")
+    root_logger = logging.getLogger()
+    if not any(isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None) == os.path.abspath(log_path) for h in root_logger.handlers):
+        handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        root_logger.addHandler(handler)
+    return log_path
 
 INITIAL_COGS = [
     "cogs.fun",
@@ -49,9 +69,12 @@ intents.members = True  # needed for on_member_join (welcome/autorole)
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
-        self.db = Db(os.environ.get("DB_PATH", "data/bot.db"))
+        db_path = os.environ.get("DB_PATH", "data/bot.db")
+        configure_persistent_logging(db_path)
+        self.db = Db(db_path)
 
     async def setup_hook(self):
+        self.db.record_bot_event("bot.startup", None, None, None, "process starting")
         for cog in INITIAL_COGS:
             await self.load_extension(cog)
 
@@ -88,9 +111,13 @@ class MyBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         self.db.upsert_bot_guild(guild.id, guild.name)
+        self.db.record_bot_event("guild.join", guild.id, None, None, f"name={guild.name}")
+        logger.info("joined guild %s (%s)", guild.name, guild.id)
         self._sync_guild_cache(guild)
 
     async def on_guild_remove(self, guild: discord.Guild):
+        self.db.record_bot_event("guild.remove", guild.id, None, None, f"name={guild.name}")
+        logger.info("removed from guild %s (%s)", guild.name, guild.id)
         self.db.remove_bot_guild(guild.id)
         self.db.remove_guild_cache(guild.id)
 
@@ -123,6 +150,14 @@ class MyBot(commands.Bot):
     async def on_member_remove(self, member: discord.Member):
         self.db.remove_bot_member(member.guild.id, member.id)
 
+    async def on_app_command_completion(self, interaction: discord.Interaction):
+        command = interaction.command.qualified_name if interaction.command else "unknown"
+        guild_id = interaction.guild.id if interaction.guild else None
+        actor_id = interaction.user.id if interaction.user else None
+        details = f"command=/{command}"
+        self.db.record_bot_event("command.completed", guild_id, actor_id, None, details)
+        logger.info("command completed: /%s guild=%s user=%s", command, guild_id, actor_id)
+
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
     ):
@@ -144,6 +179,16 @@ class MyBot(commands.Bot):
                 await interaction.response.send_message(content, ephemeral=True)
         except discord.HTTPException:
             pass  # interaction likely already expired, nothing more we can do
+
+    async def close(self):
+        # Runs on any clean shutdown (SIGTERM from `docker compose down`/
+        # restart, Ctrl+C locally, or an unhandled error propagating out of
+        # main()). Logged before the connection actually closes so the
+        # timestamp reflects when shutdown was requested, not when the
+        # process finally exits.
+        self.db.record_bot_event("bot.shutdown", None, None, None, "process stopping")
+        logger.info("Shutting down")
+        await super().close()
 
 
 async def main():

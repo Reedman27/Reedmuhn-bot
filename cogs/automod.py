@@ -163,6 +163,7 @@ class AutoMod(commands.Cog):
 
         now = int(time.time())
         self.bot.db.add_automod_violation(message.guild.id, message.author.id, reason, now)
+        self.bot.db.record_member_history(message.guild.id, message.author.id, "automod_violation", self.bot.user.id if self.bot.user else None, reason)
 
         recent = self.bot.db.count_recent_automod_violations(
             message.guild.id, message.author.id, now - cfg["violation_window_seconds"]

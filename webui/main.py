@@ -1,18 +1,15 @@
 """Web dashboard for the bot. Reads and writes the exact same bot.db file
-the Discord bot uses (via a mounted volume, see docker-compose.yml) - so
-saving a setting here takes effect immediately, no API or sync needed
-between this and the bot process.
+the Discord bot uses (via a mounted volume, see docker-compose.yml).
 
-Auth is a single shared password (WEBUI_PASSWORD). This dashboard is intended
-for trusted self-hosted administration; it does not provide per-user Discord
-OAuth authorization.
+The dashboard uses a local shared-password login. It does not require
+Discord OAuth, a public domain, or a Discord redirect URL, so it works on
+LAN-only/self-hosted deployments such as http://HOST:8490.
 
 Pages live under /guild/{guild_id}/<page> as separate routes (not anchor
 links on one long page) so each section gets its own URL, its own back
 button behavior, and doesn't force loading/rendering every section's data
 on every visit.
 """
-import hmac
 import json
 import os
 import secrets
@@ -27,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+import hmac
 from db import Db
 
 MONTH_NAMES = [
@@ -34,11 +32,8 @@ MONTH_NAMES = [
     "July", "August", "September", "October", "November", "December",
 ]
 
-WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD")
 DB_PATH = os.environ.get("DB_PATH", "data/bot.db")
 
-if not WEBUI_PASSWORD:
-    raise RuntimeError("Set WEBUI_PASSWORD in .env")
 
 
 def load_or_create_secret_key() -> str:
@@ -63,7 +58,12 @@ def load_or_create_secret_key() -> str:
 SECRET_KEY = load_or_create_secret_key()
 db = Db(DB_PATH)
 
-app = FastAPI()
+
+async def _lifespan(app: FastAPI):
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -94,14 +94,23 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD", "")
+
+if not WEBUI_PASSWORD:
+    raise RuntimeError(
+        "WEBUI_PASSWORD is not configured. Set WEBUI_PASSWORD in .env."
+    )
+
+
 def is_authed(request: Request) -> bool:
-    return request.session.get("authed") is True
+    return request.session.get("authenticated") is True
 
 
-def require_auth(request: Request):
-    """Require login and, for guild routes, require that the bot is actually
-    in the requested guild. Keeping this check here makes it impossible for
-    a newly added route to forget the guild authorization check."""
+async def require_auth(request: Request):
+    """Require the local WebUI password and verify guild-scoped URLs refer
+    to a guild the bot is actually in. No Discord OAuth or public domain is
+    required for this self-hosted dashboard.
+    """
     if not is_authed(request):
         return RedirectResponse("/login", status_code=303)
     parts = request.url.path.split("/", 3)
@@ -144,11 +153,7 @@ def role_label(guild_id: int, role_id: int | None) -> str:
 
 
 # ---- login rate limiting ----
-# In-memory only (fine for a single-process deployment like this one) - caps
-# failed login attempts per source IP so the password can't just be
-# brute-forced. Not persisted across restarts, which is an acceptable
-# tradeoff for a self-hosted single-admin dashboard.
-
+# In-memory per-IP lockout for failed local-password attempts.
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_SECONDS = 300
 
@@ -169,8 +174,7 @@ def is_locked_out(request: Request) -> bool:
 
 
 def record_failed_login(request: Request) -> None:
-    ip = _client_ip(request)
-    _failed_attempts.setdefault(ip, []).append(time.monotonic())
+    _failed_attempts.setdefault(_client_ip(request), []).append(time.monotonic())
 
 
 def clear_failed_logins(request: Request) -> None:
@@ -186,6 +190,7 @@ def render(request: Request, page: str, guild_id: int, active: str, **extra):
             "guild_id": guild_id,
             "guild_name": db.get_guild_name(guild_id) or f"Server {guild_id}",
             "active": active,
+            "discord_username": request.session.get("discord_username"),
             **extra,
         }
     )
@@ -197,26 +202,27 @@ def render(request: Request, page: str, guild_id: int, active: str, **extra):
 async def login_form(request: Request):
     if is_authed(request):
         return RedirectResponse("/", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+    error = request.query_params.get("error")
+    error_message = {
+        "failed": "Incorrect password. Please try again.",
+        "locked": "Too many failed attempts. Try again in a few minutes.",
+    }.get(error)
+    return templates.TemplateResponse(request, "login.html", {"error": error_message})
 
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
     if is_locked_out(request):
-        return templates.TemplateResponse(
-            request, "login.html",
-            {"error": f"Too many failed attempts. Try again in a few minutes."},
-            status_code=429,
-        )
+        return RedirectResponse("/login?error=locked", status_code=303)
 
     if not hmac.compare_digest(password, WEBUI_PASSWORD):
         record_failed_login(request)
-        return templates.TemplateResponse(
-            request, "login.html", {"error": "Wrong password."}, status_code=401
-        )
+        return RedirectResponse("/login?error=failed", status_code=303)
 
     clear_failed_logins(request)
-    request.session["authed"] = True
+    request.session.clear()
+    request.session["authenticated"] = True
+    request.session["discord_username"] = "Dashboard Admin"
     return RedirectResponse("/", status_code=303)
 
 
@@ -230,20 +236,29 @@ async def logout(request: Request):
 
 @app.get("/")
 async def home(request: Request):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     guild_id = request.session.get("guild_id")
     if guild_id:
         return RedirectResponse(f"/guild/{guild_id}", status_code=303)
+
+    # Password authentication is intentionally local/shared: anyone who has
+    # the dashboard password can manage the bot's servers.
+    accessible_guilds = db.list_bot_guilds()
+    error = request.query_params.get("error")
     return templates.TemplateResponse(
         request, "pick_guild.html",
-        {"guilds": db.list_bot_guilds(), "not_accessible": request.query_params.get("error") == "not_accessible"},
+        {
+            "guilds": accessible_guilds,
+            "not_accessible": error == "not_accessible",
+            "no_permission": error == "no_permission",
+        },
     )
 
 
 @app.post("/select-guild")
 async def select_guild(request: Request, guild_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not db.is_bot_in_guild(guild_id):
         return RedirectResponse("/?error=not_accessible", status_code=303)
@@ -253,7 +268,7 @@ async def select_guild(request: Request, guild_id: int = Form(...)):
 
 @app.post("/switch-guild")
 async def switch_guild(request: Request):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     request.session.pop("guild_id", None)
     return RedirectResponse("/", status_code=303)
@@ -263,7 +278,7 @@ async def switch_guild(request: Request):
 
 @app.get("/guild/{guild_id}")
 async def overview(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     request.session["guild_id"] = guild_id  # keep in sync if they land here directly
 
@@ -286,7 +301,7 @@ async def overview(request: Request, guild_id: int):
 
 @app.get("/guild/{guild_id}/welcome")
 async def welcome_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     cfg = db.get_guild_config(guild_id)
     return render(request, "welcome.html", guild_id, "welcome", cfg=cfg,
@@ -296,7 +311,7 @@ async def welcome_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/welcome")
 async def save_welcome(request: Request, guild_id: int, channel_id: int = Form(...), message: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/welcome?error=channel", status_code=303)
@@ -306,7 +321,7 @@ async def save_welcome(request: Request, guild_id: int, channel_id: int = Form(.
 
 @app.post("/guild/{guild_id}/welcome/card")
 async def save_welcome_card(request: Request, guild_id: int, enabled: str = Form(None)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.set_welcome_card_enabled(guild_id, enabled == "on")
     return RedirectResponse(f"/guild/{guild_id}/welcome", status_code=303)
@@ -314,7 +329,7 @@ async def save_welcome_card(request: Request, guild_id: int, enabled: str = Form
 
 @app.post("/guild/{guild_id}/autorole")
 async def save_autorole(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_role(guild_id, role_id):
         return RedirectResponse(f"/guild/{guild_id}/welcome?error=role", status_code=303)
@@ -326,7 +341,7 @@ async def save_autorole(request: Request, guild_id: int, role_id: int = Form(...
 
 @app.get("/guild/{guild_id}/commands")
 async def commands_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(
         request, "commands.html", guild_id, "commands",
@@ -336,7 +351,7 @@ async def commands_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/custom-commands/add")
 async def add_custom_command(request: Request, guild_id: int, trigger: str = Form(...), response: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     trigger = trigger.strip()
     response = response.strip()
@@ -348,7 +363,7 @@ async def add_custom_command(request: Request, guild_id: int, trigger: str = For
 
 @app.post("/guild/{guild_id}/custom-commands/delete")
 async def delete_custom_command(request: Request, guild_id: int, trigger: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_custom_command(guild_id, trigger)
     return RedirectResponse(f"/guild/{guild_id}/commands", status_code=303)
@@ -358,7 +373,7 @@ async def delete_custom_command(request: Request, guild_id: int, trigger: str = 
 
 @app.get("/guild/{guild_id}/birthdays")
 async def birthdays_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(
         request, "birthdays.html", guild_id, "birthdays",
@@ -372,7 +387,7 @@ async def birthdays_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/birthdays/channel")
 async def save_birthday_channel(request: Request, guild_id: int, channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/birthdays?error=channel", status_code=303)
@@ -382,7 +397,7 @@ async def save_birthday_channel(request: Request, guild_id: int, channel_id: int
 
 @app.post("/guild/{guild_id}/birthdays/delete")
 async def delete_birthday(request: Request, guild_id: int, user_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     # Existing birthday records may belong to members who have since left.
     # The dashboard still allows removing those stale records.
@@ -394,7 +409,7 @@ async def delete_birthday(request: Request, guild_id: int, user_id: int = Form(.
 
 @app.get("/guild/{guild_id}/counting")
 async def counting_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(request, "counting.html", guild_id, "counting", counting=db.get_counting(guild_id),
                   text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
@@ -402,7 +417,7 @@ async def counting_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/counting/channel")
 async def save_counting_channel(request: Request, guild_id: int, channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/counting?error=channel", status_code=303)
@@ -412,7 +427,7 @@ async def save_counting_channel(request: Request, guild_id: int, channel_id: int
 
 @app.post("/guild/{guild_id}/counting/saves")
 async def save_counting_saves(request: Request, guild_id: int, milestone: int = Form(...), max_saves: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 1 <= milestone <= 1_000_000 or not 0 <= max_saves <= 100:
         return RedirectResponse(f"/guild/{guild_id}/counting?error=invalid", status_code=303)
@@ -420,11 +435,19 @@ async def save_counting_saves(request: Request, guild_id: int, milestone: int = 
     return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
 
 
+@app.post("/guild/{guild_id}/counting/highscorealerts")
+async def save_counting_highscorealerts(request: Request, guild_id: int, enabled: str = Form(default="")):
+    if (r := await require_auth(request)):
+        return r
+    db.set_high_score_alerts(guild_id, enabled == "on")
+    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
+
+
 # ---- scheduled background tasks (reminders and nickname reverts) ----
 
 @app.get("/guild/{guild_id}/scheduled")
 async def scheduled_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
 
     reminders = []
@@ -456,7 +479,7 @@ async def scheduled_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/scheduled/cancel-reminder")
 async def cancel_reminder(request: Request, guild_id: int, event_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.delete_scheduled_event(event_id, guild_id)
     return RedirectResponse(f"/guild/{guild_id}/scheduled", status_code=303)
@@ -466,7 +489,7 @@ async def cancel_reminder(request: Request, guild_id: int, event_id: int = Form(
 
 @app.get("/guild/{guild_id}/permissions")
 async def permissions_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(
         request, "permissions.html", guild_id, "permissions",
@@ -479,7 +502,7 @@ async def permissions_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/permissions/bot-manager-roles/add")
 async def add_bot_manager_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_role(guild_id, role_id):
         return RedirectResponse(f"/guild/{guild_id}/permissions?error=role", status_code=303)
@@ -489,7 +512,7 @@ async def add_bot_manager_role(request: Request, guild_id: int, role_id: int = F
 
 @app.post("/guild/{guild_id}/permissions/bot-manager-roles/delete")
 async def delete_bot_manager_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_bot_manager_role(guild_id, role_id)
     return RedirectResponse(f"/guild/{guild_id}/permissions", status_code=303)
@@ -497,7 +520,7 @@ async def delete_bot_manager_role(request: Request, guild_id: int, role_id: int 
 
 @app.post("/guild/{guild_id}/permissions/tempnick-mode")
 async def save_tempnick_mode(request: Request, guild_id: int, mode: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if mode in ("everyone", "allowlist", "denylist"):
         db.set_tempnick_mode(guild_id, mode)
@@ -506,7 +529,7 @@ async def save_tempnick_mode(request: Request, guild_id: int, mode: str = Form(.
 
 @app.post("/guild/{guild_id}/permissions/tempnick-roles/add")
 async def add_tempnick_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_role(guild_id, role_id):
         return RedirectResponse(f"/guild/{guild_id}/permissions?error=role", status_code=303)
@@ -516,7 +539,7 @@ async def add_tempnick_role(request: Request, guild_id: int, role_id: int = Form
 
 @app.post("/guild/{guild_id}/permissions/tempnick-roles/delete")
 async def delete_tempnick_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_tempnick_role(guild_id, role_id)
     return RedirectResponse(f"/guild/{guild_id}/permissions", status_code=303)
@@ -526,7 +549,7 @@ async def delete_tempnick_role(request: Request, guild_id: int, role_id: int = F
 
 @app.get("/guild/{guild_id}/moderation")
 async def moderation_page(request: Request, guild_id: int, user_id: Optional[int] = None, tab: str = "overview"):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
 
     if tab not in {"overview", "warnings", "tempbans"}:
@@ -562,7 +585,7 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
 
 @app.post("/guild/{guild_id}/moderation/clear-warns")
 async def clear_warns_route(request: Request, guild_id: int, user_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.clear_warns(guild_id, user_id)
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
@@ -570,7 +593,7 @@ async def clear_warns_route(request: Request, guild_id: int, user_id: int = Form
 
 @app.post("/guild/{guild_id}/moderation/muted-role")
 async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("auto")):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if role_id == "auto":
         db.set_muted_role(guild_id, None)
@@ -585,7 +608,7 @@ async def save_muted_role_settings(
     threads: Optional[str] = Form(None), connect: Optional[str] = Form(None),
     speak: Optional[str] = Form(None), stream: Optional[str] = Form(None),
 ):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.set_muted_settings(
         guild_id,
@@ -601,7 +624,7 @@ async def save_muted_role_settings(
 
 @app.post("/guild/{guild_id}/moderation/tempbans/unban")
 async def unban_tempban_now(request: Request, guild_id: int, event_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     event = db.get_scheduled_event(event_id, guild_id, "unban")
     if event:
@@ -625,7 +648,7 @@ LOG_CATEGORIES = [
 
 @app.get("/guild/{guild_id}/logging")
 async def logging_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     configured = db.get_all_log_channels(guild_id)
     ignored_ids = db.list_ignored_log_channels(guild_id)
@@ -640,7 +663,7 @@ async def logging_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/logging/channel")
 async def save_logging_channel(request: Request, guild_id: int, category: str = Form(...), channel_id: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     allowed = {key for key, _name, _desc in LOG_CATEGORIES}
     if category not in allowed:
@@ -660,7 +683,7 @@ async def save_logging_channel(request: Request, guild_id: int, category: str = 
 
 @app.post("/guild/{guild_id}/logging/ignore/add")
 async def add_logging_ignore(request: Request, guild_id: int, channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/logging?error=channel", status_code=303)
@@ -670,7 +693,7 @@ async def add_logging_ignore(request: Request, guild_id: int, channel_id: int = 
 
 @app.post("/guild/{guild_id}/logging/ignore/delete")
 async def delete_logging_ignore(request: Request, guild_id: int, channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_ignored_log_channel(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
@@ -680,7 +703,7 @@ async def delete_logging_ignore(request: Request, guild_id: int, channel_id: int
 
 @app.get("/guild/{guild_id}/youtube")
 async def youtube_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(request, "youtube.html", guild_id, "youtube", watches=[(yt_id, channel_label(guild_id, channel_id), last) for yt_id, channel_id, last in db.list_youtube_watches(guild_id)],
                   text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
@@ -688,7 +711,7 @@ async def youtube_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/youtube/add")
 async def add_youtube_watch(request: Request, guild_id: int, yt_channel_id: str = Form(...), announce_channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, announce_channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/youtube?error=channel", status_code=303)
@@ -701,7 +724,7 @@ async def add_youtube_watch(request: Request, guild_id: int, yt_channel_id: str 
 
 @app.post("/guild/{guild_id}/youtube/delete")
 async def delete_youtube_watch(request: Request, guild_id: int, yt_channel_id: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_youtube_watch(guild_id, yt_channel_id)
     return RedirectResponse(f"/guild/{guild_id}/youtube", status_code=303)
@@ -711,7 +734,7 @@ async def delete_youtube_watch(request: Request, guild_id: int, yt_channel_id: s
 
 @app.get("/guild/{guild_id}/automod")
 async def automod_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     cfg = db.get_automod_config(guild_id)
     return render(
@@ -724,7 +747,7 @@ async def automod_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/automod/enabled")
 async def save_automod_enabled(request: Request, guild_id: int, enabled: str = Form(None)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.set_automod_enabled(guild_id, enabled == "on")
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
@@ -732,7 +755,7 @@ async def save_automod_enabled(request: Request, guild_id: int, enabled: str = F
 
 @app.post("/guild/{guild_id}/automod/invites")
 async def save_automod_invites(request: Request, guild_id: int, block_invites: str = Form(None)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.set_automod_invites(guild_id, block_invites == "on")
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
@@ -740,7 +763,7 @@ async def save_automod_invites(request: Request, guild_id: int, block_invites: s
 
 @app.post("/guild/{guild_id}/automod/words")
 async def save_automod_words(request: Request, guild_id: int, words: str = Form("")):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.set_automod_words(guild_id, words.split(","))
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
@@ -748,7 +771,7 @@ async def save_automod_words(request: Request, guild_id: int, words: str = Form(
 
 @app.post("/guild/{guild_id}/automod/caps")
 async def save_automod_caps(request: Request, guild_id: int, percent: int = Form(...), min_len: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 1 <= percent <= 100 or not 1 <= min_len <= 10_000:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
@@ -758,7 +781,7 @@ async def save_automod_caps(request: Request, guild_id: int, percent: int = Form
 
 @app.post("/guild/{guild_id}/automod/mentions")
 async def save_automod_mentions(request: Request, guild_id: int, threshold: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 0 <= threshold <= 100:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
@@ -768,7 +791,7 @@ async def save_automod_mentions(request: Request, guild_id: int, threshold: int 
 
 @app.post("/guild/{guild_id}/automod/spam")
 async def save_automod_spam(request: Request, guild_id: int, count: int = Form(...), window_seconds: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 0 <= count <= 1000 or not 1 <= window_seconds <= 86400:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
@@ -778,7 +801,7 @@ async def save_automod_spam(request: Request, guild_id: int, count: int = Form(.
 
 @app.post("/guild/{guild_id}/automod/duplicates")
 async def save_automod_duplicates(request: Request, guild_id: int, count: int = Form(...), window_seconds: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 0 <= count <= 1000 or not 1 <= window_seconds <= 86400:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
@@ -790,7 +813,7 @@ async def save_automod_duplicates(request: Request, guild_id: int, count: int = 
 async def save_automod_escalation(
     request: Request, guild_id: int, threshold: int = Form(...), window_seconds: int = Form(...), mute_duration_seconds: int = Form(...)
 ):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not 1 <= threshold <= 1000 or not 1 <= window_seconds <= 604800 or not 1 <= mute_duration_seconds <= 28 * 86400:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
@@ -800,7 +823,7 @@ async def save_automod_escalation(
 
 @app.post("/guild/{guild_id}/automod/exempt-roles/add")
 async def add_automod_exempt_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_role(guild_id, role_id):
         return RedirectResponse(f"/guild/{guild_id}/automod?error=role", status_code=303)
@@ -810,7 +833,7 @@ async def add_automod_exempt_role(request: Request, guild_id: int, role_id: int 
 
 @app.post("/guild/{guild_id}/automod/exempt-roles/delete")
 async def delete_automod_exempt_role(request: Request, guild_id: int, role_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_automod_exempt_role(guild_id, role_id)
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
@@ -822,7 +845,7 @@ async def delete_automod_exempt_role(request: Request, guild_id: int, role_id: i
 
 @app.get("/guild/{guild_id}/reactionroles")
 async def reactionroles_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     rows = db.list_reaction_roles(guild_id)
     bindings = [
@@ -849,7 +872,7 @@ async def queue_add_reaction_role(
     request: Request, guild_id: int, channel_id: int = Form(...), message_id: str = Form(...),
     emoji: str = Form(...), role_id: int = Form(...),
 ):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=channel", status_code=303)
@@ -879,7 +902,7 @@ async def queue_add_reaction_role(
 
 @app.post("/guild/{guild_id}/reactionroles/delete")
 async def delete_reaction_role(request: Request, guild_id: int, message_id: int = Form(...), emoji: str = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_reaction_role(guild_id, message_id, emoji)
     return RedirectResponse(f"/guild/{guild_id}/reactionroles", status_code=303)
@@ -889,7 +912,7 @@ async def delete_reaction_role(request: Request, guild_id: int, message_id: int 
 
 @app.get("/guild/{guild_id}/tempvoice")
 async def tempvoice_page(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     return render(
         request, "tempvoice.html", guild_id, "tempvoice",
@@ -902,7 +925,7 @@ async def tempvoice_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/tempvoice/hub")
 async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form(...)):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("voice",)):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=channel", status_code=303)
@@ -912,7 +935,7 @@ async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form
 
 @app.post("/guild/{guild_id}/tempvoice/remove")
 async def remove_voice_hub_route(request: Request, guild_id: int):
-    if (r := require_auth(request)):
+    if (r := await require_auth(request)):
         return r
     db.remove_voice_hub(guild_id)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)

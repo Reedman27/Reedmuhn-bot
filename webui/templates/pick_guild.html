@@ -5,6 +5,7 @@
     <h1>Choose a server</h1>
     <p class="muted">Pick the Discord server you want to configure. You don't need to know its server ID.</p>
     {% if not_accessible %}<p class="error">That server is no longer accessible. Pick another server below.</p>{% endif %}
+    {% if no_permission %}<p class="error">Your Discord account doesn't have dashboard access for that server. You need to be the owner, an Administrator, or hold a configured Bot Manager role.</p>{% endif %}
     {% if guilds %}
         <div class="guild-list">
         {% for guild_id, name in guilds %}
@@ -15,7 +16,7 @@
         {% endfor %}
         </div>
     {% else %}
-        <p class="muted">The bot has not finished syncing its servers yet. Refresh in a few seconds.</p>
+        <p class="muted">No servers yet. Either the bot hasn't finished syncing (refresh in a few seconds), or your Discord account isn't an owner/Administrator/Bot Manager on any server this bot is in.</p>
     {% endif %}
 </div>
 {% endblock %}

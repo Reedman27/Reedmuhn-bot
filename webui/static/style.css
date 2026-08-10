@@ -75,6 +75,7 @@ body.app {
 }
 
 .sidebar-footer form { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.sidebar-footer .logged-in-as { font-size: 0.75rem; margin-bottom: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-footer .logout { color: var(--muted); text-decoration: none; }
 .sidebar-footer .logout:hover { color: var(--text); }
 
@@ -161,6 +162,21 @@ button {
 button:hover { opacity: 0.9; }
 button.danger { background: var(--danger); margin-top: 0; padding: 0.35rem 0.8rem; font-size: 0.85rem; }
 button.link-btn { background: none; color: var(--accent); padding: 0; margin: 0; font-weight: 400; text-decoration: underline; cursor: pointer; font-size: inherit; }
+
+.button {
+    display: inline-block;
+    background: var(--accent);
+    color: #1a1b26;
+    border: none;
+    border-radius: 6px;
+    padding: 0.6rem 1.2rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 1rem;
+    text-decoration: none;
+}
+.button:hover { opacity: 0.9; }
+.button.discord-login { background: #5865F2; color: #fff; }
 
 .inline { display: inline; }
 .muted { color: var(--muted); }

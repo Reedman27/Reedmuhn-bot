@@ -55,6 +55,7 @@ class Moderation(commands.Cog):
         # later even if the bot restarts before then.
         run_at = int(time.time()) + seconds
         scheduler.schedule_unban(self.bot.db, interaction.guild.id, user.id, run_at)
+        self.bot.db.record_member_history(interaction.guild.id, user.id, "tempban", interaction.user.id, reason, f"duration_seconds={seconds}")
 
         await interaction.response.send_message(
             f"Banned {user.mention} for {format_duration(seconds)}. Reason: {reason}"
@@ -145,6 +146,26 @@ class Moderation(commands.Cog):
 
     # ---- warns ----
 
+    async def _log_action(self, guild: discord.Guild, action: str, target: discord.Member, moderator: discord.Member, reason: str = None):
+        """Sends a moderation-log entry for actions that are purely
+        bot/DB-driven (warn, clearwarns, role-based mute/unmute) and so
+        never fire a native Discord event the Logging cog's own listeners
+        could pick up on their own - unlike a real kick/ban, which already
+        gets logged automatically via on_member_remove/on_member_ban."""
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is None:
+            return
+        embed = discord.Embed(
+            description=f"**{action}** - {target.mention} ({target})",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Moderator", value=moderator.mention, inline=True)
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=True)
+        embed.set_footer(text=f"User ID: {target.id}")
+        await logging_cog.log_event(guild, "moderation", embed)
+
     @app_commands.command(name="warn", description="Warn a member")
     @app_commands.describe(user="Who to warn", reason="Why they're being warned")
     @manager_or_permission("moderate_members")
@@ -165,6 +186,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(
             f"Warned {user.mention}. Reason: {reason}\nThey now have {total} warning{'s' if total != 1 else ''}."
         )
+        await self._log_action(interaction.guild, "Warned", user, interaction.user, reason)
 
         try:
             await user.send(f"You were warned in **{interaction.guild.name}**: {reason}")
@@ -205,6 +227,9 @@ class Moderation(commands.Cog):
 
         removed = self.bot.db.clear_warns(interaction.guild.id, user.id)
         await interaction.response.send_message(f"Cleared {removed} warning{'s' if removed != 1 else ''} for {user.mention}.")
+        if removed:
+            self.bot.db.record_member_history(interaction.guild.id, user.id, "warnings_cleared", interaction.user.id, None, f"{removed} warning(s) removed")
+            await self._log_action(interaction.guild, "Warnings cleared", user, interaction.user, f"{removed} warning(s) removed")
 
     # ---- mute / unmute ----
     # Role-based mute with a server-configurable role and permission profile.
@@ -408,10 +433,12 @@ class Moderation(commands.Cog):
 
         run_at = int(time.time()) + seconds
         scheduler.schedule_role_unmute(self.bot.db, interaction.guild.id, run_at, user.id, role.id)
+        self.bot.db.record_member_history(interaction.guild.id, user.id, "mute", interaction.user.id, reason, f"duration_seconds={seconds}")
 
         await interaction.followup.send(
             f"Muted {user.mention} for {format_duration(seconds)} using {role.mention}. Reason: {reason}"
         )
+        await self._log_action(interaction.guild, f"Muted ({format_duration(seconds)})", user, interaction.user, reason)
 
     @app_commands.command(name="unmute", description="Remove a member's Muted role")
     @app_commands.describe(user="Who to unmute")
@@ -436,7 +463,9 @@ class Moderation(commands.Cog):
             )
             return
 
+        self.bot.db.record_member_history(interaction.guild.id, user.id, "unmute", interaction.user.id, "Manual unmute")
         await interaction.response.send_message(f"Unmuted {user.mention}.")
+        await self._log_action(interaction.guild, "Unmuted", user, interaction.user)
 
     # ---- kick ----
 
@@ -462,6 +491,7 @@ class Moderation(commands.Cog):
             )
             return
 
+        self.bot.db.record_member_history(interaction.guild.id, user.id, "kick", interaction.user.id, reason)
         await interaction.response.send_message(f"Kicked {user.mention}. Reason: {reason}")
 
     # ---- purge ----

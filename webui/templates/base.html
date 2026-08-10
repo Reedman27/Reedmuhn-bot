@@ -30,6 +30,7 @@
                 <span class="muted">{{ guild_name }}</span>
                 <button type="submit" class="link-btn">switch</button>
             </form>
+            {% if discord_username %}<div class="muted logged-in-as">Logged in as {{ discord_username }}</div>{% endif %}
             <a href="/logout" class="logout">Log out</a>
         </div>
     </aside>

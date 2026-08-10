@@ -111,6 +111,20 @@ class Counting(commands.Cog):
             f"Saves are now earned every **{milestone}** correct counts, capped at **{max_saves}** banked."
         )
 
+    @app_commands.command(name="highscorealerts", description="Toggle the '🏆 new high score!' announcement")
+    @app_commands.describe(enabled="Whether to announce it in the counting channel when a new high score is hit")
+    @manager_or_permission("manage_guild")
+    async def highscorealerts(self, interaction: discord.Interaction, enabled: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        self.bot.db.set_high_score_alerts(interaction.guild.id, enabled)
+        self.bot.db.record_bot_event("counting.high_score_alerts", interaction.guild.id, interaction.user.id, None, f"enabled={enabled}")
+        await interaction.response.send_message(
+            f"High score alerts are now {'on' if enabled else 'off'}."
+            + ("" if enabled else " `/current-number` still shows the high score any time you want it.")
+        )
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
@@ -171,10 +185,11 @@ class Counting(commands.Cog):
         if earned_save:
             await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
 
-        # Deliberately no auto-announcement on a new high score anymore -
-        # that fired on every single count once past the old record, which
-        # got noisy fast. Anyone curious can check /current-number instead,
-        # which already reports the high score on demand.
+        # Off by default (it used to fire on every single count once past
+        # the old record, which got noisy fast) - opt back in per-server
+        # with /highscorealerts on, or via the WebUI toggle.
+        if state["high_score_alerts"] and expected > state["high_score"] > 0:
+            await message.channel.send(f"🏆 New high score: **{expected}**!")
 
 
 async def setup(bot: commands.Bot):
