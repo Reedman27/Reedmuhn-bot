@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Welcome & Roles - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Welcome & Roles</h1>
+<section class="card">
+    <h2>Welcome message</h2>
+    {% if request.query_params.get('error') %}<p class="error">Please choose a valid Discord object from this server.</p>{% endif %}
+    <form method="post" action="/guild/{{ guild_id }}/welcome">
+        <label for="channel_id">Welcome channel</label>
+        <select id="channel_id" name="channel_id" required>
+            <option value="" disabled {% if not cfg.welcome_channel_id %}selected{% endif %}>Choose a channel…</option>
+            {% if cfg.welcome_channel_id and not text_channels|selectattr(0, 'equalto', cfg.welcome_channel_id)|list %}<option value="{{ cfg.welcome_channel_id }}" selected>Deleted channel ({{ cfg.welcome_channel_id }})</option>{% endif %}
+            {% for cid, name, ctype, pos in text_channels %}
+                <option value="{{ cid }}" {% if cfg.welcome_channel_id == cid %}selected{% endif %}>#{{ name }}</option>
+            {% endfor %}
+        </select>
+        <label for="message">Welcome message (use {user} to mention the new member)</label>
+        <textarea id="message" name="message" rows="2" required>{{ cfg.welcome_message or '' }}</textarea>
+        <button type="submit">Save welcome message</button>
+    </form>
+    <hr>
+    <form method="post" action="/guild/{{ guild_id }}/welcome/card">
+        <label><input type="checkbox" name="enabled" {{ "checked" if cfg.welcome_card_enabled }}> Show a generated image card alongside the welcome message</label>
+        <button type="submit">Save card setting</button>
+    </form>
+</section>
+<section class="card">
+    <h2>Autorole</h2>
+    <form method="post" action="/guild/{{ guild_id }}/autorole">
+        <label for="role_id">Role given to new members</label>
+        <select id="role_id" name="role_id" required>
+            <option value="" disabled {% if not cfg.autorole_id %}selected{% endif %}>Choose a role…</option>
+            {% if cfg.autorole_id and not roles|selectattr(0, 'equalto', cfg.autorole_id)|list %}<option value="{{ cfg.autorole_id }}" selected>Deleted role ({{ cfg.autorole_id }})</option>{% endif %}
+            {% for rid, name, pos in roles %}<option value="{{ rid }}" {% if cfg.autorole_id == rid %}selected{% endif %}>@{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Save autorole</button>
+    </form>
+</section>
+{% endblock %}
