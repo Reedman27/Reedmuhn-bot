@@ -206,10 +206,150 @@ class Moderation(commands.Cog):
         removed = self.bot.db.clear_warns(interaction.guild.id, user.id)
         await interaction.response.send_message(f"Cleared {removed} warning{'s' if removed != 1 else ''} for {user.mention}.")
 
-    # ---- mute / unmute (Discord's native timeout, not a role) ----
+    # ---- mute / unmute ----
+    # Role-based mute with a server-configurable role and permission profile.
+    # The same configuration is available from the WebUI and Discord.
 
-    @app_commands.command(name="mute", description="Timeout a member")
-    @app_commands.describe(user="Who to mute", duration="e.g. 10m, 1h, 1d (max 28d, Discord's own limit)", reason="Reason for the mute")
+    muterole = app_commands.Group(name="muterole", description="Configure the server's muted role")
+
+    async def _get_or_create_muted_role(self, guild: discord.Guild) -> discord.Role | None:
+        """Return the guild's configured Muted role.
+
+        Channel overwrites are only (re)applied here the first time a role is
+        linked - either because it was just created, or because an existing
+        "Muted"-named role is being linked for the first time. Once a role is
+        already configured, this is a cheap lookup with no channel iteration;
+        keeping the policy in sync afterward is the job of the explicit
+        /muterole commands, not of every /mute call.
+        """
+        cfg = self.bot.db.get_guild_config(guild.id)
+        role_id = cfg["muted_role_id"]
+        if role_id:
+            role = guild.get_role(role_id)
+            if role is not None:
+                return role
+
+        existing = discord.utils.find(lambda r: r.name.lower() == "muted", guild.roles)
+        if existing is not None:
+            self.bot.db.set_muted_role(guild.id, existing.id)
+            await self._apply_muted_role_overwrites(guild, existing)
+            return existing
+
+        try:
+            role = await guild.create_role(
+                name="Muted",
+                permissions=discord.Permissions.none(),
+                reason="Auto-created by /mute",
+            )
+        except discord.Forbidden:
+            return None
+
+        self.bot.db.set_muted_role(guild.id, role.id)
+        await self._apply_muted_role_overwrites(guild, role)
+        return role
+
+    async def _apply_muted_role_overwrites(self, guild: discord.Guild, role: discord.Role) -> tuple[int, int]:
+        cfg = self.bot.db.get_guild_config(guild.id)
+        changed = 0
+        failed = 0
+        for channel in guild.channels:
+            try:
+                overwrite = channel.overwrites_for(role)
+                if isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel)):
+                    overwrite.send_messages = False if cfg["muted_deny_send_messages"] else None
+                    overwrite.add_reactions = False if cfg["muted_deny_reactions"] else None
+                    overwrite.create_public_threads = False if cfg["muted_deny_threads"] else None
+                    overwrite.create_private_threads = False if cfg["muted_deny_threads"] else None
+                if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+                    overwrite.connect = False if cfg["muted_deny_connect"] else None
+                    overwrite.speak = False if cfg["muted_deny_speak"] else None
+                    overwrite.stream = False if cfg["muted_deny_stream"] else None
+                await channel.set_permissions(role, overwrite=overwrite, reason="Updated Muted role configuration")
+                changed += 1
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+        return changed, failed
+
+    @muterole.command(name="set", description="Assign an existing role as the server's Muted role")
+    @app_commands.describe(role="The role to use for mutes")
+    @manager_or_permission("manage_guild")
+    async def muterole_set(self, interaction: discord.Interaction, role: discord.Role):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        if role.is_default() or role.managed:
+            await interaction.response.send_message("Choose a normal, non-managed role.", ephemeral=True)
+            return
+        if interaction.guild.me and role.position >= interaction.guild.me.top_role.position:
+            await interaction.response.send_message("That role is at or above my highest role. Move my bot role above it first.", ephemeral=True)
+            return
+        self.bot.db.set_muted_role(interaction.guild.id, role.id)
+        # Sweeping every channel can take longer than Discord's 3-second
+        # interaction deadline, so defer before doing the bulk work.
+        await interaction.response.defer()
+        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        await interaction.followup.send(
+            f"Muted role set to {role.mention}. Applied the current mute policy to {changed} channel(s)"
+            + (f"; {failed} could not be updated." if failed else ".")
+        )
+
+    @muterole.command(name="create", description="Create or repair the server's Muted role")
+    @manager_or_permission("manage_guild")
+    async def muterole_create(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        # Defer up front: _get_or_create_muted_role may need to create the role
+        # and sweep every channel, which can exceed Discord's 3-second deadline.
+        await interaction.response.defer()
+        role = await self._get_or_create_muted_role(interaction.guild)
+        if role is None:
+            await interaction.followup.send("I need Manage Roles to create the Muted role.", ephemeral=True)
+            return
+        if interaction.guild.me and role.position >= interaction.guild.me.top_role.position:
+            await interaction.followup.send("The Muted role is not below my bot role. Move my bot role higher first.", ephemeral=True)
+            return
+        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        await interaction.followup.send(
+            f"Muted role is {role.mention}. Applied the current mute policy to {changed} channel(s)"
+            + (f"; {failed} could not be updated." if failed else ".")
+        )
+
+    @muterole.command(name="settings", description="Configure what a Muted role blocks")
+    @app_commands.describe(
+        messages="Block sending messages",
+        reactions="Block adding reactions",
+        threads="Block creating public/private threads",
+        connect="Block connecting to voice",
+        speak="Block speaking in voice",
+        stream="Block streaming in voice",
+    )
+    @manager_or_permission("manage_guild")
+    async def muterole_settings(self, interaction: discord.Interaction, messages: bool, reactions: bool,
+                                 threads: bool, connect: bool, speak: bool, stream: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        self.bot.db.set_muted_settings(
+            interaction.guild.id,
+            deny_send_messages=messages, deny_reactions=reactions, deny_threads=threads,
+            deny_connect=connect, deny_speak=speak, deny_stream=stream,
+        )
+        # Defer up front: applying the new policy sweeps every channel, which
+        # can exceed Discord's 3-second interaction deadline.
+        await interaction.response.defer()
+        role = await self._get_or_create_muted_role(interaction.guild)
+        if role is None:
+            await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/muterole create` after granting Manage Roles.", ephemeral=True)
+            return
+        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        await interaction.followup.send(
+            f"Muted role settings saved and applied to {changed} channel(s)"
+            + (f"; {failed} could not be updated." if failed else ".")
+        )
+
+    @app_commands.command(name="mute", description="Temporarily mute a member with the server's configured Muted role")
+    @app_commands.describe(user="Member to mute", duration="How long, e.g. 10m, 1h, 1d", reason="Why the member is being muted")
     @manager_or_permission("moderate_members")
     async def mute(self, interaction: discord.Interaction, user: discord.Member, duration: str, reason: str = "No reason given"):
         if interaction.guild is None:
@@ -226,27 +366,54 @@ class Moderation(commands.Cog):
             seconds = parse_duration(duration)
         except ValueError:
             await interaction.response.send_message(
-                "Couldn't parse that duration. Try something like `10m`, `1h`, `1d`.", ephemeral=True
+                "Couldn't parse that duration. Try `10m`, `1h`, `1d`, etc.", ephemeral=True
             )
             return
 
-        if seconds > 28 * 86400:
-            await interaction.response.send_message("Discord's timeout limit is 28 days max.", ephemeral=True)
+        if seconds < 1 or seconds > 365 * 86400:
+            await interaction.response.send_message("Mute duration must be between 1 second and 365 days.", ephemeral=True)
+            return
+
+        # Defer before touching the Muted role: on a guild's very first /mute
+        # this may create the role and sweep every channel to apply the
+        # configured policy, which can exceed Discord's 3-second deadline.
+        # On every later /mute the role is already linked and this is a
+        # cheap, single lookup - the policy stays in sync via the explicit
+        # /muterole commands instead of being reapplied on every mute.
+        await interaction.response.defer()
+
+        role = await self._get_or_create_muted_role(interaction.guild)
+        if role is None:
+            await interaction.followup.send(
+                "I can't create/find the Muted role. Grant me Manage Roles or configure an existing role with `/muterole set`.",
+                ephemeral=True,
+            )
+            return
+
+        if role.position >= interaction.guild.me.top_role.position:
+            await interaction.followup.send(
+                f"The Muted role ({role.mention}) is above my own role. Move my bot role higher first.",
+                ephemeral=True,
+            )
             return
 
         try:
-            await user.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds), reason=reason)
+            await user.add_roles(role, reason=reason)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "I can't timeout that member - check my role is above theirs.", ephemeral=True
+            await interaction.followup.send(
+                "I can't give that member the Muted role. Check my role is above theirs and I have Manage Roles.",
+                ephemeral=True
             )
             return
 
-        await interaction.response.send_message(
-            f"Muted {user.mention} for {format_duration(seconds)}. Reason: {reason}"
+        run_at = int(time.time()) + seconds
+        scheduler.schedule_role_unmute(self.bot.db, interaction.guild.id, run_at, user.id, role.id)
+
+        await interaction.followup.send(
+            f"Muted {user.mention} for {format_duration(seconds)} using {role.mention}. Reason: {reason}"
         )
 
-    @app_commands.command(name="unmute", description="Remove a member's timeout")
+    @app_commands.command(name="unmute", description="Remove a member's Muted role")
     @app_commands.describe(user="Who to unmute")
     @manager_or_permission("moderate_members")
     async def unmute(self, interaction: discord.Interaction, user: discord.Member):
@@ -254,11 +421,18 @@ class Moderation(commands.Cog):
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
 
+        cfg = self.bot.db.get_guild_config(interaction.guild.id)
+        role = interaction.guild.get_role(cfg["muted_role_id"]) if cfg["muted_role_id"] else None
+
+        if role is None or role not in user.roles:
+            await interaction.response.send_message(f"{user.mention} doesn't have the Muted role.", ephemeral=True)
+            return
+
         try:
-            await user.timeout(None, reason=f"Unmuted by {interaction.user}")
+            await user.remove_roles(role, reason=f"Unmuted by {interaction.user}")
         except discord.Forbidden:
             await interaction.response.send_message(
-                "I can't remove that member's timeout - check my role is above theirs.", ephemeral=True
+                "I can't remove that member's Muted role - check my role is above theirs.", ephemeral=True
             )
             return
 

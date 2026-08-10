@@ -26,6 +26,7 @@ class Counting(commands.Cog):
 
     @app_commands.command(name="calc", description="Evaluates a math expression")
     @app_commands.describe(expression="e.g. 7*6, (3+2)**2, 10/4")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: i.user.id)
     async def calc(self, interaction: discord.Interaction, expression: str):
         try:
             result = safe_eval(expression)
@@ -170,8 +171,10 @@ class Counting(commands.Cog):
         if earned_save:
             await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
 
-        if expected > state["high_score"] > 0:
-            await message.channel.send(f"🏆 New high score: **{expected}**!")
+        # Deliberately no auto-announcement on a new high score anymore -
+        # that fired on every single count once past the old record, which
+        # got noisy fast. Anyone curious can check /current-number instead,
+        # which already reports the high score on demand.
 
 
 async def setup(bot: commands.Bot):

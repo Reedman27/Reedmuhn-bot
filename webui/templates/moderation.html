@@ -15,6 +15,34 @@
     <div class="stat-card"><div class="stat-value">{{ tempbans|length }}</div><div class="stat-label">Active temp bans</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=tempbans">Manage temp bans →</a></div>
     <div class="stat-card"><div class="stat-value">{{ members|length }}</div><div class="stat-label">Cached members</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=warnings">Review warnings →</a></div>
 </section>
+<section class="card">
+    <h2>Muted role</h2>
+    <p class="muted">Choose an existing role or let the bot create/reuse a <strong>Muted</strong> role. The same configuration is used by <code>/mute</code> in Discord and by the dashboard.</p>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role">
+        <label for="role_id">Role</label>
+        <select id="role_id" name="role_id">
+            <option value="auto" {% if not muted_role_id %}selected{% endif %}>Automatic — create/reuse “Muted”</option>
+            {% for rid, name, _position in roles %}
+            <option value="{{ rid }}" {% if muted_role_id == rid %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Save muted role</button>
+    </form>
+
+    <hr>
+    <h3>What should the Muted role block?</h3>
+    <p class="muted">Checked options are denied for members who have the Muted role. These settings are applied to existing channels when you save and again when <code>/mute</code> is used.</p>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-settings">
+        <label><input type="checkbox" name="messages" {% if muted_config.muted_deny_send_messages %}checked{% endif %}> Send messages</label>
+        <label><input type="checkbox" name="reactions" {% if muted_config.muted_deny_reactions %}checked{% endif %}> Add reactions</label>
+        <label><input type="checkbox" name="threads" {% if muted_config.muted_deny_threads %}checked{% endif %}> Create threads</label>
+        <label><input type="checkbox" name="connect" {% if muted_config.muted_deny_connect %}checked{% endif %}> Connect to voice</label>
+        <label><input type="checkbox" name="speak" {% if muted_config.muted_deny_speak %}checked{% endif %}> Speak in voice</label>
+        <label><input type="checkbox" name="stream" {% if muted_config.muted_deny_stream %}checked{% endif %}> Stream in voice</label>
+        <button type="submit">Save mute policy</button>
+    </form>
+    <p class="hint">Discord Administrators and your configured moderation exemptions are still subject to your normal server rules; the Muted role only controls the permissions listed above.</p>
+</section>
 <section class="card"><h2>Moderation tools</h2><p>Use the Discord commands for immediate actions such as <code>/warn</code>, <code>/warnings</code>, <code>/clearwarns</code>, <code>/mute</code>, <code>/unmute</code>, <code>/kick</code>, <code>/ban</code>, <code>/tempban</code>, and <code>/tempnick</code>.</p><p class="hint">The dashboard is for configuration and moderation history; the bot remains the authority for live Discord actions.</p></section>
 {% elif tab == 'warnings' %}
 <section class="card"><h2>Look up warnings</h2><form method="get" action="/guild/{{ guild_id }}/moderation"><input type="hidden" name="tab" value="warnings"><label for="user_id">Member</label><select id="user_id" name="user_id" required><option value="" disabled {% if not looked_up_user_id %}selected{% endif %}>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}" {% if looked_up_user_id == uid %}selected{% endif %}>{{ display }}</option>{% endfor %}</select><button type="submit">Look up warnings</button></form>

@@ -17,6 +17,7 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 - 📺 YouTube upload notifications through RSS (no YouTube API key)
 - 🎙️ Temporary voice channels
 - 🎭 Reaction roles - react to a message to get a role, un-react to remove it
+- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel
 - 🎉 Fun commands
 - 🌐 Web dashboard for configuration
 
@@ -156,6 +157,10 @@ docker compose up -d --build
 
 The database schema uses additive migrations for supported older databases, so normal upgrades should not require deleting `data/bot.db`.
 
+### A note on release pace
+
+This is a one-person, self-hosted project, and new features get tested against a real running server before they land here - not pushed the moment they compile. That means updates on this repo can lag behind whatever's actively being worked on, and a given release might take a little longer to show up than you'd see from a larger team. The tradeoff is deliberate: it's better to wait a bit longer for something that's actually been exercised end-to-end than to pull a change that looks fine on paper and breaks moderation on your server at 2am.
+
 ## 7. Backups
 
 Your important persistent data lives under `data/`, especially:
@@ -238,3 +243,17 @@ AGPL-3.0. See [`LICENSE`](LICENSE).
 - **Bot Manager roles** can be selected in the WebUI under Permissions. Members with one of those roles can use the bot's configuration and management commands even when they lack the command's normal Discord permission.
 - AutoMod **does not automatically exempt Manage Messages**. AutoMod exemptions are explicitly configured by role in the WebUI; Administrators are always exempt.
 - The WebUI itself remains protected by `WEBUI_PASSWORD` because this self-hosted build does not use Discord OAuth to identify the logged-in browser user. Selecting a Bot Manager role controls Discord bot management, not WebUI login.
+
+
+## Muted role configuration
+
+The `/mute` command uses a configurable Discord role rather than Discord's native timeout. Server administrators can choose an existing role or let the bot create/reuse a `Muted` role. The WebUI and Discord both expose the same configuration.
+
+Discord commands:
+- `/muterole set <role>` — use an existing role.
+- `/muterole create` — create/reuse and configure the `Muted` role.
+- `/muterole settings` — choose whether the role blocks messages, reactions, threads, voice connection, speaking, and streaming.
+- `/mute <user> <duration> [reason]` — apply the configured role temporarily.
+- `/unmute <user>` — remove the configured role.
+
+The bot needs **Manage Roles**, and its highest role must be above the configured Muted role.

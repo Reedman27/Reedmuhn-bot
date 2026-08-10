@@ -35,6 +35,10 @@ def schedule_nick_revert(db, guild_id: int, run_at: int, user_id: int, original_
     db.insert_scheduled_event("revert_nick", guild_id, run_at, {"user_id": user_id, "original_nick": original_nick})
 
 
+def schedule_role_unmute(db, guild_id: int, run_at: int, user_id: int, role_id: int) -> None:
+    db.insert_scheduled_event("unmute_role", guild_id, run_at, {"user_id": user_id, "role_id": role_id})
+
+
 async def run_loop(bot: discord.Client, db) -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -67,6 +71,8 @@ async def _process_event(bot: discord.Client, db, event_name: str, guild_id: int
         await _handle_reminder(bot, data)
     elif event_name == "revert_nick":
         await _handle_revert_nick(bot, guild_id, data)
+    elif event_name == "unmute_role":
+        await _handle_unmute_role(bot, guild_id, data)
     elif event_name == "add_reaction_role":
         await _handle_add_reaction_role(bot, db, guild_id, data)
     else:
@@ -90,6 +96,21 @@ async def _handle_revert_nick(bot: discord.Client, guild_id: int, data: dict) ->
     except discord.NotFound:
         return  # they left the server - nothing to revert
     await member.edit(nick=data["original_nick"], reason="Tempnick expired - reverting nickname")
+
+
+async def _handle_unmute_role(bot: discord.Client, guild_id: int, data: dict) -> None:
+    guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+    try:
+        member = guild.get_member(data["user_id"]) or await guild.fetch_member(data["user_id"])
+    except discord.NotFound:
+        return  # they left - nothing to unmute
+    role = guild.get_role(data["role_id"])
+    if role is None:
+        return  # role was deleted since - nothing to remove
+    try:
+        await member.remove_roles(role, reason="Mute duration expired")
+    except discord.Forbidden:
+        logger.warning("couldn't remove muted role from %s in guild %s - missing permission or role hierarchy", data["user_id"], guild_id)
 
 
 async def _handle_add_reaction_role(bot: discord.Client, db, guild_id: int, data: dict) -> None:

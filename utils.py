@@ -104,41 +104,85 @@ _ALLOWED_UNARYOPS = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
-_MAX_POWER_EXPONENT = 1000  # guards against e.g. 9**9**9 hanging the event loop
+_MAX_EXPRESSION_LENGTH = 200  # chars - generous for any real calculator use
+_MAX_AST_NODES = 200
+_MAX_POWER_EXPONENT = 1000  # fast first-line reject for an absurd single exponent
+_MAX_RESULT_BITS = 4096  # ~1233 decimal digits - hard ceiling on any intermediate value
 
 
 class CalcError(ValueError):
     pass
 
 
+def _int_bit_length(value) -> int:
+    return value.bit_length() if isinstance(value, int) else 0
+
+
 def safe_eval(expression: str) -> float:
     """Evaluates a basic arithmetic expression (+ - * / // % ** and
     parentheses) and returns the numeric result. Raises CalcError on
     anything outside that whitelist - no names, no calls, no attribute
-    access, nothing but numbers and operators reaches this far."""
+    access, nothing but numbers and operators reaches this far.
+
+    Bounded on computational cost, not just syntax: a per-node exponent cap
+    alone isn't enough - (2**999)**999 passes a same-node check (999 <=
+    1000) while still costing real CPU/RAM, because the check never looked
+    at how big the LEFT operand already was. So before every Pow or Mult
+    actually runs, this checks the operation's PROJECTED result size against
+    a hard bit-length ceiling. That closes the nesting bypass regardless of
+    how deep the expression is, because every node's own current operands
+    are checked at the moment it's evaluated - a huge left-hand value from
+    prior nesting gets caught here even though the immediate exponent looks
+    small. Expression length and total AST node count are capped up front
+    too, so an attacker can't route around this with a wall of text either.
+    """
+    if len(expression) > _MAX_EXPRESSION_LENGTH:
+        raise CalcError(f"expression too long (max {_MAX_EXPRESSION_LENGTH} characters)")
+
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
         raise CalcError(f"couldn't parse that: {exc.msg}") from exc
 
+    if len(list(ast.walk(tree))) > _MAX_AST_NODES:
+        raise CalcError("expression too complex")
+
     def _eval(node):
         if isinstance(node, ast.Expression):
             return _eval(node.body)
         if isinstance(node, ast.Constant):
-            if isinstance(node.value, (int, float)):
-                return node.value
-            raise CalcError("only numbers are allowed")
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise CalcError("only numbers are allowed")
+            return node.value
         if isinstance(node, ast.BinOp):
             op_func = _ALLOWED_BINOPS.get(type(node.op))
             if op_func is None:
                 raise CalcError(f"operator {type(node.op).__name__} isn't allowed")
             left, right = _eval(node.left), _eval(node.right)
-            if isinstance(node.op, ast.Pow) and (abs(right) > _MAX_POWER_EXPONENT):
-                raise CalcError("exponent too large")
+
+            if isinstance(node.op, ast.Pow):
+                if abs(right) > _MAX_POWER_EXPONENT:
+                    raise CalcError("exponent too large")
+                if isinstance(left, int) and isinstance(right, int) and right > 0:
+                    if _int_bit_length(left) * right > _MAX_RESULT_BITS:
+                        raise CalcError("result would be too large")
+            elif isinstance(node.op, ast.Mult):
+                if isinstance(left, int) and isinstance(right, int):
+                    if _int_bit_length(left) + _int_bit_length(right) > _MAX_RESULT_BITS:
+                        raise CalcError("result would be too large")
+
             try:
-                return op_func(left, right)
+                result = op_func(left, right)
             except ZeroDivisionError as exc:
                 raise CalcError("division by zero") from exc
+            except OverflowError as exc:
+                raise CalcError("result too large") from exc
+
+            if _int_bit_length(result) > _MAX_RESULT_BITS:
+                # Belt-and-suspenders for any operation not explicitly
+                # pre-checked above.
+                raise CalcError("result too large")
+            return result
         if isinstance(node, ast.UnaryOp):
             op_func = _ALLOWED_UNARYOPS.get(type(node.op))
             if op_func is None:

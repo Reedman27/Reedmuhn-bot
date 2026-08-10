@@ -69,6 +69,20 @@ class Db:
             self.conn.execute("ALTER TABLE guild_config ADD COLUMN tempnick_mode TEXT NOT NULL DEFAULT 'everyone'")
         if "welcome_card_enabled" not in cols:
             self.conn.execute("ALTER TABLE guild_config ADD COLUMN welcome_card_enabled INTEGER NOT NULL DEFAULT 0")
+        if "muted_role_id" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_role_id INTEGER")
+        if "muted_deny_send_messages" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_send_messages INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_reactions" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_reactions INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_threads" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_threads INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_connect" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_connect INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_speak" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_speak INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_stream" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_stream INTEGER NOT NULL DEFAULT 1")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS tempnick_roles (
                 guild_id INTEGER NOT NULL,
@@ -171,6 +185,21 @@ class Db:
             """CREATE TABLE IF NOT EXISTS bot_guilds (
                 guild_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS log_channels (
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, category)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS log_ignored_channels (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, channel_id)
             )"""
         )
         self.conn.execute(
@@ -370,7 +399,9 @@ class Db:
 
     def get_guild_config(self, guild_id: int) -> dict:
         cur = self.conn.execute(
-            """SELECT welcome_channel_id, welcome_message, autorole_id, birthday_channel_id, welcome_card_enabled
+            """SELECT welcome_channel_id, welcome_message, autorole_id, birthday_channel_id, welcome_card_enabled, muted_role_id,
+                      muted_deny_send_messages, muted_deny_reactions, muted_deny_threads,
+                      muted_deny_connect, muted_deny_speak, muted_deny_stream
                FROM guild_config WHERE guild_id = ?""",
             (guild_id,),
         )
@@ -382,6 +413,13 @@ class Db:
                 "autorole_id": None,
                 "birthday_channel_id": None,
                 "welcome_card_enabled": False,
+                "muted_role_id": None,
+                "muted_deny_send_messages": True,
+                "muted_deny_reactions": True,
+                "muted_deny_threads": True,
+                "muted_deny_connect": True,
+                "muted_deny_speak": True,
+                "muted_deny_stream": True,
             }
         return {
             "welcome_channel_id": row[0],
@@ -389,7 +427,41 @@ class Db:
             "autorole_id": row[2],
             "birthday_channel_id": row[3],
             "welcome_card_enabled": bool(row[4]),
+            "muted_role_id": row[5],
+            "muted_deny_send_messages": bool(row[6]),
+            "muted_deny_reactions": bool(row[7]),
+            "muted_deny_threads": bool(row[8]),
+            "muted_deny_connect": bool(row[9]),
+            "muted_deny_speak": bool(row[10]),
+            "muted_deny_stream": bool(row[11]),
         }
+
+    def set_muted_role(self, guild_id: int, role_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO guild_config (guild_id, muted_role_id) VALUES (?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET muted_role_id = excluded.muted_role_id""",
+            (guild_id, role_id),
+        )
+        self.conn.commit()
+
+    def set_muted_settings(self, guild_id: int, *, deny_send_messages: bool, deny_reactions: bool,
+                           deny_threads: bool, deny_connect: bool, deny_speak: bool, deny_stream: bool) -> None:
+        self.conn.execute(
+            """INSERT INTO guild_config (
+                   guild_id, muted_deny_send_messages, muted_deny_reactions, muted_deny_threads,
+                   muted_deny_connect, muted_deny_speak, muted_deny_stream
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   muted_deny_send_messages = excluded.muted_deny_send_messages,
+                   muted_deny_reactions = excluded.muted_deny_reactions,
+                   muted_deny_threads = excluded.muted_deny_threads,
+                   muted_deny_connect = excluded.muted_deny_connect,
+                   muted_deny_speak = excluded.muted_deny_speak,
+                   muted_deny_stream = excluded.muted_deny_stream""",
+            (guild_id, int(deny_send_messages), int(deny_reactions), int(deny_threads),
+             int(deny_connect), int(deny_speak), int(deny_stream)),
+        )
+        self.conn.commit()
 
     def set_welcome_card_enabled(self, guild_id: int, enabled: bool) -> None:
         self.conn.execute(
@@ -1020,6 +1092,66 @@ class Db:
         self.conn.execute("DELETE FROM bot_roles WHERE guild_id = ?", (guild_id,))
         self.conn.execute("DELETE FROM bot_members WHERE guild_id = ?", (guild_id,))
         self.conn.commit()
+
+    # ---- logging config ----
+    # Carl-bot-style category logging: each category (messages, members,
+    # moderation, server, voice) routes to its own channel, or is disabled
+    # if unset. A channel can also be added to the ignore list so message
+    # edit/delete logging skips noise from e.g. a bot-commands channel.
+
+    LOG_CATEGORIES = ("messages", "members", "moderation", "server", "voice")
+
+    def set_log_channel(self, guild_id: int, category: str, channel_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO log_channels (guild_id, category, channel_id) VALUES (?, ?, ?)
+               ON CONFLICT(guild_id, category) DO UPDATE SET channel_id = excluded.channel_id""",
+            (guild_id, category, channel_id),
+        )
+        self.conn.commit()
+
+    def disable_log_category(self, guild_id: int, category: str) -> None:
+        self.conn.execute(
+            "DELETE FROM log_channels WHERE guild_id = ? AND category = ?", (guild_id, category)
+        )
+        self.conn.commit()
+
+    def get_log_channel(self, guild_id: int, category: str) -> Optional[int]:
+        row = self.conn.execute(
+            "SELECT channel_id FROM log_channels WHERE guild_id = ? AND category = ?", (guild_id, category)
+        ).fetchone()
+        return row[0] if row else None
+
+    def get_all_log_channels(self, guild_id: int) -> dict:
+        cur = self.conn.execute(
+            "SELECT category, channel_id FROM log_channels WHERE guild_id = ?", (guild_id,)
+        )
+        return dict(cur.fetchall())
+
+    def add_ignored_log_channel(self, guild_id: int, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO log_ignored_channels (guild_id, channel_id) VALUES (?, ?)",
+            (guild_id, channel_id),
+        )
+        self.conn.commit()
+
+    def remove_ignored_log_channel(self, guild_id: int, channel_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM log_ignored_channels WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def is_log_channel_ignored(self, guild_id: int, channel_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM log_ignored_channels WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id)
+        ).fetchone()
+        return row is not None
+
+    def list_ignored_log_channels(self, guild_id: int) -> list[int]:
+        cur = self.conn.execute(
+            "SELECT channel_id FROM log_ignored_channels WHERE guild_id = ?", (guild_id,)
+        )
+        return [row[0] for row in cur.fetchall()]
 
     # ---- bot guild tracking ----
     # The bot writes its actual current guild list here (on_ready, and on

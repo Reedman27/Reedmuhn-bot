@@ -24,6 +24,7 @@ INITIAL_COGS = [
     "cogs.tempvoice",
     "cogs.automod",
     "cogs.reactionroles",
+    "cogs.logging_cog",
 ]
 
 FEATURES = FeatureStore([
@@ -128,6 +129,8 @@ class MyBot(commands.Bot):
         if isinstance(error, discord.app_commands.MissingPermissions):
             perms = ", ".join(p.replace("_", " ") for p in error.missing_permissions)
             content = f"You need the **{perms}** permission to do that."
+        elif isinstance(error, discord.app_commands.CommandOnCooldown):
+            content = f"Slow down - try that again in {error.retry_after:.1f}s."
         else:
             logger.exception(
                 "command '%s' failed", interaction.command.name if interaction.command else "?", exc_info=error

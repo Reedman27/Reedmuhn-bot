@@ -550,11 +550,13 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
             "unban_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
+    cfg = db.get_guild_config(guild_id)
     return render(
         request, "moderation.html", guild_id, "moderation",
         tab=tab, looked_up_user_id=user_id,
         looked_up_user_name=(member_label(guild_id, user_id) if user_id else None),
         warns=warns, members=db.list_bot_members(guild_id), tempbans=tempbans,
+        muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
     )
 
 
@@ -564,6 +566,37 @@ async def clear_warns_route(request: Request, guild_id: int, user_id: int = Form
         return r
     db.clear_warns(guild_id, user_id)
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/muted-role")
+async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("auto")):
+    if (r := require_auth(request)):
+        return r
+    if role_id == "auto":
+        db.set_muted_role(guild_id, None)
+    elif validate_role(guild_id, int(role_id)):
+        db.set_muted_role(guild_id, int(role_id))
+    return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
+
+@app.post("/guild/{guild_id}/moderation/muted-role-settings")
+async def save_muted_role_settings(
+    request: Request, guild_id: int,
+    messages: Optional[str] = Form(None), reactions: Optional[str] = Form(None),
+    threads: Optional[str] = Form(None), connect: Optional[str] = Form(None),
+    speak: Optional[str] = Form(None), stream: Optional[str] = Form(None),
+):
+    if (r := require_auth(request)):
+        return r
+    db.set_muted_settings(
+        guild_id,
+        deny_send_messages=messages == "on",
+        deny_reactions=reactions == "on",
+        deny_threads=threads == "on",
+        deny_connect=connect == "on",
+        deny_speak=speak == "on",
+        deny_stream=stream == "on",
+    )
+    return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
 @app.post("/guild/{guild_id}/moderation/tempbans/unban")
@@ -577,6 +610,70 @@ async def unban_tempban_now(request: Request, guild_id: int, event_id: int = For
         parsed = json.loads(data)
         db.insert_scheduled_event("unban", guild_id, int(time.time()), {"user_id": parsed["user_id"]})
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=tempbans", status_code=303)
+
+
+# ---- logging ----
+
+LOG_CATEGORIES = [
+    ("messages", "Messages", "Edits, deletes, and bulk deletes"),
+    ("members", "Members", "Joins, leaves, nicknames, and role changes"),
+    ("moderation", "Moderation", "Bans, unbans, kicks, and timeouts"),
+    ("server", "Server", "Channel, role, and server changes"),
+    ("voice", "Voice", "Voice joins, leaves, and moves"),
+]
+
+
+@app.get("/guild/{guild_id}/logging")
+async def logging_page(request: Request, guild_id: int):
+    if (r := require_auth(request)):
+        return r
+    configured = db.get_all_log_channels(guild_id)
+    ignored_ids = db.list_ignored_log_channels(guild_id)
+    return render(
+        request, "logging.html", guild_id, "logging",
+        categories=LOG_CATEGORIES,
+        configured=configured,
+        ignored_channels=[(cid, channel_label(guild_id, cid)) for cid in ignored_ids],
+        channel_choices=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+    )
+
+
+@app.post("/guild/{guild_id}/logging/channel")
+async def save_logging_channel(request: Request, guild_id: int, category: str = Form(...), channel_id: str = Form(...)):
+    if (r := require_auth(request)):
+        return r
+    allowed = {key for key, _name, _desc in LOG_CATEGORIES}
+    if category not in allowed:
+        return RedirectResponse(f"/guild/{guild_id}/logging?error=category", status_code=303)
+    if channel_id == "off":
+        db.disable_log_category(guild_id, category)
+    else:
+        try:
+            cid = int(channel_id)
+        except ValueError:
+            return RedirectResponse(f"/guild/{guild_id}/logging?error=channel", status_code=303)
+        if not validate_channel(guild_id, cid, ("text", "news")):
+            return RedirectResponse(f"/guild/{guild_id}/logging?error=channel", status_code=303)
+        db.set_log_channel(guild_id, category, cid)
+    return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
+
+
+@app.post("/guild/{guild_id}/logging/ignore/add")
+async def add_logging_ignore(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := require_auth(request)):
+        return r
+    if not validate_channel(guild_id, channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/logging?error=channel", status_code=303)
+    db.add_ignored_log_channel(guild_id, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
+
+
+@app.post("/guild/{guild_id}/logging/ignore/delete")
+async def delete_logging_ignore(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := require_auth(request)):
+        return r
+    db.remove_ignored_log_channel(guild_id, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
 
 
 # ---- youtube ----
