@@ -45,6 +45,7 @@ INITIAL_COGS = [
     "cogs.automod",
     "cogs.reactionroles",
     "cogs.logging_cog",
+    "cogs.dashboardtalk",
 ]
 
 FEATURES = FeatureStore([

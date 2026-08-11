@@ -580,9 +580,14 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
     if user_id:
         rows = db.list_warns(guild_id, user_id)
         warns = [
-            (warn_id, moderator_id, member_label(guild_id, moderator_id), reason, datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"))
+            (warn_id, moderator_id, ("Dashboard" if moderator_id == 0 else member_label(guild_id, moderator_id)), reason, datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"))
             for warn_id, moderator_id, reason, created_at in rows
         ]
+
+    warned_users = [
+        (uid, member_label(guild_id, uid), count, datetime.fromtimestamp(last_at).strftime("%Y-%m-%d %H:%M"))
+        for uid, count, last_at in db.list_warned_users(guild_id)
+    ]
 
     tempbans = []
     for event_id, _, run_at, data in db.list_scheduled_events(guild_id, "unban"):
@@ -599,7 +604,7 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
         request, "moderation.html", guild_id, "moderation",
         tab=tab, looked_up_user_id=user_id,
         looked_up_user_name=(member_label(guild_id, user_id) if user_id else None),
-        warns=warns, members=db.list_bot_members(guild_id), tempbans=tempbans,
+        warns=warns, warned_users=warned_users, members=db.list_bot_members(guild_id), tempbans=tempbans,
         muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
     )
 
@@ -609,6 +614,26 @@ async def clear_warns_route(request: Request, guild_id: int, user_id: int = Form
     if (r := await require_auth(request)):
         return r
     db.clear_warns(guild_id, user_id)
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/add-warn")
+async def add_warn_route(request: Request, guild_id: int, user_id: int = Form(...), reason: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    reason = reason.strip() or "No reason given"
+    # moderator_id 0 is a sentinel meaning "issued from the dashboard" -
+    # there's no per-admin dashboard login to attribute it to a specific
+    # Discord user, unlike /warn issued in Discord itself.
+    db.add_warn(guild_id, user_id, 0, reason, int(time.time()))
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/remove-warn")
+async def remove_warn_route(request: Request, guild_id: int, warn_id: int = Form(...), user_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_warn(guild_id, warn_id)
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
 
 
@@ -980,3 +1005,30 @@ async def remove_voice_hub_route(request: Request, guild_id: int, channel_id: in
         return r
     db.remove_voice_hub(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)
+
+
+# ---- talk as the bot ----
+# Whoever's logged into the dashboard can compose a message and have the
+# bot send it into a text channel. Anyone with the WEBUI_PASSWORD can use
+# this - same trust level as everything else behind require_auth - since
+# there's no per-admin dashboard login, just a shared password.
+
+@app.get("/guild/{guild_id}/talk")
+async def talk_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    return render(
+        request, "talk.html", guild_id, "talk",
+        text_channels=db.list_bot_channels(guild_id, "text"),
+    )
+
+
+@app.post("/guild/{guild_id}/talk")
+async def send_talk_message(request: Request, guild_id: int, channel_id: int = Form(...), content: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    content = content.strip()
+    if not content or not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=1", status_code=303)
+    db.queue_outbound_message(guild_id, channel_id, content)
+    return RedirectResponse(f"/guild/{guild_id}/talk?sent=1", status_code=303)

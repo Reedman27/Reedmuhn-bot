@@ -257,6 +257,16 @@ class Db:
                 created_at INTEGER NOT NULL
             )"""
         )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS outbound_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                sent INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )"""
+        )
         # Durable institutional memory. These tables are intentionally separate
         # from transient/cache tables so code updates never need to recreate or
         # overwrite the bot's history.
@@ -648,6 +658,18 @@ class Db:
             (guild_id, user_id),
         )
         return cur.fetchone()[0]
+
+    def list_warned_users(self, guild_id: int) -> list[tuple[int, int, int]]:
+        """Every user in this guild with at least one warning, with their
+        warning count and the timestamp of their most recent one - used for
+        the dashboard's "who has warnings" overview so an admin doesn't have
+        to already know who to look up."""
+        cur = self.conn.execute(
+            """SELECT user_id, COUNT(*), MAX(created_at) FROM warns
+               WHERE guild_id = ? GROUP BY user_id ORDER BY MAX(created_at) DESC""",
+            (guild_id,),
+        )
+        return cur.fetchall()
 
     def remove_warn(self, guild_id: int, warn_id: int) -> bool:
         cur = self.conn.execute(
@@ -1249,6 +1271,28 @@ class Db:
             return None
         row = self.conn.execute("SELECT name FROM bot_channels WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id)).fetchone()
         return row[0] if row else None
+
+    # ---- dashboard "talk as the bot" outbound message queue ----
+    # The web dashboard and the Discord bot run as separate processes, so
+    # the dashboard can't call channel.send() directly - it queues a row
+    # here instead, and the bot's polling loop (see cogs/dashboardtalk.py)
+    # picks it up, sends it, and marks it sent.
+
+    def queue_outbound_message(self, guild_id: int, channel_id: int, content: str) -> None:
+        self.conn.execute(
+            "INSERT INTO outbound_messages (guild_id, channel_id, content, sent, created_at) VALUES (?, ?, ?, 0, ?)",
+            (guild_id, channel_id, content, int(time.time())),
+        )
+        self.conn.commit()
+
+    def list_unsent_outbound_messages(self) -> list[tuple[int, int, int, str]]:
+        return self.conn.execute(
+            "SELECT id, guild_id, channel_id, content FROM outbound_messages WHERE sent = 0 ORDER BY id"
+        ).fetchall()
+
+    def mark_outbound_message_sent(self, message_id: int) -> None:
+        self.conn.execute("UPDATE outbound_messages SET sent = 1 WHERE id = ?", (message_id,))
+        self.conn.commit()
 
     def sync_guild_roles(self, guild_id: int, roles: list) -> None:
         self.conn.execute("DELETE FROM bot_roles WHERE guild_id = ?", (guild_id,))
