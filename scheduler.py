@@ -8,9 +8,11 @@ import json
 import logging
 import time
 
+import aiohttp
 import discord
 
 from cogs.reactionroles import resolve_emoji_key
+from cogs.youtube import resolve_youtube_channel
 
 logger = logging.getLogger("scheduler")
 
@@ -75,6 +77,8 @@ async def _process_event(bot: discord.Client, db, event_name: str, guild_id: int
         await _handle_unmute_role(bot, guild_id, data)
     elif event_name == "add_reaction_role":
         await _handle_add_reaction_role(bot, db, guild_id, data)
+    elif event_name == "add_youtube_watch":
+        await _handle_add_youtube_watch(bot, db, guild_id, data)
     else:
         logger.warning("unknown scheduled event kind: %s", event_name)
 
@@ -154,3 +158,30 @@ async def _handle_add_reaction_role(bot: discord.Client, db, guild_id: int, data
         return
 
     db.add_reaction_role(guild_id, message.id, channel.id, emoji_key, role.id)
+
+
+async def _handle_add_youtube_watch(bot: discord.Client, db, guild_id: int, data: dict) -> None:
+    """Fulfills a "watch this channel" request queued from the web
+    dashboard. Resolving a pasted URL/handle/ID into the real YouTube
+    channel ID (and its display name) requires an HTTP fetch, and the
+    dashboard process doesn't keep a client session around for that - it
+    queues the raw input here, and the bot (which already polls YouTube on
+    a timer, so already owns a session for this) resolves and stores it on
+    its next scheduler tick.
+    """
+    cog = bot.get_cog("YouTube")
+    if cog is None:
+        logger.warning("dashboard youtube watch add: YouTube cog isn't loaded")
+        return
+    if cog.session is None:
+        cog.session = aiohttp.ClientSession()
+
+    resolved = await resolve_youtube_channel(cog.session, data["channel"])
+    if resolved is None:
+        logger.warning("dashboard youtube watch add: couldn't resolve %r in guild %s", data["channel"], guild_id)
+        return
+    channel_id, channel_name = resolved
+
+    db.add_youtube_watch(guild_id, channel_id, data["announce_channel_id"])
+    if channel_name:
+        db.set_youtube_channel_name(guild_id, channel_id, channel_name)

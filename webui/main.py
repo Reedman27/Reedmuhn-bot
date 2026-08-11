@@ -12,6 +12,7 @@ on every visit.
 """
 import json
 import os
+import re
 import secrets
 import time
 from datetime import datetime
@@ -127,6 +128,26 @@ async def require_auth(request: Request):
 
 def validate_channel(guild_id: int, channel_id: int, allowed_types: tuple[str, ...]) -> bool:
     return any(cid == channel_id and ctype in allowed_types for cid, _name, ctype, _pos in db.list_bot_channels(guild_id))
+
+
+MESSAGE_LINK_RE = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
+
+
+def parse_message_reference(raw: str) -> tuple[Optional[int], Optional[int]]:
+    """Same parsing the bot's reaction-role cog does - duplicated here since
+    the dashboard is a separate process (see the note at the top of
+    webui/db.py about this file being a deliberate copy, not an import).
+    Accepts a pasted message link (Copy Message Link - no Developer Mode
+    needed) or a bare message ID. Returns (channel_id, message_id);
+    channel_id is None for a bare ID."""
+    raw = raw.strip()
+    match = MESSAGE_LINK_RE.search(raw)
+    if match:
+        _guild_id, channel_id, message_id = match.groups()
+        return int(channel_id), int(message_id)
+    if raw.isdigit():
+        return None, int(raw)
+    return None, None
 
 
 def validate_role(guild_id: int, role_id: int) -> bool:
@@ -705,21 +726,38 @@ async def delete_logging_ignore(request: Request, guild_id: int, channel_id: int
 async def youtube_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
-    return render(request, "youtube.html", guild_id, "youtube", watches=[(yt_id, channel_label(guild_id, channel_id), last) for yt_id, channel_id, last in db.list_youtube_watches(guild_id)],
+    watches = [
+        {
+            "yt_channel_id": yt_id,
+            "display": channel_name if channel_name else yt_id,
+            "announce_name": channel_label(guild_id, announce_channel_id),
+        }
+        for yt_id, announce_channel_id, _last_video_id, channel_name, _role_id, _mode in db.list_youtube_watches(guild_id)
+    ]
+    return render(request, "youtube.html", guild_id, "youtube", watches=watches,
                   text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
 
 
 @app.post("/guild/{guild_id}/youtube/add")
-async def add_youtube_watch(request: Request, guild_id: int, yt_channel_id: str = Form(...), announce_channel_id: int = Form(...)):
+async def add_youtube_watch(request: Request, guild_id: int, channel: str = Form(...), announce_channel_id: int = Form(...)):
     if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, announce_channel_id, ("text", "news")):
         return RedirectResponse(f"/guild/{guild_id}/youtube?error=channel", status_code=303)
-    yt_id = yt_channel_id.strip()
-    if not yt_id.startswith("UC") or len(yt_id) < 10:
+    channel = channel.strip()
+    if not channel:
         return RedirectResponse(f"/guild/{guild_id}/youtube?error=youtube", status_code=303)
-    db.add_youtube_watch(guild_id, yt_id, announce_channel_id)
-    return RedirectResponse(f"/guild/{guild_id}/youtube", status_code=303)
+
+    # Turning a pasted URL/handle into a real channel ID needs an HTTP
+    # fetch, and this process doesn't keep a client session around for that
+    # - it queues the raw input instead, and the bot (which already polls
+    # YouTube on a timer) resolves and stores it on its next scheduler
+    # tick. See scheduler._handle_add_youtube_watch.
+    db.insert_scheduled_event(
+        "add_youtube_watch", guild_id, int(time.time()),
+        {"channel": channel, "announce_channel_id": announce_channel_id},
+    )
+    return RedirectResponse(f"/guild/{guild_id}/youtube?queued=1", status_code=303)
 
 
 @app.post("/guild/{guild_id}/youtube/delete")
@@ -869,19 +907,22 @@ async def reactionroles_page(request: Request, guild_id: int):
 
 @app.post("/guild/{guild_id}/reactionroles/add")
 async def queue_add_reaction_role(
-    request: Request, guild_id: int, channel_id: int = Form(...), message_id: str = Form(...),
-    emoji: str = Form(...), role_id: int = Form(...),
+    request: Request, guild_id: int, message: str = Form(...),
+    emoji: str = Form(...), role_id: int = Form(...), channel_id: Optional[int] = Form(None),
 ):
     if (r := await require_auth(request)):
         return r
-    if not validate_channel(guild_id, channel_id, ("text", "news")):
-        return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=channel", status_code=303)
     if not validate_role(guild_id, role_id):
         return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=role", status_code=303)
-    try:
-        parsed_message_id = int(message_id.strip())
-    except ValueError:
+
+    link_channel_id, parsed_message_id = parse_message_reference(message)
+    if parsed_message_id is None:
         return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=message", status_code=303)
+
+    target_channel_id = link_channel_id if link_channel_id is not None else channel_id
+    if target_channel_id is None or not validate_channel(guild_id, target_channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=channel", status_code=303)
+
     emoji = emoji.strip()
     if not emoji:
         return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=emoji", status_code=303)
@@ -895,7 +936,7 @@ async def queue_add_reaction_role(
     # instead of a future one. See scheduler._handle_add_reaction_role.
     db.insert_scheduled_event(
         "add_reaction_role", guild_id, int(time.time()),
-        {"channel_id": channel_id, "message_id": parsed_message_id, "emoji": emoji, "role_id": role_id},
+        {"channel_id": target_channel_id, "message_id": parsed_message_id, "emoji": emoji, "role_id": role_id},
     )
     return RedirectResponse(f"/guild/{guild_id}/reactionroles?queued=1", status_code=303)
 
@@ -914,10 +955,10 @@ async def delete_reaction_role(request: Request, guild_id: int, message_id: int 
 async def tempvoice_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
+    hub_ids = db.list_voice_hubs(guild_id)
     return render(
         request, "tempvoice.html", guild_id, "tempvoice",
-        hub_channel_id=db.get_voice_hub(guild_id),
-        hub_channel_name=channel_label(guild_id, db.get_voice_hub(guild_id)),
+        hubs=[(cid, channel_label(guild_id, cid)) for cid in hub_ids],
         active_channels=[(cid, member_label(guild_id, owner_id), channel_label(guild_id, cid)) for cid, owner_id in db.list_temp_voice_channels(guild_id)],
         voice_channels=db.list_bot_channels(guild_id, "voice"),
     )
@@ -929,13 +970,13 @@ async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form
         return r
     if not validate_channel(guild_id, channel_id, ("voice",)):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=channel", status_code=303)
-    db.set_voice_hub(guild_id, channel_id)
+    db.add_voice_hub(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)
 
 
 @app.post("/guild/{guild_id}/tempvoice/remove")
-async def remove_voice_hub_route(request: Request, guild_id: int):
+async def remove_voice_hub_route(request: Request, guild_id: int, channel_id: int = Form(...)):
     if (r := await require_auth(request)):
         return r
-    db.remove_voice_hub(guild_id)
+    db.remove_voice_hub(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)

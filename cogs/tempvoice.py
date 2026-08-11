@@ -1,10 +1,11 @@
-"""Temp voice channels: an admin designates a "hub" voice channel. Joining
-the hub creates a fresh voice channel for that member (with elevated
-permissions on it - rename, move/mute/deafen others in their own channel),
-moves them into it, and deletes it automatically once everyone leaves.
+"""Temp voice channels: an admin designates one or more "hub" voice
+channels. Joining any hub creates a fresh voice channel for that member
+(with elevated permissions on it - rename, move/mute/deafen others in their
+own channel), moves them into it, and deletes it automatically once
+everyone leaves.
 
 Implemented entirely via on_voice_state_update - no slash command needed to
-use it as a member, just join the hub channel.
+use it as a member, just join a hub channel.
 """
 import logging
 
@@ -23,35 +24,54 @@ class TempVoice(commands.Cog):
         self._cleaned_up = False
 
     @app_commands.command(name="setvoicehub", description="Joining this voice channel gives you your own temporary channel")
-    @app_commands.describe(channel="The voice channel that acts as the 'create a channel' hub")
+    @app_commands.describe(channel="A voice channel to add as a 'create a channel' hub")
     @manager_or_permission("manage_channels")
     async def setvoicehub(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
-        self.bot.db.set_voice_hub(interaction.guild.id, channel.id)
-        await interaction.response.send_message(
-            f"Set - joining {channel.mention} now creates a personal voice channel for whoever joins it."
-        )
+        added = self.bot.db.add_voice_hub(interaction.guild.id, channel.id)
+        if added:
+            await interaction.response.send_message(
+                f"Added - joining {channel.mention} now creates a personal voice channel for whoever joins it."
+            )
+        else:
+            await interaction.response.send_message(f"{channel.mention} is already a voice hub.")
 
-    @app_commands.command(name="removevoicehub", description="Turn off temp voice channel creation")
+    @app_commands.command(name="removevoicehub", description="Turn off temp voice channel creation for a hub")
+    @app_commands.describe(channel="The hub voice channel to remove")
     @manager_or_permission("manage_channels")
-    async def removevoicehub(self, interaction: discord.Interaction):
+    async def removevoicehub(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
-        removed = self.bot.db.remove_voice_hub(interaction.guild.id)
-        await interaction.response.send_message("Removed." if removed else "No hub was set.")
+        removed = self.bot.db.remove_voice_hub(interaction.guild.id, channel.id)
+        await interaction.response.send_message("Removed." if removed else f"{channel.mention} wasn't a hub.")
+
+    @app_commands.command(name="listvoicehubs", description="List the voice hubs configured in this server")
+    @manager_or_permission("manage_channels")
+    async def listvoicehubs(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        hub_ids = self.bot.db.list_voice_hubs(interaction.guild.id)
+        if not hub_ids:
+            await interaction.response.send_message("No voice hubs are set.")
+            return
+        lines = []
+        for hub_id in hub_ids:
+            channel = interaction.guild.get_channel(hub_id)
+            lines.append(channel.mention if channel is not None else f"*(deleted channel {hub_id})*")
+        await interaction.response.send_message("Voice hubs:\n" + "\n".join(lines))
 
     @commands.Cog.listener()
     async def on_voice_state_update(
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ):
         guild_id = member.guild.id
-        hub_channel_id = self.bot.db.get_voice_hub(guild_id)
 
-        # Joined the hub channel -> create them a channel and move them in.
-        if hub_channel_id is not None and after.channel is not None and after.channel.id == hub_channel_id:
+        # Joined a hub channel -> create them a channel and move them in.
+        if after.channel is not None and self.bot.db.is_voice_hub(guild_id, after.channel.id):
             await self._create_temp_channel(member, after.channel)
 
         # Left a bot-created temp channel and it's now empty -> delete it.

@@ -4,11 +4,14 @@
 <h1>YouTube</h1>
 <section class="card">
     <h2>Watched channels</h2>
+    {% if request.query_params.get('queued') %}<p class="success">Queued - the bot will resolve and add that channel within about 30 seconds. Refresh this page shortly to see it listed.</p>{% endif %}
+    {% if request.query_params.get('error') == 'channel' %}<p class="error">Choose a valid announcement channel.</p>
+    {% elif request.query_params.get('error') %}<p class="error">Paste a YouTube channel URL, @handle, or channel ID.</p>{% endif %}
     {% if watches %}<table><thead><tr><th>YouTube channel</th><th>Announces in</th><th></th></tr></thead><tbody>
-    {% for yt_channel_id, announce_name, last_video_id in watches %}<tr><td><code>{{ yt_channel_id }}</code></td><td>{{ announce_name }}</td><td><form method="post" action="/guild/{{ guild_id }}/youtube/delete" class="inline"><input type="hidden" name="yt_channel_id" value="{{ yt_channel_id }}"><button type="submit" class="danger">Remove</button></form></td></tr>{% endfor %}
+    {% for w in watches %}<tr><td>{{ w.display }}</td><td>{{ w.announce_name }}</td><td><form method="post" action="/guild/{{ guild_id }}/youtube/delete" class="inline"><input type="hidden" name="yt_channel_id" value="{{ w.yt_channel_id }}"><button type="submit" class="danger">Remove</button></form></td></tr>{% endfor %}
     </tbody></table>{% else %}<p class="muted">No YouTube channels are being watched.</p>{% endif %}
     <form method="post" action="/guild/{{ guild_id }}/youtube/add" class="add-form">
-        <label for="yt_channel_id">YouTube channel ID (starts with UC…)</label><input type="text" id="yt_channel_id" name="yt_channel_id" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx" required>
+        <label for="channel">YouTube channel</label><input type="text" id="channel" name="channel" placeholder="Channel URL, @handle, or ID" required>
         <label for="announce_channel_id">Discord announcement channel</label><select id="announce_channel_id" name="announce_channel_id" required><option value="" disabled selected>Choose a channel…</option>{% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}">#{{ name }}</option>{% endfor %}</select>
         <button type="submit">Watch channel</button>
     </form>

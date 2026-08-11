@@ -124,10 +124,30 @@ class Db:
                 created_at INTEGER NOT NULL
             )"""
         )
+        # voice_hubs originally allowed only one hub per guild (guild_id was
+        # the primary key). Migrate anyone upgrading from that schema to the
+        # new one, which allows multiple hubs per guild, before the
+        # CREATE TABLE IF NOT EXISTS below (which is a no-op on an existing
+        # table, schema and all).
+        pk_cols = [row[1] for row in self.conn.execute("PRAGMA table_info(voice_hubs)") if row[5] > 0]
+        if pk_cols == ["guild_id"]:
+            self.conn.execute("ALTER TABLE voice_hubs RENAME TO voice_hubs_old")
+            self.conn.execute(
+                """CREATE TABLE voice_hubs (
+                    guild_id INTEGER NOT NULL,
+                    hub_channel_id INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, hub_channel_id)
+                )"""
+            )
+            self.conn.execute(
+                "INSERT INTO voice_hubs (guild_id, hub_channel_id) SELECT guild_id, hub_channel_id FROM voice_hubs_old"
+            )
+            self.conn.execute("DROP TABLE voice_hubs_old")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS voice_hubs (
-                guild_id INTEGER PRIMARY KEY,
-                hub_channel_id INTEGER NOT NULL
+                guild_id INTEGER NOT NULL,
+                hub_channel_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, hub_channel_id)
             )"""
         )
         self.conn.execute(
@@ -982,21 +1002,31 @@ class Db:
 
     # ---- temp voice channels ----
 
-    def set_voice_hub(self, guild_id: int, hub_channel_id: int) -> None:
-        self.conn.execute(
-            "INSERT OR REPLACE INTO voice_hubs (guild_id, hub_channel_id) VALUES (?, ?)",
+    def add_voice_hub(self, guild_id: int, hub_channel_id: int) -> bool:
+        """Returns False if this channel was already a hub (no-op)."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO voice_hubs (guild_id, hub_channel_id) VALUES (?, ?)",
             (guild_id, hub_channel_id),
         )
         self.conn.commit()
+        return cur.rowcount > 0
 
-    def get_voice_hub(self, guild_id: int) -> Optional[int]:
+    def is_voice_hub(self, guild_id: int, channel_id: int) -> bool:
         row = self.conn.execute(
-            "SELECT hub_channel_id FROM voice_hubs WHERE guild_id = ?", (guild_id,)
+            "SELECT 1 FROM voice_hubs WHERE guild_id = ? AND hub_channel_id = ?", (guild_id, channel_id)
         ).fetchone()
-        return row[0] if row else None
+        return row is not None
 
-    def remove_voice_hub(self, guild_id: int) -> bool:
-        cur = self.conn.execute("DELETE FROM voice_hubs WHERE guild_id = ?", (guild_id,))
+    def list_voice_hubs(self, guild_id: int) -> list[int]:
+        cur = self.conn.execute(
+            "SELECT hub_channel_id FROM voice_hubs WHERE guild_id = ?", (guild_id,)
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def remove_voice_hub(self, guild_id: int, hub_channel_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM voice_hubs WHERE guild_id = ? AND hub_channel_id = ?", (guild_id, hub_channel_id)
+        )
         self.conn.commit()
         return cur.rowcount > 0
 

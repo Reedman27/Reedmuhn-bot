@@ -7,12 +7,33 @@ reason discord.py bots generally prefer the raw variants for anything
 reaction-role-like.
 """
 import logging
+import re
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 logger = logging.getLogger("reactionroles")
+
+MESSAGE_LINK_RE = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
+
+
+def parse_message_reference(raw: str) -> tuple[int | None, int | None]:
+    """Accepts either a full Discord message link - from right-click ->
+    Copy Message Link, which unlike Copy Message ID doesn't require
+    Developer Mode - or a bare message ID for anyone who already has one.
+    Returns (channel_id, message_id); channel_id is None when only a bare
+    ID was given, since an ID alone doesn't carry a channel with it.
+    Returns (None, None) if raw is neither.
+    """
+    raw = raw.strip()
+    match = MESSAGE_LINK_RE.search(raw)
+    if match:
+        _guild_id, channel_id, message_id = match.groups()
+        return int(channel_id), int(message_id)
+    if raw.isdigit():
+        return None, int(raw)
+    return None, None
 
 
 def resolve_emoji_key(raw: str) -> str | None:
@@ -54,10 +75,9 @@ class ReactionRoles(commands.Cog):
             return await target_channel.fetch_message(message_id)
         except discord.NotFound:
             await interaction.response.send_message(
-                f"Couldn't find a message with ID `{message_id}` in {target_channel.mention}. "
-                "Right-click the message and Copy Message ID (enable Developer Mode in Discord "
-                "settings if you don't see that option), and pass the channel it's in if it's "
-                "not this one.",
+                f"Couldn't find that message in {target_channel.mention}. Make sure you pasted the "
+                "right link (right-click the message -> Copy Message Link) or that the channel "
+                "argument matches where it actually is.",
                 ephemeral=True,
             )
             return None
@@ -70,16 +90,16 @@ class ReactionRoles(commands.Cog):
 
     @app_commands.command(name="addreactionrole", description="React to a message with an emoji to give/remove a role")
     @app_commands.describe(
-        message_id="ID of the message to attach the reaction role to (right-click the message -> Copy Message ID)",
+        message="Paste the message link (right-click the message -> Copy Message Link), or its ID",
         emoji="The emoji members will react with",
         role="Role to give when someone reacts, and remove when they un-react",
-        channel="Channel the message is in (defaults to this channel)",
+        channel="Channel the message is in - only needed if you pasted an ID instead of a link (defaults to this channel)",
     )
     @manager_or_permission("manage_roles")
     async def addreactionrole(
         self,
         interaction: discord.Interaction,
-        message_id: str,
+        message: str,
         emoji: str,
         role: discord.Role,
         channel: discord.TextChannel | None = None,
@@ -88,10 +108,13 @@ class ReactionRoles(commands.Cog):
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
 
-        try:
-            parsed_message_id = int(message_id.strip())
-        except ValueError:
-            await interaction.response.send_message("That doesn't look like a valid message ID.", ephemeral=True)
+        link_channel_id, parsed_message_id = parse_message_reference(message)
+        if parsed_message_id is None:
+            await interaction.response.send_message(
+                "That doesn't look like a message link or ID. Right-click the message and choose "
+                "Copy Message Link.",
+                ephemeral=True,
+            )
             return
 
         # Giving out a role the bot can't actually grant would silently do
@@ -110,8 +133,20 @@ class ReactionRoles(commands.Cog):
             )
             return
 
-        message = await self._fetch_target_message(interaction, channel, parsed_message_id)
-        if message is None:
+        target_channel: discord.TextChannel | discord.Thread | None
+        if link_channel_id is not None:
+            resolved = interaction.guild.get_channel_or_thread(link_channel_id)
+            if resolved is None:
+                await interaction.response.send_message(
+                    "I can't find the channel that message link points to.", ephemeral=True
+                )
+                return
+            target_channel = resolved
+        else:
+            target_channel = channel
+
+        message_obj = await self._fetch_target_message(interaction, target_channel, parsed_message_id)
+        if message_obj is None:
             return  # _fetch_target_message already responded
 
         emoji_key = resolve_emoji_key(emoji)
@@ -120,7 +155,7 @@ class ReactionRoles(commands.Cog):
             return
 
         try:
-            await message.add_reaction(emoji_key)
+            await message_obj.add_reaction(emoji_key)
         except discord.HTTPException:
             await interaction.response.send_message(
                 "I couldn't react with that emoji - if it's a custom emoji, make sure it's from "
@@ -129,26 +164,25 @@ class ReactionRoles(commands.Cog):
             )
             return
 
-        self.bot.db.add_reaction_role(interaction.guild.id, message.id, message.channel.id, emoji_key, role.id)
+        self.bot.db.add_reaction_role(interaction.guild.id, message_obj.id, message_obj.channel.id, emoji_key, role.id)
         await interaction.response.send_message(
-            f"Done - reacting {emoji_key} on [that message]({message.jump_url}) now gives {role.mention}."
+            f"Done - reacting {emoji_key} on [that message]({message_obj.jump_url}) now gives {role.mention}."
         )
 
     @app_commands.command(name="removereactionrole", description="Remove a reaction role binding from a message")
     @app_commands.describe(
-        message_id="ID of the message the reaction role is on",
+        message="The message link or ID the reaction role is on",
         emoji="The emoji to unbind",
     )
     @manager_or_permission("manage_roles")
-    async def removereactionrole(self, interaction: discord.Interaction, message_id: str, emoji: str):
+    async def removereactionrole(self, interaction: discord.Interaction, message: str, emoji: str):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
 
-        try:
-            parsed_message_id = int(message_id.strip())
-        except ValueError:
-            await interaction.response.send_message("That doesn't look like a valid message ID.", ephemeral=True)
+        _link_channel_id, parsed_message_id = parse_message_reference(message)
+        if parsed_message_id is None:
+            await interaction.response.send_message("That doesn't look like a message link or ID.", ephemeral=True)
             return
 
         emoji_key = resolve_emoji_key(emoji)
