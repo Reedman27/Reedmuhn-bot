@@ -11,6 +11,7 @@ just "member left"), gracefully falling back to a plain event if the bot
 lacks View Audit Log permission - never crashes for missing permissions.
 """
 import datetime
+import io
 import logging
 
 import discord
@@ -130,7 +131,9 @@ class LoggingCog(commands.Cog, name="Logging"):
         and gets resolved through the audit log already."""
         await self._log(guild, category, embed)
 
-    async def _log(self, guild: discord.Guild, category: str, embed: discord.Embed) -> None:
+    async def _log(
+        self, guild: discord.Guild, category: str, embed: discord.Embed, file: discord.File | None = None
+    ) -> None:
         channel_id = self.bot.db.get_log_channel(guild.id, category)
         if channel_id is None:
             return
@@ -138,7 +141,10 @@ class LoggingCog(commands.Cog, name="Logging"):
         if channel is None:
             return  # channel was deleted - admin needs to reconfigure, nothing to do here
         try:
-            await channel.send(embed=embed)
+            if file is not None:
+                await channel.send(embed=embed, file=file)
+            else:
+                await channel.send(embed=embed)
         except discord.Forbidden:
             logger.warning("missing permission to send logs in guild %s channel %s", guild.id, channel_id)
         except discord.HTTPException:
@@ -201,25 +207,65 @@ class LoggingCog(commands.Cog, name="Logging"):
         embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
         embed.add_field(name="Content", value=_truncate(message.content), inline=False)
         if message.attachments:
-            names = ", ".join(a.filename for a in message.attachments)
-            embed.add_field(name="Attachments", value=_truncate(names, 512), inline=False)
+            # link only, not a re-uploaded copy - just enough to see what it was
+            links = "\n".join(f"{a.filename}: {a.url}" for a in message.attachments)
+            embed.add_field(name="Attachments", value=_truncate(links, 1024), inline=False)
         embed.set_footer(text=f"User ID: {message.author.id}")
         await self._log(message.guild, "messages", embed)
 
     @commands.Cog.listener()
     async def on_bulk_message_delete(self, messages: list[discord.Message]):
+        """Purges are noisy - dumping every message inline would blow past
+        embed limits fast. Instead we render a transcript: raw content plus
+        attachment URLs (a pasted gif/tenor link is already part of
+        message.content, so it survives here as plain text - not a re-hosted
+        embed, just the link) for every message, attach the full transcript
+        as a .txt so nothing purged is actually lost, and show only the most
+        recent lines inline for a quick skim.
+        """
         if not messages or messages[0].guild is None:
             return
         guild = messages[0].guild
         channel = messages[0].channel
         if self.bot.db.is_log_channel_ignored(guild.id, channel.id):
             return
+
+        # oldest first - matches the order the messages were actually posted in
+        ordered = sorted(messages, key=lambda m: m.created_at)
+
+        lines = []
+        for m in ordered:
+            content = m.content.strip() if m.content else ""
+            if m.attachments:
+                urls = " ".join(a.url for a in m.attachments)
+                content = f"{content} {urls}".strip() if content else urls
+            if not content:
+                content = "*(no text content)*"
+            lines.append(f"[{m.author}]: {content}")
+
+        full_transcript = "\n".join(lines)
+
+        # keep the inline preview inside embed description limits; trim from
+        # the front until what's left fits, then note how much is showing
+        preview_lines = lines[-40:]
+        preview = "\n".join(preview_lines)
+        while len(preview) > 3500 and len(preview_lines) > 1:
+            preview_lines.pop(0)
+            preview = "\n".join(preview_lines)
+
+        description = f"**{len(messages)} messages purged in {channel.mention}**\n{preview}"
+        if len(preview_lines) < len(lines):
+            description += f"\n\n*{len(preview_lines)} latest shown*"
+
         embed = discord.Embed(
-            description=f"**{len(messages)} messages bulk deleted in {channel.mention}**",
+            description=_truncate(description, 4096),
             color=_COLOR_REMOVE,
             timestamp=discord.utils.utcnow(),
         )
-        await self._log(guild, "messages", embed)
+
+        filename = f"purged-{channel.id}-{int(discord.utils.utcnow().timestamp())}.txt"
+        file = discord.File(io.BytesIO(full_transcript.encode("utf-8")), filename=filename)
+        await self._log(guild, "messages", embed, file=file)
 
     # ---- members ----
 

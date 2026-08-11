@@ -7,7 +7,7 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 
 ## What it does
 
-- 🛡️ Moderation: tempbans, warnings, timeouts, kicks, purges, tempnick
+- 🛡️ Moderation: tempbans, warnings, timeouts, kicks, purges, tempnick, and a configurable mute role
 - 🚨 Automod: invite blocking, banned words, caps, mention spam, message spam, duplicate spam, and violation escalation
 - 👋 Welcome messages, optional generated welcome cards, and autoroles
 - 🎂 Birthday tracking and announcements
@@ -17,9 +17,9 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 - 📺 YouTube upload notifications through RSS (no YouTube API key)
 - 🎙️ Temporary voice channels
 - 🎭 Reaction roles - react to a message to get a role, un-react to remove it
-- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel
+- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel. Purges get a full transcript: every purged message's author and content, with any pasted links (gifs, images, etc.) kept as plain text rather than re-hosted embeds, plus a `.txt` attachment with the complete list so nothing is lost even on a large purge
 - 🎉 Fun commands
-- 🌐 Web dashboard for configuration
+- 🌐 Web dashboard for configuration, protected by a single shared password (no Discord OAuth or public callback required)
 
 The dashboard is designed for people who **do not want to copy Discord IDs everywhere**. Server, channel, role, and member choices are presented by their Discord names. IDs remain internal values used by Discord and the database.
 
@@ -40,7 +40,7 @@ The dashboard is designed for people who **do not want to copy Discord IDs every
    - **Message Content Intent**
 6. Save the changes.
 
-Reedmuhn requests both intents because member events power welcome/autorole and the message content intent is needed for custom commands and automod.
+Reedmuhn requests both intents because member events power welcome/autorole and the message content intent is needed for custom commands, automod, and message-log/purge transcripts.
 
 ## 2. Invite the bot
 
@@ -56,6 +56,7 @@ Give the bot the permissions required by the features you plan to use. A typical
 - View Channels
 - Send Messages
 - Embed Links
+- Attach Files (for purge transcripts)
 - Read Message History
 - Manage Messages
 - Manage Nicknames
@@ -91,10 +92,10 @@ DEV_GUILD_ID=
 ```
 
 ### `DISCORD_TOKEN`
-Your Discord bot token from the Developer Portal. Used by both the bot and the dashboard - the dashboard needs it to look up a logged-in user's roles/permissions in each server.
+Your Discord bot token from the Developer Portal. Used by both the bot and the dashboard - the dashboard needs it to look up server/channel/role/member names for the guilds the bot is in.
 
 ### `WEBUI_PASSWORD`
-The shared password used to access the self-hosted dashboard. This is deliberately local/self-hosted authentication: it works on LAN IP addresses and does not require a public domain, HTTPS, Discord OAuth application, or redirect URL.
+The single shared password used to access the self-hosted dashboard. This is deliberately local/self-hosted authentication: it works on LAN IP addresses and does not require a public domain, HTTPS, Discord OAuth application, or redirect URL. Anyone who knows this password can manage every server the bot is in through the dashboard, so keep it private and use a strong value.
 
 ### `DEV_GUILD_ID` (optional)
 Put a Discord server ID here while actively developing/testing slash commands. Commands are synced to that server immediately. Leave it blank for normal global command sync.
@@ -132,13 +133,11 @@ If you changed the port mapping in `docker-compose.yml`, use that port instead.
 ## 5. Open the dashboard
 
 1. Open the dashboard in your browser.
-2. Click **Continue with Discord** and approve the login.
-3. You'll only see servers where your Discord account is the owner, an Administrator, or holds a configured Bot Manager role - pick one by **name**.
+2. Enter the `WEBUI_PASSWORD` you set in `.env`.
+3. Pick a server from the list - every server the bot is currently in shows up, by name.
 4. Open a feature from the sidebar.
 5. Select channels, roles, or members from readable dropdowns.
 6. Save the setting.
-
-Want to let a non-Administrator (say, a moderator) use the dashboard too? An owner/Administrator adds their role under **Permissions → Bot Manager roles**. That grants dashboard access and elevated bot commands to anyone with that role - nothing else does.
 
 The bot and dashboard share the same SQLite database through `./data`, so dashboard changes are immediately available to the bot.
 
@@ -203,18 +202,42 @@ If a saved object was later deleted or a member left, the dashboard shows a clea
 
 ## Dashboard access control
 
-The dashboard uses the shared `WEBUI_PASSWORD` from `.env`. It is intended for self-hosted/LAN deployments, so there is no Discord OAuth flow, public domain requirement, or registered redirect URL.
+The dashboard uses the single shared `WEBUI_PASSWORD` from `.env` - there is no Discord OAuth flow, per-user login, public domain requirement, or registered redirect URL. Anyone who enters the correct password gets management access to every server the bot is currently in.
 
-Anyone who knows the dashboard password can access the bot dashboard and manage the servers the bot is in. Keep the password private and use a strong value.
+The login is protected by a short in-memory per-IP lockout after repeated failed attempts, and session cookies are signed with a persistent random secret stored beside the database, use `SameSite=Lax`, and expire after 12 hours.
 
-The login is protected by a short in-memory per-IP lockout after repeated failed attempts, and session cookies are signed with a persistent random secret stored beside the database.
+## Permissions and AutoMod exemptions
+
+- **Bot Manager roles** are configured per server in the WebUI under Permissions. Members holding one of those Discord roles can use the bot's Discord moderation/configuration **commands** even when they lack the command's normal Discord permission (e.g. `manage_messages`, `ban_members`). Discord **Administrators** always have this access too.
+- This is separate from *dashboard* access, which is controlled entirely by `WEBUI_PASSWORD` (see "Dashboard access control" above) - holding a Bot Manager role does not by itself grant dashboard login.
+- AutoMod **does not automatically exempt Manage Messages**. AutoMod exemptions are explicitly configured by role in the WebUI; Administrators are always exempt.
+
+## Muted role configuration
+
+The `/mute` command uses a configurable Discord role rather than Discord's native timeout. Server administrators can choose an existing role or let the bot create/reuse a `Muted` role. The WebUI and Discord both expose the same configuration.
+
+Discord commands:
+- `/muterole set <role>` — use an existing role.
+- `/muterole create` — create/reuse and configure the `Muted` role.
+- `/muterole settings` — choose whether the role blocks messages, reactions, threads, voice connection, speaking, and streaming.
+- `/mute <user> <duration> [reason]` — apply the configured role temporarily.
+- `/unmute <user>` — remove the configured role.
+
+The bot needs **Manage Roles**, and its highest role must be above the configured Muted role.
+
+## Durable bot memory and logs
+
+The bot keeps persistent state in the configured SQLite database (normally `data/bot.db`) and an append-only application log at `data/bot.log`. Do not delete or replace the `data/` directory when updating the bot code.
+
+The database includes durable member history for moderation/AutoMod events and durable bot events for important state changes such as counting activity, completed commands, YouTube delivery, and guild lifecycle events. The file logger also captures the bot's application logs and errors.
+
+There are no `/remember`, `/memories`, or `/forget` commands. Memory is automatic.
 
 ## Security notes
 
-- OAuth callback attempts (bad/replayed codes, state mismatches) are rate-limited after repeated failures.
-- Session cookies are signed with a persistent random secret stored beside the database.
-- Session cookies use `SameSite=Lax` and expire after 12 hours.
-- The dashboard verifies that a selected guild is actually tracked as a guild the bot is currently in, **and** that the logged-in Discord user is actually authorized for that specific guild, on every guild-scoped request.
+- Login attempts are rate-limited with a per-IP lockout after repeated failures.
+- Session cookies are signed with a persistent random secret stored beside the database, use `SameSite=Lax`, and expire after 12 hours.
+- The dashboard verifies that a selected guild is actually tracked as a guild the bot is currently in on every guild-scoped request.
 - Channel, role, and member selections are validated against the bot's cached objects before being written to the database.
 - Scheduled-event deletion is scoped to the selected guild.
 - Dashboard responses include common browser security headers.
@@ -224,7 +247,6 @@ The login is protected by a short in-memory per-IP lockout after repeated failed
 ### Deployment note
 
 The dashboard is designed for self-hosted use, including local/LAN addresses such as `http://192.168.x.x:8490`. It does not require a public domain or Discord OAuth. If you expose the dashboard to the public internet, protect it with HTTPS, a strong password, and appropriate network controls.
-
 
 ## Development
 
@@ -248,32 +270,3 @@ If you redistribute or modify Reedmuhn, keep the AGPL-3.0 license and the third-
 ## License
 
 AGPL-3.0. See [`LICENSE`](LICENSE).
-
-
-### Permissions and AutoMod exemptions
-
-- Discord **Administrators** always have bot-management access.
-- **Bot Manager roles** can be selected in the WebUI under Permissions. Members with one of those roles can use the bot's configuration and management commands even when they lack the command's normal Discord permission, **and** can log into the WebUI dashboard for that server (see "Dashboard access control" above) - the same role now controls both.
-- AutoMod **does not automatically exempt Manage Messages**. AutoMod exemptions are explicitly configured by role in the WebUI; Administrators are always exempt.
-- WebUI login itself is Discord OAuth2, not a shared password - see "Dashboard access control" above for exactly who can log in.
-
-
-## Muted role configuration
-
-The `/mute` command uses a configurable Discord role rather than Discord's native timeout. Server administrators can choose an existing role or let the bot create/reuse a `Muted` role. The WebUI and Discord both expose the same configuration.
-
-Discord commands:
-- `/muterole set <role>` — use an existing role.
-- `/muterole create` — create/reuse and configure the `Muted` role.
-- `/muterole settings` — choose whether the role blocks messages, reactions, threads, voice connection, speaking, and streaming.
-- `/mute <user> <duration> [reason]` — apply the configured role temporarily.
-- `/unmute <user>` — remove the configured role.
-
-The bot needs **Manage Roles**, and its highest role must be above the configured Muted role.
-## Durable bot memory and logs
-
-The bot keeps persistent state in the configured SQLite database (normally `data/bot.db`) and an append-only application log at `data/bot.log`. Do not delete or replace the `data/` directory when updating the bot code.
-
-The database includes durable member history for moderation/AutoMod events and durable bot events for important state changes such as counting activity, completed commands, YouTube delivery, and guild lifecycle events. The file logger also captures the bot's application logs and errors.
-
-There are no `/remember`, `/memories`, or `/forget` commands. Memory is automatic.

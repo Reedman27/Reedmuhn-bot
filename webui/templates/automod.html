@@ -77,17 +77,61 @@
 </section>
 
 <section class="card">
-    <h2>Escalation</h2>
+    <h2>Warning window</h2>
+    <p class="hint">Every removed message counts as one warning. This is how long (in seconds) recent warnings stick around before they age out and stop counting toward the escalation tiers below.</p>
     <form method="post" action="/guild/{{ guild_id }}/automod/escalation">
-        <label for="esc_threshold">Violations before an auto-mute</label>
-        <input type="number" id="esc_threshold" name="threshold" min="1" value="{{ cfg.violation_mute_threshold }}" required>
         <label for="esc_window">Within seconds</label>
-        <input type="number" id="esc_window" name="window_seconds" min="1" value="{{ cfg.violation_window_seconds }}" required>
-        <label for="esc_duration">Mute duration (seconds)</label>
-        <input type="number" id="esc_duration" name="mute_duration_seconds" min="1" value="{{ cfg.violation_mute_duration_seconds }}" required>
+        <input type="number" id="esc_window" name="window_seconds" min="1" max="604800" value="{{ cfg.violation_window_seconds }}" required>
         <button type="submit">Save</button>
     </form>
-</section> 
+</section>
+
+<section class="card">
+    <h2>Escalation tiers</h2>
+    <p class="hint">Pick what happens once a member racks up a given number of warnings within the window above. Add as many tiers as you like - e.g. 3 warnings → mute, 5 → kick, 8 → ban. Reaching a tier resets the member's warning count back to zero.</p>
+    {% if tiers %}
+    <table><thead><tr><th>Warnings</th><th>Punishment</th><th></th></tr></thead><tbody>
+    {% for tier in tiers %}
+      <tr>
+        <td>{{ tier.threshold }}</td>
+        <td>{{ tier.action_label }}{% if tier.duration_label %} ({{ tier.duration_label }}){% endif %}</td>
+        <td><form method="post" action="/guild/{{ guild_id }}/automod/escalation/delete" class="inline"><input type="hidden" name="tier_id" value="{{ tier.id }}"><button type="submit" class="danger">Remove</button></form></td>
+      </tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}
+    <p class="hint">No escalation tiers configured - members will only get warning DMs, with no automatic punishment.</p>
+    {% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/automod/escalation/add" class="add-form" id="automod-tier-form">
+        <label for="tier_threshold">Warning count</label>
+        <input type="number" id="tier_threshold" name="threshold" min="1" max="1000" required>
+
+        <label for="tier_action">Punishment</label>
+        <select id="tier_action" name="action" required>
+            {% for value, label in action_choices %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+        </select>
+
+        <span id="tier-duration-fields">
+            <label for="tier_duration_value">Duration</label>
+            <input type="number" id="tier_duration_value" name="duration_value" min="1">
+            <select id="tier_duration_unit" name="duration_unit">
+                <option value="s">seconds</option>
+                <option value="m" selected>minutes</option>
+                <option value="h">hours</option>
+                <option value="d">days</option>
+                <option value="w">weeks</option>
+            </select>
+        </span>
+
+        <button type="submit">Add / update tier</button>
+    </form>
+    <p class="hint">Timeout durations are capped at 28 days by Discord itself; mute and temporary-ban durations can go up to 365 days. Adding a tier at a warning count that already has one replaces it.</p>
+</section>
+<script src="/static/automod.js"></script>
+
 <section class="card">
   <h2>AutoMod exemption roles</h2>
   <p class="hint">Members with these roles bypass AutoMod. Manage Messages by itself does not bypass AutoMod.</p>

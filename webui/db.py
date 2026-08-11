@@ -93,6 +93,10 @@ class Db:
             self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_speak INTEGER NOT NULL DEFAULT 1")
         if "muted_deny_stream" not in cols:
             self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_stream INTEGER NOT NULL DEFAULT 1")
+        if "muted_deny_view_channel" not in cols:
+            # Defaults to 0 (not denied) so upgrading servers keep today's
+            # behavior - the Muted role has never hidden channels until now.
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_deny_view_channel INTEGER NOT NULL DEFAULT 0")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS tempnick_roles (
                 guild_id INTEGER NOT NULL,
@@ -201,6 +205,16 @@ class Db:
                 user_id INTEGER NOT NULL,
                 reason TEXT NOT NULL,
                 created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_escalation_tiers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                threshold INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                duration_seconds INTEGER,
+                UNIQUE(guild_id, threshold)
             )"""
         )
         self.conn.execute(
@@ -497,7 +511,7 @@ class Db:
         cur = self.conn.execute(
             """SELECT welcome_channel_id, welcome_message, autorole_id, birthday_channel_id, welcome_card_enabled, muted_role_id,
                       muted_deny_send_messages, muted_deny_reactions, muted_deny_threads,
-                      muted_deny_connect, muted_deny_speak, muted_deny_stream
+                      muted_deny_connect, muted_deny_speak, muted_deny_stream, muted_deny_view_channel
                FROM guild_config WHERE guild_id = ?""",
             (guild_id,),
         )
@@ -516,6 +530,7 @@ class Db:
                 "muted_deny_connect": True,
                 "muted_deny_speak": True,
                 "muted_deny_stream": True,
+                "muted_deny_view_channel": False,
             }
         return {
             "welcome_channel_id": row[0],
@@ -530,6 +545,7 @@ class Db:
             "muted_deny_connect": bool(row[9]),
             "muted_deny_speak": bool(row[10]),
             "muted_deny_stream": bool(row[11]),
+            "muted_deny_view_channel": bool(row[12]),
         }
 
     def set_muted_role(self, guild_id: int, role_id: int) -> None:
@@ -541,21 +557,23 @@ class Db:
         self.conn.commit()
 
     def set_muted_settings(self, guild_id: int, *, deny_send_messages: bool, deny_reactions: bool,
-                           deny_threads: bool, deny_connect: bool, deny_speak: bool, deny_stream: bool) -> None:
+                           deny_threads: bool, deny_connect: bool, deny_speak: bool, deny_stream: bool,
+                           deny_view_channel: bool = False) -> None:
         self.conn.execute(
             """INSERT INTO guild_config (
                    guild_id, muted_deny_send_messages, muted_deny_reactions, muted_deny_threads,
-                   muted_deny_connect, muted_deny_speak, muted_deny_stream
-               ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                   muted_deny_connect, muted_deny_speak, muted_deny_stream, muted_deny_view_channel
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(guild_id) DO UPDATE SET
                    muted_deny_send_messages = excluded.muted_deny_send_messages,
                    muted_deny_reactions = excluded.muted_deny_reactions,
                    muted_deny_threads = excluded.muted_deny_threads,
                    muted_deny_connect = excluded.muted_deny_connect,
                    muted_deny_speak = excluded.muted_deny_speak,
-                   muted_deny_stream = excluded.muted_deny_stream""",
+                   muted_deny_stream = excluded.muted_deny_stream,
+                   muted_deny_view_channel = excluded.muted_deny_view_channel""",
             (guild_id, int(deny_send_messages), int(deny_reactions), int(deny_threads),
-             int(deny_connect), int(deny_speak), int(deny_stream)),
+             int(deny_connect), int(deny_speak), int(deny_stream), int(deny_view_channel)),
         )
         self.conn.commit()
 
@@ -1189,6 +1207,47 @@ class Db:
         )
         self.conn.commit()
         return cur.rowcount
+
+    def set_automod_violation_window(self, guild_id: int, window_seconds: int) -> None:
+        self.get_automod_config(guild_id)
+        self.conn.execute(
+            "UPDATE automod_config SET violation_window_seconds = ? WHERE guild_id = ?",
+            (window_seconds, guild_id),
+        )
+        self.conn.commit()
+
+    # ---- automod escalation tiers ----
+    # A tier fires once a member racks up `threshold` warnings within the
+    # configured violation window. Several tiers can be configured per
+    # guild (e.g. 3 -> mute, 5 -> kick, 8 -> ban) - see cogs/automod.py for
+    # how they're matched and applied.
+
+    def list_automod_escalation_tiers(self, guild_id: int) -> list[dict]:
+        cur = self.conn.execute(
+            """SELECT id, threshold, action, duration_seconds
+               FROM automod_escalation_tiers WHERE guild_id = ? ORDER BY threshold ASC""",
+            (guild_id,),
+        )
+        return [
+            {"id": row[0], "threshold": row[1], "action": row[2], "duration_seconds": row[3]}
+            for row in cur.fetchall()
+        ]
+
+    def set_automod_escalation_tier(self, guild_id: int, threshold: int, action: str, duration_seconds: Optional[int]) -> None:
+        """Adds a tier, or replaces the existing tier at the same threshold
+        (there can only be one action per threshold per guild)."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO automod_escalation_tiers (guild_id, threshold, action, duration_seconds)
+               VALUES (?, ?, ?, ?)""",
+            (guild_id, threshold, action, duration_seconds),
+        )
+        self.conn.commit()
+
+    def remove_automod_escalation_tier(self, guild_id: int, tier_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM automod_escalation_tiers WHERE guild_id = ? AND id = ?", (guild_id, tier_id)
+        )
+        self.conn.commit()
 
     # ---- automod exemption roles / bot manager roles ----
 

@@ -30,9 +30,19 @@
     </form>
 
     <hr>
+    <h3>Quick presets</h3>
+    <p class="muted">Each button below sets all the checkboxes for you - review and click "Save mute policy" after picking one if you want to tweak anything further.</p>
+    <div class="preset-buttons">
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="visible_no_talk"><button type="submit">A: See channels + join VC, can't talk</button></form>
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="visible_no_voice_no_type"><button type="submit">B: See channels, no VC, no typing</button></form>
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="fully_isolated"><button type="submit">C: Fully isolated - can't see or join anything</button></form>
+    </div>
+
+    <hr>
     <h3>What should the Muted role block?</h3>
     <p class="muted">Checked options are denied for members who have the Muted role. These settings are applied to existing channels when you save and again when <code>/mute</code> is used.</p>
     <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-settings">
+        <label><input type="checkbox" name="view_channel" {% if muted_config.muted_deny_view_channel %}checked{% endif %}> Hide channels entirely (can't view)</label>
         <label><input type="checkbox" name="messages" {% if muted_config.muted_deny_send_messages %}checked{% endif %}> Send messages</label>
         <label><input type="checkbox" name="reactions" {% if muted_config.muted_deny_reactions %}checked{% endif %}> Add reactions</label>
         <label><input type="checkbox" name="threads" {% if muted_config.muted_deny_threads %}checked{% endif %}> Create threads</label>

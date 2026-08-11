@@ -182,6 +182,8 @@ button.link-btn { background: none; color: var(--accent); padding: 0; margin: 0;
 .muted { color: var(--muted); }
 .hint { color: var(--muted); font-size: 0.8rem; margin: 0.5rem 0 0; }
 .error { color: var(--danger); }
+.preset-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.preset-buttons form { margin: 0; }
 
 hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
 

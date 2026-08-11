@@ -647,12 +647,29 @@ async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("
         db.set_muted_role(guild_id, int(role_id))
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
+MUTE_PRESETS = {
+    "visible_no_talk": dict(  # A: see everything, can join VC, can't talk anywhere
+        deny_send_messages=True, deny_reactions=True, deny_threads=True,
+        deny_connect=False, deny_speak=True, deny_stream=True, deny_view_channel=False,
+    ),
+    "visible_no_voice_no_type": dict(  # B: see everything, can't join VC, can't type
+        deny_send_messages=True, deny_reactions=True, deny_threads=True,
+        deny_connect=True, deny_speak=True, deny_stream=True, deny_view_channel=False,
+    ),
+    "fully_isolated": dict(  # C: can't see or join anything
+        deny_send_messages=True, deny_reactions=True, deny_threads=True,
+        deny_connect=True, deny_speak=True, deny_stream=True, deny_view_channel=True,
+    ),
+}
+
+
 @app.post("/guild/{guild_id}/moderation/muted-role-settings")
 async def save_muted_role_settings(
     request: Request, guild_id: int,
     messages: Optional[str] = Form(None), reactions: Optional[str] = Form(None),
     threads: Optional[str] = Form(None), connect: Optional[str] = Form(None),
     speak: Optional[str] = Form(None), stream: Optional[str] = Form(None),
+    view_channel: Optional[str] = Form(None),
 ):
     if (r := await require_auth(request)):
         return r
@@ -664,7 +681,18 @@ async def save_muted_role_settings(
         deny_connect=connect == "on",
         deny_speak=speak == "on",
         deny_stream=stream == "on",
+        deny_view_channel=view_channel == "on",
     )
+    return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/muted-role-preset")
+async def save_muted_role_preset(request: Request, guild_id: int, preset: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if preset not in MUTE_PRESETS:
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=invalid", status_code=303)
+    db.set_muted_settings(guild_id, **MUTE_PRESETS[preset])
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
@@ -795,14 +823,41 @@ async def delete_youtube_watch(request: Request, guild_id: int, yt_channel_id: s
 
 # ---- automod ----
 
+def format_duration(seconds: int) -> str:
+    """Same rounding behavior as the bot's utils.format_duration, kept as a
+    small local copy since the webui container doesn't have utils.py (see
+    the note atop db.py about this codebase's process split)."""
+    for unit, size in (("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size and seconds % size == 0:
+            return f"{seconds // size}{unit}"
+    return f"{seconds}s"
+
+
+AUTOMOD_ACTION_LABELS = {
+    "mute_role": "Mute (role)",
+    "timeout": "Timeout",
+    "kick": "Kick",
+    "ban": "Ban",
+    "tempban": "Temporary ban",
+}
+AUTOMOD_TIMED_ACTIONS = {"mute_role", "timeout", "tempban"}
+AUTOMOD_MAX_TIMEOUT_SECONDS = 28 * 86400
+
+
 @app.get("/guild/{guild_id}/automod")
 async def automod_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
     cfg = db.get_automod_config(guild_id)
+    tiers = db.list_automod_escalation_tiers(guild_id)
+    for tier in tiers:
+        tier["action_label"] = AUTOMOD_ACTION_LABELS.get(tier["action"], tier["action"])
+        tier["duration_label"] = format_duration(tier["duration_seconds"]) if tier["duration_seconds"] else None
     return render(
         request, "automod.html", guild_id, "automod",
         cfg=cfg,
+        tiers=tiers,
+        action_choices=list(AUTOMOD_ACTION_LABELS.items()),
         exempt_roles=[(rid, role_label(guild_id, rid)) for rid in db.list_automod_exempt_roles(guild_id)],
         role_choices=db.list_bot_roles(guild_id),
     )
@@ -873,14 +928,44 @@ async def save_automod_duplicates(request: Request, guild_id: int, count: int = 
 
 
 @app.post("/guild/{guild_id}/automod/escalation")
-async def save_automod_escalation(
-    request: Request, guild_id: int, threshold: int = Form(...), window_seconds: int = Form(...), mute_duration_seconds: int = Form(...)
+async def save_automod_escalation(request: Request, guild_id: int, window_seconds: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not 1 <= window_seconds <= 604800:
+        return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
+    db.set_automod_violation_window(guild_id, window_seconds)
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/escalation/add")
+async def add_automod_escalation_tier(
+    request: Request, guild_id: int, threshold: int = Form(...), action: str = Form(...),
+    duration_value: str = Form(""), duration_unit: str = Form("m"),
 ):
     if (r := await require_auth(request)):
         return r
-    if not 1 <= threshold <= 1000 or not 1 <= window_seconds <= 604800 or not 1 <= mute_duration_seconds <= 28 * 86400:
+    if not 1 <= threshold <= 1000 or action not in AUTOMOD_ACTION_LABELS:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
-    db.set_automod_escalation(guild_id, threshold, window_seconds, mute_duration_seconds)
+
+    duration_seconds = None
+    if action in AUTOMOD_TIMED_ACTIONS:
+        unit_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}.get(duration_unit)
+        if not duration_value.strip().isdigit() or unit_seconds is None:
+            return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
+        duration_seconds = int(duration_value) * unit_seconds
+        max_seconds = AUTOMOD_MAX_TIMEOUT_SECONDS if action == "timeout" else 365 * 86400
+        if not 1 <= duration_seconds <= max_seconds:
+            return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
+
+    db.set_automod_escalation_tier(guild_id, threshold, action, duration_seconds)
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/escalation/delete")
+async def delete_automod_escalation_tier(request: Request, guild_id: int, tier_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_automod_escalation_tier(guild_id, tier_id)
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
 
