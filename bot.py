@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 
 import discord
@@ -12,25 +13,69 @@ from framework import Feature, FeatureStore
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+
+class RedactingFormatter(logging.Formatter):
+    """Prevent common secrets from being written to host/container logs."""
+
+    _PATTERNS = (
+        re.compile(r"(?i)(DISCORD_TOKEN|BOT_TOKEN|API_KEY|CLIENT_SECRET|PASSWORD|SECRET)\s*[=:]\s*([^\s,;]+)"),
+        re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"),
+        re.compile(r"(?i)(https://(?:discord(?:app)?\.com/api/)?webhooks/)[^\s]+"),
+    )
+
+    @classmethod
+    def redact(cls, text: str) -> str:
+        for pattern in cls._PATTERNS:
+            if pattern.pattern.startswith("(?i)(Bearer"):
+                text = pattern.sub(r"\1[REDACTED]", text)
+            elif "webhooks" in pattern.pattern:
+                text = pattern.sub(r"\1[REDACTED]", text)
+            else:
+                text = pattern.sub(r"\1=[REDACTED]", text)
+        return text
+
+    def format(self, record):
+        return self.redact(super().format(record))
+
+
 logger = logging.getLogger("bot")
 
 
 def configure_persistent_logging(db_path: str) -> str:
-    """Persist application logs beside the durable SQLite database.
+    """Persist technical logs beside the durable SQLite database.
 
-    The directory is normally a Docker-mounted volume, so replacing the bot
-    code does not replace the log. Rotation prevents a runaway error loop from
-    filling the disk while keeping ten historical 10 MB log files.
+    Audit events live in bot.db. Technical startup/gateway/application output
+    is split into system.log and errors.log, both rotated on the mounted host
+    volume so a runaway error loop cannot fill the disk.
     """
     data_dir = os.path.dirname(os.path.abspath(db_path)) or os.getcwd()
-    os.makedirs(data_dir, exist_ok=True)
-    log_path = os.path.join(data_dir, "bot.log")
+    log_dir = os.path.join(data_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    system_path = os.path.abspath(os.path.join(log_dir, "system.log"))
+    error_path = os.path.abspath(os.path.join(log_dir, "errors.log"))
     root_logger = logging.getLogger()
-    if not any(isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None) == os.path.abspath(log_path) for h in root_logger.handlers):
-        handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8")
-        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+    formatter = RedactingFormatter(LOG_FORMAT)
+    for handler in root_logger.handlers:
+        handler.setFormatter(formatter)
+
+    def add_rotating(path: str, level: int) -> None:
+        if any(isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None) == path for h in root_logger.handlers):
+            return
+        handler = RotatingFileHandler(
+            path,
+            maxBytes=int(os.environ.get("LOG_MAX_BYTES", 10 * 1024 * 1024)),
+            backupCount=int(os.environ.get("LOG_BACKUP_COUNT", 10)),
+            encoding="utf-8",
+        )
+        handler.setLevel(level)
+        handler.setFormatter(formatter)
         root_logger.addHandler(handler)
-    return log_path
+
+    add_rotating(system_path, logging.INFO)
+    add_rotating(error_path, logging.ERROR)
+    return system_path
 
 INITIAL_COGS = [
     "cogs.fun",
@@ -65,6 +110,7 @@ FEATURES = FeatureStore([
 intents = discord.Intents.default()
 intents.message_content = True  # needed for custom commands to see message text
 intents.members = True  # needed for on_member_join (welcome/autorole)
+intents.presences = True  # needed for live online/idle/dnd analytics
 
 
 class MyBot(commands.Bot):
@@ -143,25 +189,47 @@ class MyBot(commands.Bot):
         self.db.remove_bot_role(role.guild.id, role.id)
 
     async def on_member_join(self, member: discord.Member):
-        self.db.upsert_bot_member(member.guild.id, member.id, member.name, member.display_name)
+        self.db.upsert_bot_member(member.guild.id, member.id, member.name, member.display_name, getattr(getattr(member, 'status', None), 'value', 'offline'))
 
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        self.db.upsert_bot_member(after.guild.id, after.id, after.name, after.display_name)
+        self.db.upsert_bot_member(after.guild.id, after.id, after.name, after.display_name, getattr(getattr(after, 'status', None), 'value', 'offline'))
 
     async def on_member_remove(self, member: discord.Member):
         self.db.remove_bot_member(member.guild.id, member.id)
+
+    async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        self.db.update_member_status(
+            after.guild.id,
+            after.id,
+            getattr(getattr(after, "status", None), "value", "offline"),
+        )
 
     async def on_app_command_completion(self, interaction: discord.Interaction):
         command = interaction.command.qualified_name if interaction.command else "unknown"
         guild_id = interaction.guild.id if interaction.guild else None
         actor_id = interaction.user.id if interaction.user else None
-        details = f"command=/{command}"
-        self.db.record_bot_event("command.completed", guild_id, actor_id, None, details)
+        details = {"command": f"/{command}"}
+        duration_ms = None
+        if interaction.created_at:
+            duration_ms = max(0, int((discord.utils.utcnow() - interaction.created_at).total_seconds() * 1000))
+        correlation_id = f"cmd_{interaction.id}"
+        self.db.record_bot_event(
+            "command.completed",
+            guild_id,
+            actor_id,
+            None,
+            details,
+            source="command",
+            status="success",
+            duration_ms=duration_ms,
+            correlation_id=correlation_id,
+        )
         logger.info("command completed: /%s guild=%s user=%s", command, guild_id, actor_id)
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
     ):
+        command_name = interaction.command.qualified_name if interaction.command else "unknown"
         if isinstance(error, discord.app_commands.MissingPermissions):
             perms = ", ".join(p.replace("_", " ") for p in error.missing_permissions)
             content = f"You need the **{perms}** permission to do that."
@@ -169,9 +237,24 @@ class MyBot(commands.Bot):
             content = f"Slow down - try that again in {error.retry_after:.1f}s."
         else:
             logger.exception(
-                "command '%s' failed", interaction.command.name if interaction.command else "?", exc_info=error
+                "command '%s' failed", command_name, exc_info=error
             )
             content = "Something went wrong running that command."
+
+        duration_ms = None
+        if interaction.created_at:
+            duration_ms = max(0, int((discord.utils.utcnow() - interaction.created_at).total_seconds() * 1000))
+        self.db.record_bot_event(
+            "command.failed",
+            interaction.guild.id if interaction.guild else None,
+            interaction.user.id if interaction.user else None,
+            None,
+            {"command": f"/{command_name}", "error": type(error).__name__},
+            source="command",
+            status="failed",
+            duration_ms=duration_ms,
+            correlation_id=f"cmd_{interaction.id}",
+        )
 
         try:
             if interaction.response.is_done():
@@ -180,6 +263,7 @@ class MyBot(commands.Bot):
                 await interaction.response.send_message(content, ephemeral=True)
         except discord.HTTPException:
             pass  # interaction likely already expired, nothing more we can do
+
 
     async def close(self):
         # Runs on any clean shutdown (SIGTERM from `docker compose down`/

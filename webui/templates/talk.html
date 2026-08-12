@@ -3,9 +3,14 @@
 {% block content %}
 <h1>Talk as the bot</h1>
 <section class="card">
-    <p class="hint">Send a message into a text channel as the bot. It goes out within a couple seconds.</p>
-    {% if request.query_params.get('sent') %}<p class="success">Message sent.</p>{% endif %}
-    {% if request.query_params.get('error') %}<p class="error">Pick a channel and enter a message.</p>{% endif %}
+    <p class="hint">Messages are placed into a durable outbox and delivered by ReedMuhn. The page only says <strong>queued</strong> when the message has been safely stored; delivery is confirmed separately below.</p>
+    {% if request.query_params.get('queued') %}<p class="success">Message queued successfully. Outbox ID #{{ request.query_params.get('queued') }}.</p>{% endif %}
+    {% if request.query_params.get('retried') %}<p class="success">Failed message #{{ request.query_params.get('retried') }} was placed back into the queue.</p>{% endif %}
+    {% if request.query_params.get('error') == 'notfound' %}<p class="error">That Talk message could not be found.</p>{% endif %}
+    {% if request.query_params.get('error') == 'notretryable' %}<p class="error">That message is no longer in a retryable state.</p>{% endif %}
+    {% if request.query_params.get('error') == 'empty' %}<p class="error">Enter a message.</p>{% endif %}
+    {% if request.query_params.get('error') == 'length' %}<p class="error">Discord messages are limited to 2,000 characters.</p>{% endif %}
+    {% if request.query_params.get('error') == 'channel' %}<p class="error">Choose a valid text channel for this server.</p>{% endif %}
     <form method="post" action="/guild/{{ guild_id }}/talk" class="add-form">
         <label for="channel_id">Channel</label>
         <select id="channel_id" name="channel_id" required>
@@ -14,7 +19,48 @@
         </select>
         <label for="content">Message</label>
         <textarea id="content" name="content" rows="4" maxlength="2000" required placeholder="What should the bot say?"></textarea>
-        <button type="submit">Send</button>
+        <div class="hint"><span id="talk-count">0</span>/2000 characters</div>
+        <button type="submit">Queue message</button>
     </form>
 </section>
+
+<section class="card">
+    <h2>Recent Talk messages</h2>
+    {% if recent_messages %}
+    <table>
+        <thead><tr><th>ID</th><th>Channel</th><th>Message</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+        <tbody>
+        {% for message in recent_messages %}
+        <tr>
+            <td>#{{ message.id }}</td>
+            <td>#{{ message.channel_name }}</td>
+            <td><div style="white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere;">{{ message.content }}</div></td>
+            <td>
+                {% if message.status == 'sent' %}<span class="success">Sent</span>
+                {% elif message.status == 'failed' %}<span class="error">Failed</span>
+                {% elif message.status == 'sending' %}<span class="muted">Sending…</span>
+                {% else %}<span class="muted">Queued</span>{% endif %}
+            </td>
+            <td>{{ message.attempts }}</td>
+            <td>{% if message.last_error %}<span class="error">{{ message.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}
+                {% if message.status == 'failed' %}<form method="post" action="/guild/{{ guild_id }}/talk/retry" class="inline"><input type="hidden" name="message_id" value="{{ message.id }}"><button type="submit">Retry</button></form>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No Talk messages have been queued yet.</p>
+    {% endif %}
+</section>
+
+<script>
+(() => {
+    const box = document.getElementById('content');
+    const count = document.getElementById('talk-count');
+    if (!box || !count) return;
+    const update = () => { count.textContent = box.value.length; };
+    box.addEventListener('input', update);
+    update();
+})();
+</script>
 {% endblock %}

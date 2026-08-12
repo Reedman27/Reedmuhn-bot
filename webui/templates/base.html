@@ -12,6 +12,7 @@
         <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
         <nav>
             <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a>
+            <a href="/guild/{{ guild_id }}/analytics" class="{{ 'active' if active == 'analytics' else '' }}">📈 Analytics</a>
             <a href="/guild/{{ guild_id }}/moderation" class="{{ 'active' if active == 'moderation' else '' }}">🛡️ Moderation</a>
             <a href="/guild/{{ guild_id }}/welcome" class="{{ 'active' if active == 'welcome' else '' }}">👋 Welcome & Roles</a>
             <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a>

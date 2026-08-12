@@ -25,7 +25,11 @@ class Db:
         # check_same_thread=False is safe here because discord.py runs a
         # single asyncio event loop in one OS thread - we're never actually
         # touching this connection from two threads at once.
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        # Bot and WebUI are separate processes sharing this SQLite file.
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        self.conn.execute("PRAGMA busy_timeout = 30000")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")
         self._create_tables()
 
     def _create_tables(self) -> None:
@@ -237,9 +241,13 @@ class Db:
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 display_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'offline',
                 PRIMARY KEY (guild_id, user_id)
             )"""
         )
+        member_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_members)")}
+        if "status" not in member_cols:
+            self.conn.execute("ALTER TABLE bot_members ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS bot_guilds (
                 guild_id INTEGER PRIMARY KEY,
@@ -278,9 +286,34 @@ class Db:
                 channel_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 sent INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                available_at INTEGER NOT NULL DEFAULT 0,
+                locked_at INTEGER,
+                sent_at INTEGER,
+                failed_at INTEGER,
+                last_error TEXT,
+                discord_message_id INTEGER
             )"""
         )
+        outbound_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(outbound_messages)")}
+        migrations = {
+            "status": "ALTER TABLE outbound_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'",
+            "attempts": "ALTER TABLE outbound_messages ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+            "available_at": "ALTER TABLE outbound_messages ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0",
+            "locked_at": "ALTER TABLE outbound_messages ADD COLUMN locked_at INTEGER",
+            "sent_at": "ALTER TABLE outbound_messages ADD COLUMN sent_at INTEGER",
+            "failed_at": "ALTER TABLE outbound_messages ADD COLUMN failed_at INTEGER",
+            "last_error": "ALTER TABLE outbound_messages ADD COLUMN last_error TEXT",
+            "discord_message_id": "ALTER TABLE outbound_messages ADD COLUMN discord_message_id INTEGER",
+        }
+        for col, statement in migrations.items():
+            if col not in outbound_cols:
+                self.conn.execute(statement)
+        self.conn.execute("UPDATE outbound_messages SET status = 'sent', sent_at = COALESCE(sent_at, created_at) WHERE sent = 1 AND status = 'queued'")
+        self.conn.execute("UPDATE outbound_messages SET available_at = created_at WHERE available_at = 0 AND sent = 0")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_outbound_queue ON outbound_messages(status, available_at, id)")
         # Durable institutional memory. These tables are intentionally separate
         # from transient/cache tables so code updates never need to recreate or
         # overwrite the bot's history.
@@ -303,17 +336,47 @@ class Db:
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS bot_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT,
                 guild_id INTEGER,
                 event_type TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'system',
+                status TEXT NOT NULL DEFAULT 'success',
                 actor_id INTEGER,
                 target_id INTEGER,
                 details TEXT,
+                duration_ms INTEGER,
+                correlation_id TEXT,
                 created_at INTEGER NOT NULL
             )"""
+        )
+        # Structured audit fields are additive so existing bot.db files keep
+        # all historical events while newer events become searchable and
+        # correlatable without parsing log text.
+        bot_event_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_events)")}
+        for column, definition in (
+            ("event_id", "TEXT"),
+            ("source", "TEXT NOT NULL DEFAULT 'system'"),
+            ("status", "TEXT NOT NULL DEFAULT 'success'"),
+            ("duration_ms", "INTEGER"),
+            ("correlation_id", "TEXT"),
+        ):
+            if column not in bot_event_cols:
+                self.conn.execute(f"ALTER TABLE bot_events ADD COLUMN {column} {definition}")
+        self.conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_events_event_id
+               ON bot_events (event_id)"""
         )
         self.conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_bot_events_created
                ON bot_events (created_at DESC)"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_bot_events_guild_created
+               ON bot_events (guild_id, created_at DESC)"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_bot_events_type_created
+               ON bot_events (guild_id, event_type, created_at DESC)"""
         )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS counting (
@@ -734,27 +797,94 @@ class Db:
 
     def record_bot_event(
         self, event_type: str, guild_id: Optional[int] = None, actor_id: Optional[int] = None,
-        target_id: Optional[int] = None, details: Optional[str] = None, created_at: Optional[int] = None,
+        target_id: Optional[int] = None, details=None, created_at: Optional[int] = None,
+        *, source: str = "system", status: str = "success", duration_ms: Optional[int] = None,
+        correlation_id: Optional[str] = None,
     ) -> int:
+        """Write one durable structured audit event.
+
+        ``details`` may be a string or a JSON-serializable mapping. The event
+        receives a stable event_id automatically, while source/status/duration
+        and correlation_id make related actions searchable without scraping
+        human-readable log files.
+        """
+        import uuid
+
         created_at = int(time.time()) if created_at is None else int(created_at)
+        if isinstance(details, (dict, list, tuple)):
+            details = json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+        if details is not None:
+            details = str(details)
+        event_id = "evt_" + uuid.uuid4().hex
         cur = self.conn.execute(
             """INSERT INTO bot_events
-               (guild_id, event_type, actor_id, target_id, details, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (guild_id, event_type, actor_id, target_id, details, created_at),
+               (event_id, guild_id, event_type, source, status, actor_id, target_id,
+                details, duration_ms, correlation_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, guild_id, event_type, source, status, actor_id, target_id,
+             details, duration_ms, correlation_id, created_at),
         )
         self.conn.commit()
-        logger.info("bot event: type=%s guild=%s actor=%s target=%s details=%s", event_type, guild_id, actor_id, target_id, details)
+        logger.info(
+            "audit event: id=%s type=%s source=%s status=%s guild=%s actor=%s target=%s duration_ms=%s details=%s",
+            event_id, event_type, source, status, guild_id, actor_id, target_id, duration_ms, details,
+        )
         return cur.lastrowid
 
     def recent_bot_events(self, limit: int = 500):
         limit = max(1, min(int(limit), 5000))
         cur = self.conn.execute(
-            """SELECT id, guild_id, event_type, actor_id, target_id, details, created_at
+            """SELECT id, event_id, guild_id, event_type, source, status, actor_id,
+                      target_id, details, duration_ms, correlation_id, created_at
                FROM bot_events ORDER BY created_at DESC, id DESC LIMIT ?""",
             (limit,),
         )
         return cur.fetchall()
+
+    def activity_counts(self, guild_id: int, since: int, event_types: tuple[str, ...]) -> dict[str, int]:
+        """Count durable activity events for a guild without storing message content."""
+        if not event_types:
+            return {}
+        placeholders = ",".join("?" for _ in event_types)
+        cur = self.conn.execute(
+            f"""SELECT event_type, COUNT(*) FROM bot_events
+                WHERE guild_id = ? AND created_at >= ? AND event_type IN ({placeholders})
+                GROUP BY event_type""",
+            (guild_id, int(since), *event_types),
+        )
+        counts = {event_type: 0 for event_type in event_types}
+        counts.update({row[0]: row[1] for row in cur.fetchall()})
+        return counts
+
+    def get_activity_stats(self, guild_id: int, since: int) -> dict[str, int]:
+        counts = self.activity_counts(
+            guild_id,
+            since,
+            ("message.received", "command.completed", "member.join", "member.leave"),
+        )
+        return {
+            "messages": counts["message.received"],
+            "commands": counts["command.completed"],
+            "joins": counts["member.join"],
+            "leaves": counts["member.leave"],
+        }
+
+    def get_server_counts(self, guild_id: int) -> dict[str, int]:
+        members = self.conn.execute(
+            "SELECT COUNT(*) FROM bot_members WHERE guild_id = ?", (guild_id,)
+        ).fetchone()[0]
+        online = self.conn.execute(
+            """SELECT COUNT(*) FROM bot_members
+               WHERE guild_id = ? AND status IN ('online', 'idle', 'dnd')""",
+            (guild_id,),
+        ).fetchone()[0]
+        channels = self.conn.execute(
+            "SELECT COUNT(*) FROM bot_channels WHERE guild_id = ?", (guild_id,)
+        ).fetchone()[0]
+        roles = self.conn.execute(
+            "SELECT COUNT(*) FROM bot_roles WHERE guild_id = ?", (guild_id,)
+        ).fetchone()[0] + 1  # include @everyone, which is intentionally not cached
+        return {"members": members, "online": online, "channels": channels, "roles": roles}
 
     # ---- birthdays ----
 
@@ -1337,21 +1467,137 @@ class Db:
     # here instead, and the bot's polling loop (see cogs/dashboardtalk.py)
     # picks it up, sends it, and marks it sent.
 
-    def queue_outbound_message(self, guild_id: int, channel_id: int, content: str) -> None:
+    def queue_outbound_message(self, guild_id: int, channel_id: int, content: str) -> int:
+        content = content.strip()
+        if not content:
+            raise ValueError("message content cannot be empty")
+        if len(content) > 2000:
+            raise ValueError("Discord messages cannot exceed 2000 characters")
+        now = int(time.time())
+        cur = self.conn.execute(
+            """INSERT INTO outbound_messages
+               (guild_id, channel_id, content, sent, created_at, status, attempts, available_at)
+               VALUES (?, ?, ?, 0, ?, 'queued', 0, ?)""",
+            (guild_id, channel_id, content, now, now),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def claim_outbound_messages(
+        self, limit: int = 10, lease_seconds: int = 120
+    ) -> list[tuple[int, int, int, str, int]]:
+        """Atomically claim ready messages so a worker crash/restart cannot
+        cause two live polling iterations to send the same row concurrently.
+        A stale sending lease is returned to the queue after lease_seconds.
+        """
+        limit = max(1, min(int(limit), 50))
+        now = int(time.time())
+        stale_before = now - max(30, int(lease_seconds))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                """UPDATE outbound_messages
+                   SET status = 'queued', locked_at = NULL, available_at = ?
+                   WHERE status = 'sending' AND locked_at IS NOT NULL AND locked_at < ?""",
+                (now, stale_before),
+            )
+            rows = self.conn.execute(
+                """SELECT id, guild_id, channel_id, content, attempts
+                   FROM outbound_messages
+                   WHERE status = 'queued' AND available_at <= ?
+                   ORDER BY id LIMIT ?""",
+                (now, limit),
+            ).fetchall()
+            ids = [row[0] for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE outbound_messages SET status='sending', locked_at=?, attempts=attempts+1 WHERE id IN ({placeholders})",
+                    [now, *ids],
+                )
+            self.conn.commit()
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def mark_outbound_message_sent(self, message_id: int, discord_message_id: int | None = None) -> None:
+        now = int(time.time())
         self.conn.execute(
-            "INSERT INTO outbound_messages (guild_id, channel_id, content, sent, created_at) VALUES (?, ?, ?, 0, ?)",
-            (guild_id, channel_id, content, int(time.time())),
+            """UPDATE outbound_messages
+               SET status='sent', sent=1, locked_at=NULL, sent_at=?, failed_at=NULL,
+                   last_error=NULL, discord_message_id=?
+               WHERE id=?""",
+            (now, discord_message_id, message_id),
         )
         self.conn.commit()
 
-    def list_unsent_outbound_messages(self) -> list[tuple[int, int, int, str]]:
+    def mark_outbound_message_failed(
+        self, message_id: int, error: str, *, retry: bool = True, max_attempts: int = 5
+    ) -> str:
+        """Record a failure. Transient failures are retried with exponential
+        backoff; permanent failures become terminal and remain visible in the
+        dashboard instead of silently disappearing. Returns the new status."""
+        now = int(time.time())
+        row = self.conn.execute(
+            "SELECT attempts FROM outbound_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if row is None:
+            return "missing"
+        attempts = int(row[0])
+        if retry and attempts < max_attempts:
+            delay = min(300, 2 ** max(0, attempts - 1) * 5)
+            self.conn.execute(
+                """UPDATE outbound_messages
+                   SET status='queued', sent=0, locked_at=NULL, available_at=?, last_error=?
+                   WHERE id=?""",
+                (now + delay, error[:1000], message_id),
+            )
+            status = "queued"
+        else:
+            self.conn.execute(
+                """UPDATE outbound_messages
+                   SET status='failed', sent=0, locked_at=NULL, failed_at=?, last_error=?
+                   WHERE id=?""",
+                (now, error[:1000], message_id),
+            )
+            status = "failed"
+        self.conn.commit()
+        return status
+
+    def retry_outbound_message(self, message_id: int) -> bool:
+        now = int(time.time())
+        cur = self.conn.execute(
+            """UPDATE outbound_messages
+               SET status='queued', sent=0, available_at=?, locked_at=NULL, failed_at=NULL, last_error=NULL
+               WHERE id=? AND status='failed'""",
+            (now, message_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_outbound_message(self, message_id: int):
         return self.conn.execute(
-            "SELECT id, guild_id, channel_id, content FROM outbound_messages WHERE sent = 0 ORDER BY id"
+            """SELECT id, guild_id, channel_id, content, status, attempts, created_at,
+                      available_at, sent_at, failed_at, last_error, discord_message_id
+               FROM outbound_messages WHERE id = ?""",
+            (message_id,),
+        ).fetchone()
+
+    def recent_outbound_messages(self, guild_id: int, limit: int = 20):
+        limit = max(1, min(int(limit), 100))
+        return self.conn.execute(
+            """SELECT id, channel_id, content, status, attempts, created_at, sent_at,
+                      failed_at, last_error, discord_message_id
+               FROM outbound_messages
+               WHERE guild_id = ?
+               ORDER BY id DESC LIMIT ?""",
+            (guild_id, limit),
         ).fetchall()
 
-    def mark_outbound_message_sent(self, message_id: int) -> None:
-        self.conn.execute("UPDATE outbound_messages SET sent = 1 WHERE id = ?", (message_id,))
-        self.conn.commit()
+    # Backwards-compatible helper retained for extensions that may still call it.
+    def list_unsent_outbound_messages(self) -> list[tuple[int, int, int, str]]:
+        return [(r[0], r[1], r[2], r[3]) for r in self.claim_outbound_messages(limit=50)]
 
     def sync_guild_roles(self, guild_id: int, roles: list) -> None:
         self.conn.execute("DELETE FROM bot_roles WHERE guild_id = ?", (guild_id,))
@@ -1390,17 +1636,27 @@ class Db:
     def sync_guild_members(self, guild_id: int, members: list) -> None:
         self.conn.execute("DELETE FROM bot_members WHERE guild_id = ?", (guild_id,))
         for member in members:
+            status = getattr(getattr(member, "status", None), "value", "offline")
             self.conn.execute(
-                "INSERT INTO bot_members (guild_id, user_id, name, display_name) VALUES (?, ?, ?, ?)",
-                (guild_id, int(member.id), member.name, member.display_name),
+                "INSERT INTO bot_members (guild_id, user_id, name, display_name, status) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, int(member.id), member.name, member.display_name, status),
             )
         self.conn.commit()
 
-    def upsert_bot_member(self, guild_id: int, user_id: int, name: str, display_name: str) -> None:
+    def upsert_bot_member(
+        self, guild_id: int, user_id: int, name: str, display_name: str, status: str = "offline"
+    ) -> None:
         self.conn.execute(
-            "INSERT INTO bot_members (guild_id, user_id, name, display_name) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET name=excluded.name, display_name=excluded.display_name",
-            (guild_id, user_id, name, display_name),
+            "INSERT INTO bot_members (guild_id, user_id, name, display_name, status) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET name=excluded.name, display_name=excluded.display_name, status=excluded.status",
+            (guild_id, user_id, name, display_name, status),
+        )
+        self.conn.commit()
+
+    def update_member_status(self, guild_id: int, user_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE bot_members SET status = ? WHERE guild_id = ? AND user_id = ?",
+            (status, guild_id, user_id),
         )
         self.conn.commit()
 

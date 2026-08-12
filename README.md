@@ -38,9 +38,10 @@ The dashboard is designed for people who **do not want to copy Discord IDs every
 5. Under **Privileged Gateway Intents**, enable:
    - **Server Members Intent**
    - **Message Content Intent**
+   - **Presence Intent**
 6. Save the changes.
 
-Reedmuhn requests both intents because member events power welcome/autorole and the message content intent is needed for custom commands, automod, and message-log/purge transcripts.
+Reedmuhn requests these privileged intents because member events power welcome/autorole, message content is needed for custom commands and automod, and presence data powers the live online/idle/dnd analytics count.
 
 ## 2. Invite the bot
 

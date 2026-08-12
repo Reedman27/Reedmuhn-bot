@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Analytics - {{ guild_name }}{% endblock %}
+{% block content %}
+<div class="page-heading analytics-heading">
+    <div class="page-heading-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+    </div>
+    <div>
+        <h1>Analytics</h1>
+        <p class="muted">Server statistics and activity overview</p>
+    </div>
+</div>
+
+<div class="analytics-grid">
+    <div class="analytics-card analytics-purple">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+        <div class="analytics-value">{{ stats.members }}</div>
+        <div class="analytics-label">MEMBERS</div>
+    </div>
+
+    <div class="analytics-card analytics-green">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
+        <div class="analytics-value">{{ stats.online }}</div>
+        <div class="analytics-label">ONLINE</div>
+    </div>
+
+    <div class="analytics-card analytics-blue">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></div>
+        <div class="analytics-value">{{ stats.channels }}</div>
+        <div class="analytics-label">CHANNELS</div>
+    </div>
+
+    <div class="analytics-card analytics-yellow">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
+        <div class="analytics-value">{{ stats.roles }}</div>
+        <div class="analytics-label">ROLES</div>
+    </div>
+
+    <div class="analytics-card analytics-purple">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="analytics-value">{{ stats.messages }}</div>
+        <div class="analytics-label">MESSAGES ({{ days }}D)</div>
+    </div>
+
+    <div class="analytics-card analytics-blue">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
+        <div class="analytics-value">{{ stats.commands }}</div>
+        <div class="analytics-label">COMMANDS ({{ days }}D)</div>
+    </div>
+
+    <div class="analytics-card analytics-green">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+        <div class="analytics-value">{{ stats.joins }}</div>
+        <div class="analytics-label">JOINS ({{ days }}D)</div>
+    </div>
+
+    <div class="analytics-card analytics-red">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg></div>
+        <div class="analytics-value">{{ stats.leaves }}</div>
+        <div class="analytics-label">LEAVES ({{ days }}D)</div>
+    </div>
+</div>
+
+<div class="analytics-range">
+    <span class="muted">Time range:</span>
+    {% for option in (7, 14, 30) %}
+    <a href="/guild/{{ guild_id }}/analytics?days={{ option }}" class="{{ 'selected' if days == option else '' }}">{{ option }} days</a>
+    {% endfor %}
+</div>
+
+<p class="hint analytics-note">
+    Message counts record activity metadata only; message content is not stored for analytics.
+</p>
+{% endblock %}

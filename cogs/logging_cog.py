@@ -175,6 +175,21 @@ class LoggingCog(commands.Cog, name="Logging"):
     # ---- messages ----
 
     @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Analytics/audit metadata only: no message content is persisted here.
+        if message.guild is None or message.author.bot:
+            return
+        self.bot.db.record_bot_event(
+            "message.received",
+            message.guild.id,
+            message.author.id,
+            message.id,
+            {"channel_id": message.channel.id},
+            source="discord_event",
+            status="success",
+        )
+
+    @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if before.guild is None or before.author.bot:
             return
@@ -271,6 +286,15 @@ class LoggingCog(commands.Cog, name="Logging"):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        self.bot.db.record_bot_event(
+            "member.join",
+            member.guild.id,
+            None,
+            member.id,
+            {"member": str(member)},
+            source="discord_event",
+            status="success",
+        )
         account_age = discord.utils.utcnow() - member.created_at
         embed = discord.Embed(
             description=f"**{member.mention} joined**",
@@ -287,6 +311,15 @@ class LoggingCog(commands.Cog, name="Logging"):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        self.bot.db.record_bot_event(
+            "member.leave",
+            member.guild.id,
+            None,
+            member.id,
+            {"member": str(member)},
+            source="discord_event",
+            status="success",
+        )
         entry = await self._find_audit_actor(member.guild, discord.AuditLogAction.kick, member.id)
         if entry is not None:
             embed = discord.Embed(

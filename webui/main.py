@@ -318,6 +318,34 @@ async def overview(request: Request, guild_id: int):
     return render(request, "overview.html", guild_id, "overview", stats=stats)
 
 
+# ---- analytics ----
+
+@app.get("/guild/{guild_id}/analytics")
+async def analytics_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    request.session["guild_id"] = guild_id
+
+    try:
+        days = int(request.query_params.get("days", "14"))
+    except ValueError:
+        days = 14
+    if days not in (7, 14, 30):
+        days = 14
+
+    since = int(time.time()) - days * 86400
+    server = db.get_server_counts(guild_id)
+    activity = db.get_activity_stats(guild_id, since)
+    return render(
+        request,
+        "analytics.html",
+        guild_id,
+        "analytics",
+        stats={**server, **activity},
+        days=days,
+    )
+
+
 # ---- welcome & autorole ----
 
 @app.get("/guild/{guild_id}/welcome")
@@ -1102,10 +1130,36 @@ async def remove_voice_hub_route(request: Request, guild_id: int, channel_id: in
 async def talk_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
-    return render(
-        request, "talk.html", guild_id, "talk",
-        text_channels=db.list_bot_channels(guild_id, "text"),
-    )
+    recent_rows = db.recent_outbound_messages(guild_id, 20)
+    recent_messages = [
+        {
+            "id": row[0], "channel_id": row[1],
+            "channel_name": db.get_channel_name(guild_id, row[1]) or f"Deleted channel ({row[1]})",
+            "content": row[2], "status": row[3], "attempts": row[4],
+            "created_at": row[5], "sent_at": row[6], "failed_at": row[7],
+            "last_error": row[8], "discord_message_id": row[9],
+        }
+        for row in recent_rows
+    ]
+    return render(request, "talk.html", guild_id, "talk",
+                  text_channels=db.list_bot_channels(guild_id, "text"),
+                  recent_messages=recent_messages)
+
+
+@app.post("/guild/{guild_id}/talk/retry")
+async def retry_talk_message(request: Request, guild_id: int, message_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    row = db.get_outbound_message(message_id)
+    if row is None or row[1] != guild_id:
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=notfound", status_code=303)
+    if db.retry_outbound_message(message_id):
+        try:
+            db.record_bot_event("dashboard.talk.retried", guild_id, None, row[2], f"message_id={message_id}", source="dashboard_talk")
+        except Exception:
+            pass
+        return RedirectResponse(f"/guild/{guild_id}/talk?retried={message_id}", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/talk?error=notretryable", status_code=303)
 
 
 @app.post("/guild/{guild_id}/talk")
@@ -1113,7 +1167,20 @@ async def send_talk_message(request: Request, guild_id: int, channel_id: int = F
     if (r := await require_auth(request)):
         return r
     content = content.strip()
-    if not content or not validate_channel(guild_id, channel_id, ("text",)):
-        return RedirectResponse(f"/guild/{guild_id}/talk?error=1", status_code=303)
-    db.queue_outbound_message(guild_id, channel_id, content)
-    return RedirectResponse(f"/guild/{guild_id}/talk?sent=1", status_code=303)
+    if not content:
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=empty", status_code=303)
+    if len(content) > 2000:
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=length", status_code=303)
+    if not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=channel", status_code=303)
+    try:
+        message_id = db.queue_outbound_message(guild_id, channel_id, content)
+        try:
+            db.record_bot_event("dashboard.talk.queued", guild_id, None, channel_id,
+                                f"message_id={message_id} content_length={len(content)}", source="dashboard_talk")
+        except Exception:
+            pass
+    except ValueError as exc:
+        error = "length" if "2000" in str(exc) else "empty"
+        return RedirectResponse(f"/guild/{guild_id}/talk?error={error}", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/talk?queued={message_id}", status_code=303)

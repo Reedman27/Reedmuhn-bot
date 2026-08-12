@@ -64,7 +64,20 @@ class CustomCommands(commands.Cog):
             return  # cooldown active - ignore silently rather than reply with an error, to avoid adding to the spam
         self._trigger_cooldowns[key] = now
 
-        await message.channel.send(response)
+        await message.channel.send(
+            response,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        self.bot.db.record_bot_event(
+            "command.completed",
+            message.guild.id,
+            message.author.id,
+            message.id,
+            {"command": message.content.split(maxsplit=1)[0], "kind": "custom"},
+            source="custom_command",
+            status="success",
+            correlation_id=f"msg_{message.id}",
+        )
 
 
 async def setup(bot: commands.Bot):
