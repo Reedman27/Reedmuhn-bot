@@ -66,6 +66,62 @@ class AutoMod(commands.Cog):
         self.bot.db.set_automod_enabled(interaction.guild.id, enabled)
         await interaction.response.send_message(f"Automod is now {'on' if enabled else 'off'}.")
 
+    automodword = app_commands.Group(
+        name="automodword", description="Manage the server's banned-word filter"
+    )
+
+    @automodword.command(name="add", description="Add a word/phrase to the banned-word filter")
+    @app_commands.describe(word="Word or phrase to remove whenever members say it")
+    @manager_or_permission("manage_guild")
+    async def automodword_add(self, interaction: discord.Interaction, word: str):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        word = word.strip()
+        if not word or len(word) > 100:
+            await interaction.response.send_message("Enter a word or phrase up to 100 characters.", ephemeral=True)
+            return
+        cfg = self.bot.db.get_automod_config(interaction.guild.id)
+        words = cfg["banned_words"]
+        if word.lower() in {w.lower() for w in words}:
+            await interaction.response.send_message(f"`{word}` is already banned.", ephemeral=True)
+            return
+        words.append(word)
+        self.bot.db.set_automod_words(interaction.guild.id, words)
+        await interaction.response.send_message(
+            f"Added `{word}` to the banned-word filter. Automod must be enabled for it to take effect."
+        )
+
+    @automodword.command(name="remove", description="Remove a word/phrase from the banned-word filter")
+    @app_commands.describe(word="Word or phrase to allow again")
+    @manager_or_permission("manage_guild")
+    async def automodword_remove(self, interaction: discord.Interaction, word: str):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        cfg = self.bot.db.get_automod_config(interaction.guild.id)
+        matches = [w for w in cfg["banned_words"] if w.lower() != word.strip().lower()]
+        if len(matches) == len(cfg["banned_words"]):
+            await interaction.response.send_message(f"`{word}` isn't currently banned.", ephemeral=True)
+            return
+        self.bot.db.set_automod_words(interaction.guild.id, matches)
+        await interaction.response.send_message(f"Removed `{word.strip()}` from the banned-word filter.")
+
+    @automodword.command(name="list", description="List the server's banned words")
+    @manager_or_permission("manage_guild")
+    async def automodword_list(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        words = self.bot.db.get_automod_config(interaction.guild.id)["banned_words"]
+        if not words:
+            await interaction.response.send_message("No banned words are configured.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Banned words: " + ", ".join(f"`{w}`" for w in words),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="automodwords", description="Set the banned word list (replaces the current list)")
     @app_commands.describe(words="Comma-separated list of words, e.g. word1, word2, word3")
     @manager_or_permission("manage_guild")

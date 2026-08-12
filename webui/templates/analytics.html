@@ -12,63 +12,119 @@
 </div>
 
 <div class="analytics-grid">
-    <div class="analytics-card analytics-purple">
+    <a class="analytics-card analytics-purple" href="/guild/{{ guild_id }}/analytics/members?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
         <div class="analytics-value">{{ stats.members }}</div>
         <div class="analytics-label">MEMBERS</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-green">
+    <a class="analytics-card analytics-green" href="/guild/{{ guild_id }}/analytics/online?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
         <div class="analytics-value">{{ stats.online }}</div>
         <div class="analytics-label">ONLINE</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-blue">
+    <a class="analytics-card analytics-blue" href="/guild/{{ guild_id }}/analytics/channels?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></div>
         <div class="analytics-value">{{ stats.channels }}</div>
         <div class="analytics-label">CHANNELS</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-yellow">
+    <a class="analytics-card analytics-yellow" href="/guild/{{ guild_id }}/analytics/roles?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
         <div class="analytics-value">{{ stats.roles }}</div>
         <div class="analytics-label">ROLES</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-purple">
+    <a class="analytics-card analytics-purple" href="/guild/{{ guild_id }}/analytics/messages?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
         <div class="analytics-value">{{ stats.messages }}</div>
         <div class="analytics-label">MESSAGES ({{ days }}D)</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-blue">
+    <a class="analytics-card analytics-blue" href="/guild/{{ guild_id }}/analytics/commands?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
         <div class="analytics-value">{{ stats.commands }}</div>
         <div class="analytics-label">COMMANDS ({{ days }}D)</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-green">
+    <a class="analytics-card analytics-green" href="/guild/{{ guild_id }}/analytics/joins?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
         <div class="analytics-value">{{ stats.joins }}</div>
         <div class="analytics-label">JOINS ({{ days }}D)</div>
-    </div>
+    </a>
 
-    <div class="analytics-card analytics-red">
+    <a class="analytics-card analytics-red" href="/guild/{{ guild_id }}/analytics/leaves?days={{ days }}">
         <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg></div>
         <div class="analytics-value">{{ stats.leaves }}</div>
         <div class="analytics-label">LEAVES ({{ days }}D)</div>
-    </div>
+    </a>
+
+    <a class="analytics-card analytics-purple" href="/guild/{{ guild_id }}/analytics/reactions?days={{ days }}">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div>
+        <div class="analytics-value">{{ stats.reactions }}</div>
+        <div class="analytics-label">REACTIONS ({{ days }}D)</div>
+    </a>
+
+    <a class="analytics-card analytics-yellow" href="/guild/{{ guild_id }}/analytics/message_edits?days={{ days }}">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div>
+        <div class="analytics-value">{{ stats.message_edits }}</div>
+        <div class="analytics-label">MESSAGE EDITS ({{ days }}D)</div>
+    </a>
+
+    <a class="analytics-card analytics-red" href="/guild/{{ guild_id }}/analytics/message_deletes?days={{ days }}">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
+        <div class="analytics-value">{{ stats.message_deletes }}</div>
+        <div class="analytics-label">MESSAGE DELETES ({{ days }}D)</div>
+    </a>
+
+    <a class="analytics-card analytics-green" href="/guild/{{ guild_id }}/analytics/voice_joins?days={{ days }}">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg></div>
+        <div class="analytics-value">{{ stats.voice_joins }}</div>
+        <div class="analytics-label">VOICE JOINS ({{ days }}D)</div>
+    </a>
+
+    <a class="analytics-card analytics-blue" href="/guild/{{ guild_id }}/analytics/voice_leaves?days={{ days }}">
+        <div class="analytics-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg></div>
+        <div class="analytics-value">{{ stats.voice_leaves }}</div>
+        <div class="analytics-label">VOICE LEAVES ({{ days }}D)</div>
+    </a>
 </div>
 
 <div class="analytics-range">
     <span class="muted">Time range:</span>
-    {% for option in (7, 14, 30) %}
-    <a href="/guild/{{ guild_id }}/analytics?days={{ option }}" class="{{ 'selected' if days == option else '' }}">{{ option }} days</a>
+    {% for option in (1, 7, 14, 30) %}
+    <a href="/guild/{{ guild_id }}/analytics?days={{ option }}" class="{{ 'selected' if days == option else '' }}">{{ option }} day{{ 's' if option != 1 }}</a>
     {% endfor %}
 </div>
 
 <p class="hint analytics-note">
     Message counts record activity metadata only; message content is not stored for analytics.
 </p>
+<section class="card analytics-settings">
+    <h2>Analytics collection</h2>
+    <p class="hint">Turn individual analytics streams on or off. Disabled streams stop creating new analytics events; existing history is kept.</p>
+    <form method="post" action="/guild/{{ guild_id }}/analytics/settings">
+        <div class="toggle-grid">
+        {% set labels = {
+            'messages':'Messages',
+            'commands':'Commands',
+            'member_joins':'Member joins',
+            'member_leaves':'Member leaves',
+            'message_edits':'Message edits',
+            'message_deletes':'Message deletes',
+            'reactions':'Reactions',
+            'voice_joins':'Voice joins',
+            'voice_leaves':'Voice leaves'
+        } %}
+        {% for key, label in labels.items() %}
+        <label class="toggle-row">
+            <span><strong>{{ label }}</strong><small>Collect {{ label|lower }} for analytics</small></span>
+            <input type="checkbox" name="{{ key }}" {% if analytics_settings[key] %}checked{% endif %}>
+        </label>
+        {% endfor %}
+        </div>
+        <button type="submit">Save analytics settings</button>
+    </form>
+</section>
 {% endblock %}

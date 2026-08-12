@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Sticky Roles · Reedmuhn Bot{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🧷 Sticky Roles</h1>
+        <p class="muted">Keep eligible member roles when someone leaves and restore them when they rejoin.</p>
+    </div>
+</div>
+
+<section class="card">
+    <h2>Feature</h2>
+    <form method="post" action="/guild/{{ guild_id }}/stickyroles/toggle" class="inline-form">
+        <label class="toggle">
+            <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %} onchange="this.form.submit()">
+            <span>Enable sticky roles</span>
+        </label>
+    </form>
+    <p class="muted">
+        {% if enabled %}Sticky roles are enabled.{% else %}Sticky roles are disabled.{% endif %}
+        Manage exclusions below.
+    </p>
+</section>
+
+<section class="card">
+    <h2>Role exclusions</h2>
+    <p class="muted">Excluded roles will never be restored. This is useful for Admin, Staff, or other privileged roles.</p>
+    {% if roles %}
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Role</th><th>Position</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+        {% for role_id, name, position, excluded in roles %}
+        <tr>
+            <td><strong>@{{ name }}</strong></td>
+            <td>{{ position }}</td>
+            <td>{% if excluded %}<span class="badge">Excluded</span>{% else %}Restorable</td>{% endif %}
+            <td>
+                {% if excluded %}
+                <form method="post" action="/guild/{{ guild_id }}/stickyroles/include">
+                    <input type="hidden" name="role_id" value="{{ role_id }}">
+                    <button type="submit">Include</button>
+                </form>
+                {% else %}
+                <form method="post" action="/guild/{{ guild_id }}/stickyroles/exclude">
+                    <input type="hidden" name="role_id" value="{{ role_id }}">
+                    <button type="submit">Exclude</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">No cached roles are available yet.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>Automatic safety exclusions</h2>
+    <ul>
+        <li><code>@everyone</code> is never restored.</li>
+        <li>Managed/integration roles are never restored.</li>
+        <li>Roles at or above the bot's highest role are never restored.</li>
+        <li>Roles manually excluded above are never restored.</li>
+    </ul>
+</section>
+{% endblock %}

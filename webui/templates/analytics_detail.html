@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.label }} - {{ guild_name }}{% endblock %}
+{% block content %}
+<div class="page-heading analytics-heading">
+    <div class="page-heading-icon analytics-{{ meta.color }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+    </div>
+    <div>
+        <h1>{{ meta.label }}</h1>
+        <p class="muted">
+            {% if meta.kind == "timeseries" %}Daily breakdown over the last {{ days }} day{{ 's' if days != 1 }}{% else %}Current snapshot{% endif %}
+        </p>
+    </div>
+</div>
+
+<a href="/guild/{{ guild_id }}/analytics?days={{ days }}" class="stat-link">← Back to Analytics</a>
+
+{% if meta.kind == "timeseries" %}
+<div class="card" style="margin-top:1.25rem;">
+    <h2>By day</h2>
+    <div class="daybar-list">
+        {% for row in breakdown %}
+        <div class="daybar-row">
+            <span class="daybar-date muted">{{ row.day }}</span>
+            <div class="daybar-track"><div class="daybar-fill analytics-{{ meta.color }}" style="width: {{ row.pct }}%;"></div></div>
+            <span class="daybar-count">{{ row.count }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% if events is not none %}
+<div class="card">
+    <h2>Recent {{ meta.label.lower() }}</h2>
+    {% if events %}
+    <table>
+        <thead><tr><th>Member</th>{% if events[0].context is not none %}<th>Channel</th>{% endif %}<th>When</th></tr></thead>
+        <tbody>
+            {% for ev in events %}
+            <tr><td>{{ ev.name }}</td>{% if ev.context is not none %}<td class="muted">{{ ev.context }}</td>{% endif %}<td class="muted">{{ ev.when }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No {{ meta.label.lower() }} recorded in this range.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+<div class="analytics-range">
+    <span class="muted">Time range:</span>
+    {% for option in (1, 7, 14, 30) %}
+    <a href="/guild/{{ guild_id }}/analytics/{{ metric }}?days={{ option }}" class="{{ 'selected' if days == option else '' }}">{{ option }} day{{ 's' if option != 1 }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if members is not none %}
+<div class="card" style="margin-top:1.25rem;">
+    <h2 id="member-count">{{ members|length }} member{{ "s" if members|length != 1 else "" }}</h2>
+    {% if members %}
+    <input type="text" id="member-search" class="member-search" placeholder="Search members…" autocomplete="off">
+    <table id="member-table">
+        <thead><tr><th>Member</th><th>Status</th></tr></thead>
+        <tbody>
+            {% for uid, display, name, status in members %}
+            <tr data-search="{{ (display ~ ' ' ~ name)|lower }}"><td>{{ display }}</td><td class="muted">{{ status|capitalize }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="muted" id="member-empty" style="display:none;">No members match your search.</p>
+    <script>
+    (function () {
+        const input = document.getElementById("member-search");
+        const rows = Array.from(document.querySelectorAll("#member-table tbody tr"));
+        const empty = document.getElementById("member-empty");
+        const countLabel = document.getElementById("member-count");
+        const baseLabel = {{ members|length }};
+        input.addEventListener("input", function () {
+            const q = input.value.trim().toLowerCase();
+            let visible = 0;
+            rows.forEach(function (row) {
+                const match = !q || row.dataset.search.includes(q);
+                row.style.display = match ? "" : "none";
+                if (match) visible++;
+            });
+            empty.style.display = visible === 0 ? "" : "none";
+            countLabel.textContent = q
+                ? visible + " of " + baseLabel + " member" + (baseLabel !== 1 ? "s" : "")
+                : baseLabel + " member" + (baseLabel !== 1 ? "s" : "");
+        });
+    })();
+    </script>
+    {% else %}
+    <p class="muted">No members cached yet.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if channels is not none %}
+<div class="card" style="margin-top:1.25rem;">
+    <h2>{{ channels|length }} channel{{ "s" if channels|length != 1 else "" }}</h2>
+    {% if channels %}
+    <table>
+        <thead><tr><th>Channel</th><th>Type</th></tr></thead>
+        <tbody>
+            {% for cid, name, ctype, position in channels %}
+            <tr><td>#{{ name }}</td><td class="muted">{{ ctype }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No channels cached yet.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if roles is not none %}
+<div class="card" style="margin-top:1.25rem;">
+    <h2>{{ roles|length + 1 }} role{{ "s" if roles|length != 0 else "" }}</h2>
+    <table>
+        <thead><tr><th>Role</th></tr></thead>
+        <tbody>
+            <tr><td>@everyone</td></tr>
+            {% for rid, name, position in roles %}
+            <tr><td>@{{ name }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

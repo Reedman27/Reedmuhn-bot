@@ -74,7 +74,7 @@ async def security_headers_and_origin_check(request: Request, call_next):
         referer = request.headers.get("referer")
         expected = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
         supplied = origin or (referer.rsplit("/", 3)[0] if referer else None)
-        if origin and not origin.startswith(expected):
+        if supplied and not supplied.startswith(expected):
             return RedirectResponse("/login", status_code=303)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -273,6 +273,9 @@ async def home(request: Request):
             "guilds": accessible_guilds,
             "not_accessible": error == "not_accessible",
             "no_permission": error == "no_permission",
+            "guild_id": None,
+            "guild_name": None,
+            "discord_username": request.session.get("discord_username"),
         },
     )
 
@@ -315,10 +318,51 @@ async def overview(request: Request, guild_id: int):
         "counting_channel": bool(counting),
         "counting_high_score": counting["high_score"] if counting else 0,
     }
-    return render(request, "overview.html", guild_id, "overview", stats=stats)
+
+    # Compact activity snapshot, same numbers the full Analytics page shows,
+    # so people can see server health without leaving the overview.
+    activity_days = 7
+    since = int(time.time()) - activity_days * 86400
+    analytics_stats = {**db.get_server_counts(guild_id), **db.get_activity_stats(guild_id, since)}
+
+    return render(
+        request, "overview.html", guild_id, "overview",
+        stats=stats, analytics_stats=analytics_stats, activity_days=activity_days,
+    )
 
 
 # ---- analytics ----
+
+def _parse_days(request: Request) -> int:
+    try:
+        days = int(request.query_params.get("days", "14"))
+    except ValueError:
+        days = 14
+    if days not in (1, 7, 14, 30):
+        days = 14
+    return days
+
+
+# Shared metadata for every drill-down-able analytics figure: which stat key
+# it reads, its label/icon/color on the analytics grid, and whether it's a
+# point-in-time snapshot (members/online/channels/roles) or a count of
+# events over the selected time range (messages/commands/joins/leaves).
+ANALYTICS_METRICS = {
+    "members":  {"label": "Members",  "kind": "snapshot", "color": "purple"},
+    "online":   {"label": "Online",   "kind": "snapshot", "color": "green"},
+    "channels": {"label": "Channels", "kind": "snapshot", "color": "blue"},
+    "roles":    {"label": "Roles",    "kind": "snapshot", "color": "yellow"},
+    "messages": {"label": "Messages", "kind": "timeseries", "color": "purple", "event_type": "message.received"},
+    "commands": {"label": "Commands", "kind": "timeseries", "color": "blue", "event_type": "command.completed"},
+    "joins":    {"label": "Joins",    "kind": "timeseries", "color": "green", "event_type": "member.join"},
+    "leaves":   {"label": "Leaves",   "kind": "timeseries", "color": "red", "event_type": "member.leave"},
+    "message_edits":   {"label": "Message Edits",   "kind": "timeseries", "color": "yellow", "event_type": "message.edited"},
+    "message_deletes": {"label": "Message Deletes", "kind": "timeseries", "color": "red", "event_type": "message.deleted"},
+    "reactions":       {"label": "Reactions",       "kind": "timeseries", "color": "purple", "event_type": "reaction.added"},
+    "voice_joins":     {"label": "Voice Joins",     "kind": "timeseries", "color": "green", "event_type": "voice.join"},
+    "voice_leaves":    {"label": "Voice Leaves",    "kind": "timeseries", "color": "blue", "event_type": "voice.leave"},
+}
+
 
 @app.get("/guild/{guild_id}/analytics")
 async def analytics_page(request: Request, guild_id: int):
@@ -326,13 +370,7 @@ async def analytics_page(request: Request, guild_id: int):
         return r
     request.session["guild_id"] = guild_id
 
-    try:
-        days = int(request.query_params.get("days", "14"))
-    except ValueError:
-        days = 14
-    if days not in (7, 14, 30):
-        days = 14
-
+    days = _parse_days(request)
     since = int(time.time()) - days * 86400
     server = db.get_server_counts(guild_id)
     activity = db.get_activity_stats(guild_id, since)
@@ -343,6 +381,100 @@ async def analytics_page(request: Request, guild_id: int):
         "analytics",
         stats={**server, **activity},
         days=days,
+        analytics_settings=db.get_analytics_settings(guild_id),
+    )
+
+
+@app.post("/guild/{guild_id}/analytics/settings")
+async def analytics_settings(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    allowed = set(db.get_analytics_settings(guild_id))
+    form = await request.form()
+    # Checkboxes are intentionally explicit: unchecked means disabled.
+    for setting in allowed:
+        db.set_analytics_setting(guild_id, setting, setting in form)
+    return RedirectResponse(f"/guild/{guild_id}/analytics", status_code=303)
+
+
+@app.get("/guild/{guild_id}/analytics/{metric}")
+async def analytics_detail(request: Request, guild_id: int, metric: str):
+    if (r := await require_auth(request)):
+        return r
+    request.session["guild_id"] = guild_id
+
+    meta = ANALYTICS_METRICS.get(metric)
+    if meta is None:
+        return RedirectResponse(f"/guild/{guild_id}/analytics", status_code=303)
+
+    days = _parse_days(request)
+    since = int(time.time()) - days * 86400
+
+    breakdown = None
+    events = None
+    members = None
+
+    if meta["kind"] == "timeseries":
+        event_type = meta["event_type"]
+        counts = dict(db.get_daily_activity_counts(guild_id, since, event_type))
+        breakdown = []
+        for offset in range(days - 1, -1, -1):
+            day = datetime.fromtimestamp(int(time.time()) - offset * 86400).strftime("%Y-%m-%d")
+            breakdown.append({"day": day, "count": counts.get(day, 0)})
+        max_count = max((row["count"] for row in breakdown), default=0)
+        for row in breakdown:
+            row["pct"] = round(100 * row["count"] / max_count) if max_count else 0
+
+        # Which timeseries metrics get a "who/what recently" list below the
+        # chart - skipped for messages/commands since message content isn't
+        # stored, so there's nothing more informative to show than the chart
+        # already gives.
+        if event_type in ("member.join", "member.leave", "message.edited", "message.deleted",
+                           "reaction.added", "voice.join", "voice.leave"):
+            raw_events = db.list_recent_events(guild_id, since, event_type, limit=25)
+            events = []
+            for created_at, actor_id, target_id, details in raw_events:
+                detail_data = {}
+                if details:
+                    try:
+                        detail_data = json.loads(details)
+                    except (json.JSONDecodeError, TypeError):
+                        detail_data = {}
+
+                if event_type in ("member.join", "member.leave"):
+                    name = detail_data.get("member") or (member_label(guild_id, target_id) if target_id else "Unknown member")
+                    context = None
+                else:
+                    name = member_label(guild_id, actor_id) if actor_id else "Unknown member"
+                    channel_id = detail_data.get("channel_id")
+                    context = channel_label(guild_id, channel_id) if channel_id else None
+
+                events.append({
+                    "when": datetime.fromtimestamp(created_at).strftime("%b %d, %Y %H:%M"),
+                    "name": name,
+                    "context": context,
+                })
+    elif metric in ("members", "online"):
+        members = db.list_bot_members_with_status(guild_id)
+        if metric == "online":
+            members = [m for m in members if m[3] in ("online", "idle", "dnd")]
+
+    channels = db.list_bot_channels(guild_id) if metric == "channels" else None
+    roles = db.list_bot_roles(guild_id) if metric == "roles" else None
+
+    return render(
+        request,
+        "analytics_detail.html",
+        guild_id,
+        "analytics",
+        metric=metric,
+        meta=meta,
+        days=days,
+        breakdown=breakdown,
+        events=events,
+        members=members,
+        channels=channels,
+        roles=roles,
     )
 
 
@@ -628,13 +760,37 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
         })
 
     cfg = db.get_guild_config(guild_id)
+    members = db.list_bot_members(guild_id)
     return render(
         request, "moderation.html", guild_id, "moderation",
         tab=tab, looked_up_user_id=user_id,
         looked_up_user_name=(member_label(guild_id, user_id) if user_id else None),
-        warns=warns, warned_users=warned_users, members=db.list_bot_members(guild_id), tempbans=tempbans,
+        warns=warns, warned_users=warned_users, members=members, tempbans=tempbans,
+        text_channels=db.list_bot_channels(guild_id, "text"), purge_requests=db.recent_purge_requests(guild_id, 15),
+        purge_member_names={uid: display for uid, display, _name in members},
         muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
     )
+
+
+@app.post("/guild/{guild_id}/moderation/purge")
+async def queue_dashboard_purge(
+    request: Request, guild_id: int, channel_id: int = Form(...),
+    amount: int = Form(...), user_id: str = Form(""), reason: str = Form("WebUI message purge"),
+):
+    if (r := await require_auth(request)):
+        return r
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount < 1 or amount > 1000 or not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=purge", status_code=303)
+    target = int(user_id) if user_id.strip().isdigit() else None
+    if target is not None and not any(uid == target for uid, _display, _name in db.list_bot_members(guild_id)):
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=purge", status_code=303)
+    reason = reason.strip()[:500] or "WebUI message purge"
+    db.queue_purge_request(guild_id, channel_id, target, amount, reason)
+    return RedirectResponse(f"/guild/{guild_id}/moderation?purge=queued", status_code=303)
 
 
 @app.post("/guild/{guild_id}/moderation/clear-warns")
@@ -977,7 +1133,10 @@ async def add_automod_escalation_tier(
 
     duration_seconds = None
     if action in AUTOMOD_TIMED_ACTIONS:
-        unit_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}.get(duration_unit)
+        unit_seconds = {
+            "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800,
+            "mo": 30 * 86400, "y": 365 * 86400,
+        }.get(duration_unit)
         if not duration_value.strip().isdigit() or unit_seconds is None:
             return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
         duration_seconds = int(duration_value) * unit_seconds
@@ -1112,12 +1271,69 @@ async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)
 
 
+@app.post("/guild/{guild_id}/tempvoice/delete")
+async def delete_tempvoice_route(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not db.is_temp_voice_channel(channel_id, guild_id):
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    if not db.request_temp_voice_delete(guild_id, channel_id):
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/tempvoice?requested=1", status_code=303)
+
+
 @app.post("/guild/{guild_id}/tempvoice/remove")
 async def remove_voice_hub_route(request: Request, guild_id: int, channel_id: int = Form(...)):
     if (r := await require_auth(request)):
         return r
     db.remove_voice_hub(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)
+
+
+
+# ---- sticky roles ----
+
+@app.get("/guild/{guild_id}/stickyroles")
+async def stickyroles_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_guild_config(guild_id)
+    excluded_ids = set(db.list_sticky_role_exclusions(guild_id))
+    roles = [
+        (rid, name, position, rid in excluded_ids)
+        for rid, name, position in db.list_bot_roles(guild_id)
+    ]
+    return render(
+        request, "stickyroles.html", guild_id, "stickyroles",
+        enabled=cfg["sticky_roles_enabled"],
+        roles=roles,
+    )
+
+
+@app.post("/guild/{guild_id}/stickyroles/toggle")
+async def stickyroles_toggle(request: Request, guild_id: int, enabled: Optional[str] = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_sticky_roles_enabled(guild_id, enabled == "on")
+    return RedirectResponse(f"/guild/{guild_id}/stickyroles", status_code=303)
+
+
+@app.post("/guild/{guild_id}/stickyroles/exclude")
+async def stickyroles_exclude(request: Request, guild_id: int, role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    valid_roles = {rid for rid, _, _ in db.list_bot_roles(guild_id)}
+    if role_id in valid_roles:
+        db.add_sticky_role_exclusion(guild_id, role_id)
+    return RedirectResponse(f"/guild/{guild_id}/stickyroles", status_code=303)
+
+
+@app.post("/guild/{guild_id}/stickyroles/include")
+async def stickyroles_include(request: Request, guild_id: int, role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_sticky_role_exclusion(guild_id, role_id)
+    return RedirectResponse(f"/guild/{guild_id}/stickyroles", status_code=303)
 
 
 # ---- talk as the bot ----

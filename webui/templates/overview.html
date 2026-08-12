@@ -47,4 +47,34 @@
         <a href="/guild/{{ guild_id }}/counting" class="stat-link">{{ "Manage" if stats.counting_channel else "Set up" }} →</a>
     </div>
 </div>
+
+<h2 style="margin-top: 2rem;">Activity</h2>
+<p class="muted">Last {{ activity_days }} days. <a href="/guild/{{ guild_id }}/analytics">Full analytics →</a></p>
+
+<div class="overview-analytics-grid">
+    <a class="analytics-card analytics-purple" href="/guild/{{ guild_id }}/analytics/members">
+        <div class="analytics-value">{{ analytics_stats.members }}</div>
+        <div class="analytics-label">MEMBERS</div>
+    </a>
+    <a class="analytics-card analytics-green" href="/guild/{{ guild_id }}/analytics/online">
+        <div class="analytics-value">{{ analytics_stats.online }}</div>
+        <div class="analytics-label">ONLINE</div>
+    </a>
+    <a class="analytics-card analytics-purple" href="/guild/{{ guild_id }}/analytics/messages?days={{ activity_days }}">
+        <div class="analytics-value">{{ analytics_stats.messages }}</div>
+        <div class="analytics-label">MESSAGES</div>
+    </a>
+    <a class="analytics-card analytics-blue" href="/guild/{{ guild_id }}/analytics/commands?days={{ activity_days }}">
+        <div class="analytics-value">{{ analytics_stats.commands }}</div>
+        <div class="analytics-label">COMMANDS</div>
+    </a>
+    <a class="analytics-card analytics-green" href="/guild/{{ guild_id }}/analytics/joins?days={{ activity_days }}">
+        <div class="analytics-value">{{ analytics_stats.joins }}</div>
+        <div class="analytics-label">JOINS</div>
+    </a>
+    <a class="analytics-card analytics-red" href="/guild/{{ guild_id }}/analytics/leaves?days={{ activity_days }}">
+        <div class="analytics-value">{{ analytics_stats.leaves }}</div>
+        <div class="analytics-label">LEAVES</div>
+    </a>
+</div>
 {% endblock %}

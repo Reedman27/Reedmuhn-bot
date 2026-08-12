@@ -7,6 +7,7 @@ that's all we need.
 import json
 import logging
 import re
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -31,14 +32,27 @@ CHANNEL_NAME_PATTERNS = [
 ]
 
 
-def _channel_page_url(raw: str) -> str:
+_ALLOWED_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def _channel_page_url(raw: str) -> str | None:
     """Turns whatever a normal person would paste - a full channel/video URL,
     an @handle (with or without the @), or an already-known channel ID -
-    into a URL worth fetching for its page metadata."""
+    into a URL worth fetching for its page metadata.
+
+    Returns None for a pasted URL that isn't actually a youtube.com/youtu.be
+    link - fetching an arbitrary attacker-supplied URL from the bot's server
+    would be a server-side request forgery vector (hitting internal/LAN
+    services, cloud metadata endpoints, etc.), so anything off-host is
+    rejected outright rather than fetched.
+    """
     raw = raw.strip()
     if CHANNEL_ID_RE.match(raw):
         return f"https://www.youtube.com/channel/{raw}"
     if raw.startswith("http://") or raw.startswith("https://"):
+        host = (urlparse(raw).hostname or "").lower()
+        if host not in _ALLOWED_YOUTUBE_HOSTS:
+            return None
         return raw
     return f"https://www.youtube.com/@{raw.lstrip('@')}"
 
@@ -52,6 +66,8 @@ async def resolve_youtube_channel(session: aiohttp.ClientSession, raw: str) -> t
     resolvable was found (bad input, page changed shape, network hiccup).
     """
     url = _channel_page_url(raw)
+    if url is None:
+        return None
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:

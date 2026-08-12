@@ -114,21 +114,26 @@
             {% endfor %}
         </select>
 
-        <span id="tier-duration-fields">
+        <span id="tier-duration-fields" class="duration-field">
             <label for="tier_duration_value">Duration</label>
-            <input type="number" id="tier_duration_value" name="duration_value" min="1">
-            <select id="tier_duration_unit" name="duration_unit">
-                <option value="s">seconds</option>
-                <option value="m" selected>minutes</option>
-                <option value="h">hours</option>
-                <option value="d">days</option>
-                <option value="w">weeks</option>
-            </select>
+            <span class="duration-field-row">
+                <input type="number" id="tier_duration_value" name="duration_value" min="1">
+                <select id="tier_duration_unit" name="duration_unit">
+                    <option value="s">seconds</option>
+                    <option value="m" selected>minutes</option>
+                    <option value="h">hours</option>
+                    <option value="d">days</option>
+                    <option value="w">weeks</option>
+                    <option value="mo">months</option>
+                    <option value="y">years</option>
+                </select>
+            </span>
+            <small id="tier-duration-hint" class="hint"></small>
         </span>
 
         <button type="submit">Add / update tier</button>
     </form>
-    <p class="hint">Timeout durations are capped at 28 days by Discord itself; mute and temporary-ban durations can go up to 365 days. Adding a tier at a warning count that already has one replaces it.</p>
+    <p class="hint">Timeout durations are capped at 28 days by Discord itself; mute and temporary-ban durations can go up to 365 days (a month here is 30 days, a year is 365). Adding a tier at a warning count that already has one replaces it.</p>
 </section>
 <script src="/static/automod.js"></script>
 

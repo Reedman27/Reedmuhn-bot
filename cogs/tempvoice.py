@@ -11,7 +11,7 @@ import logging
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 logger = logging.getLogger("tempvoice")
 
@@ -22,6 +22,29 @@ class TempVoice(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._cleaned_up = False
+        self._delete_request_worker.start()
+
+    def cog_unload(self):
+        self._delete_request_worker.cancel()
+
+    @tasks.loop(seconds=2)
+    async def _delete_request_worker(self):
+        for guild in self.bot.guilds:
+            for _request_id, channel_id in self.bot.db.pop_temp_voice_delete_requests(guild.id):
+                channel = guild.get_channel(channel_id)
+                if channel is None:
+                    # Discord channel was deleted externally; clean stale DB state.
+                    self.bot.db.remove_temp_voice_channel(channel_id)
+                    continue
+                if isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id):
+                    if not await self._delete_temp_channel(channel):
+                        # Keep the request queued if Discord temporarily refuses
+                        # the deletion; the worker will retry on its next pass.
+                        self.bot.db.request_temp_voice_delete(guild.id, channel_id)
+
+    @_delete_request_worker.before_loop
+    async def _before_delete_request_worker(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name="setvoicehub", description="Joining this voice channel gives you your own temporary channel")
     @app_commands.describe(channel="A voice channel to add as a 'create a channel' hub")
@@ -103,12 +126,19 @@ class TempVoice(commands.Cog):
 
         self.bot.db.add_temp_voice_channel(member.guild.id, temp_channel.id, member.id)
 
-    async def _delete_temp_channel(self, channel: discord.VoiceChannel):
-        self.bot.db.remove_temp_voice_channel(channel.id)
+    async def _delete_temp_channel(self, channel: discord.VoiceChannel) -> bool:
         try:
             await channel.delete(reason="Temp voice channel emptied")
-        except (discord.Forbidden, discord.NotFound):
-            pass  # already gone, or we lost permission - either way nothing more to do
+        except discord.NotFound:
+            # It is already gone, so its database record can safely disappear.
+            self.bot.db.remove_temp_voice_channel(channel.id)
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("failed to delete temp voice channel %s", channel.id)
+            return False
+
+        self.bot.db.remove_temp_voice_channel(channel.id)
+        return True
 
     @commands.Cog.listener()
     async def on_ready(self):

@@ -195,6 +195,15 @@ class LoggingCog(commands.Cog, name="Logging"):
             return
         if before.content == after.content:
             return  # embed-load edits etc. - nothing the author actually changed
+        self.bot.db.record_bot_event(
+            "message.edited",
+            before.guild.id,
+            before.author.id,
+            before.id,
+            {"channel_id": before.channel.id},
+            source="discord_event",
+            status="success",
+        )
         if self.bot.db.is_log_channel_ignored(before.guild.id, before.channel.id):
             return
         embed = discord.Embed(
@@ -212,6 +221,15 @@ class LoggingCog(commands.Cog, name="Logging"):
     async def on_message_delete(self, message: discord.Message):
         if message.guild is None or message.author.bot:
             return
+        self.bot.db.record_bot_event(
+            "message.deleted",
+            message.guild.id,
+            message.author.id,
+            message.id,
+            {"channel_id": message.channel.id},
+            source="discord_event",
+            status="success",
+        )
         if self.bot.db.is_log_channel_ignored(message.guild.id, message.channel.id):
             return
         embed = discord.Embed(
@@ -504,11 +522,19 @@ class LoggingCog(commands.Cog, name="Logging"):
         if before.channel == after.channel:
             return  # a mute/deafen/stream toggle with no channel change - not logged, too noisy
         if before.channel is None:
+            self.bot.db.record_bot_event(
+                "voice.join", member.guild.id, member.id, after.channel.id,
+                {"channel_id": after.channel.id}, source="discord_event", status="success",
+            )
             embed = discord.Embed(
                 description=f"**{member.mention} joined voice** {after.channel.mention}",
                 color=_COLOR_ADD, timestamp=discord.utils.utcnow(),
             )
         elif after.channel is None:
+            self.bot.db.record_bot_event(
+                "voice.leave", member.guild.id, member.id, before.channel.id,
+                {"channel_id": before.channel.id}, source="discord_event", status="success",
+            )
             embed = discord.Embed(
                 description=f"**{member.mention} left voice** {before.channel.mention}",
                 color=_COLOR_REMOVE, timestamp=discord.utils.utcnow(),
@@ -519,6 +545,27 @@ class LoggingCog(commands.Cog, name="Logging"):
                 color=_COLOR_EDIT, timestamp=discord.utils.utcnow(),
             )
         await self._log(member.guild, "voice", embed)
+
+    # ---- reactions ----
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        # Analytics/audit metadata only: which emoji isn't recorded, just
+        # that a reaction happened - matches the message.received approach
+        # of not storing content, only activity counts.
+        if payload.guild_id is None:
+            return
+        if payload.member is not None and payload.member.bot:
+            return
+        self.bot.db.record_bot_event(
+            "reaction.added",
+            payload.guild_id,
+            payload.user_id,
+            payload.message_id,
+            {"channel_id": payload.channel_id},
+            source="discord_event",
+            status="success",
+        )
 
 
 async def setup(bot: commands.Bot):

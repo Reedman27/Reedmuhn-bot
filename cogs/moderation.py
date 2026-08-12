@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import time
 
@@ -15,6 +14,97 @@ from utils import manager_or_permission
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @app_commands.command(name="purge", description="Delete recent messages, optionally only from one user")
+    @app_commands.describe(
+        amount="Number of messages to delete (1-1000)",
+        user="Only delete messages sent by this member",
+        reason="Reason for the cleanup",
+    )
+    @manager_or_permission("manage_messages")
+    async def purge(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 1000],
+        user: discord.Member = None,
+        reason: str = "Manual message purge",
+    ):
+        if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "This command only works in a server text channel.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        deleted = 0
+        before = None
+        scanned = 0
+        fourteen_days = 14 * 86400
+
+        # When a user is supplied, `amount` means matching messages to delete,
+        # not messages to scan. This makes /purge behave like Carl's targeted
+        # purge rather than requiring moderators to guess how far back to scan.
+        while deleted < amount:
+            batch_size = min(100, max(100, amount - deleted))
+            kwargs = {"limit": batch_size}
+            if before is not None:
+                kwargs["before"] = before
+
+            messages = [m async for m in interaction.channel.history(**kwargs)]
+            if not messages:
+                break
+            scanned += len(messages)
+
+            targets = messages if user is None else [m for m in messages if m.author.id == user.id]
+
+            recent = [
+                m for m in targets[: amount - deleted]
+                if (discord.utils.utcnow() - m.created_at).total_seconds() < fourteen_days
+            ]
+            old = [m for m in targets[: amount - deleted] if m not in recent]
+
+            if recent:
+                try:
+                    deleted += len(await interaction.channel.delete_messages(recent))
+                except (discord.Forbidden, discord.HTTPException):
+                    for message in recent:
+                        try:
+                            await message.delete(reason=reason)
+                            deleted += 1
+                        except (discord.NotFound, discord.Forbidden):
+                            pass
+
+            for message in old:
+                if deleted >= amount:
+                    break
+                try:
+                    await message.delete(reason=reason)
+                    deleted += 1
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+
+            before = messages[-1]
+            if len(messages) < batch_size:
+                break
+
+        target_text = f" from {user.mention}" if user else ""
+        await interaction.followup.send(
+            f"Deleted **{deleted}** message{'s' if deleted != 1 else ''}{target_text}.",
+            ephemeral=True,
+        )
+
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is not None and deleted:
+            embed = discord.Embed(
+                description=f"**Purge** - deleted {deleted} message(s){target_text}",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Moderator", value=interaction.user.mention)
+            embed.add_field(name="Channel", value=interaction.channel.mention)
+            embed.add_field(name="Reason", value=reason)
+            await logging_cog.log_event(interaction.guild, "moderation", embed)
 
     @app_commands.command(name="tempban", description="Temporarily ban a user")
     @app_commands.describe(user="Who to ban", duration="e.g. 10m, 2h, 3d", reason="Reason for the ban")
@@ -564,36 +654,6 @@ class Moderation(commands.Cog):
 
         self.bot.db.record_member_history(interaction.guild.id, user.id, "kick", interaction.user.id, reason)
         await interaction.response.send_message(f"Kicked {user.mention}. Reason: {reason}")
-
-    # ---- purge ----
-    # Ported/adapted from the chunked bulk-delete approach used by
-    # Red-DiscordBot's moderation utilities. This keeps the implementation
-    # native to discord.py rather than importing Red's framework.
-
-    @app_commands.command(name="purge", description="Delete recent messages in this channel")
-    @app_commands.describe(count="How many messages to delete (max 500)")
-    @manager_or_permission("manage_messages")
-    async def purge(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 500]):
-        if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message("This only works in a server text channel.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        remaining = count
-        deleted_total = 0
-        while remaining:
-            batch = min(remaining, 100)
-            deleted = await interaction.channel.purge(limit=batch)
-            deleted_total += len(deleted)
-            remaining -= batch
-            if len(deleted) < batch:
-                break
-            if remaining:
-                await asyncio.sleep(1.5)
-
-        await interaction.followup.send(
-            f"Deleted {deleted_total} message{'s' if deleted_total != 1 else ''}.", ephemeral=True
-        )
 
 
 async def setup(bot: commands.Bot):

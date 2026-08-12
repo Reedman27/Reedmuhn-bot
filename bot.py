@@ -89,8 +89,10 @@ INITIAL_COGS = [
     "cogs.tempvoice",
     "cogs.automod",
     "cogs.reactionroles",
+    "cogs.stickyroles",
     "cogs.logging_cog",
     "cogs.dashboardtalk",
+    "cogs.dashboardmoderation",
 ]
 
 FEATURES = FeatureStore([

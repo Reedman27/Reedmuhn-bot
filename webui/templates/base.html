@@ -4,11 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Reedmuhn Bot{% endblock %}</title>
+    <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="app">
     <aside class="sidebar">
         <div class="brand">🤖 Reedmuhn Bot</div>
+        {% if guild_id %}
         <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
         <nav>
             <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a>
@@ -25,13 +27,33 @@
             <a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a>
             <a href="/guild/{{ guild_id }}/reactionroles" class="{{ 'active' if active == 'reactionroles' else '' }}">🎭 Reaction Roles</a>
             <a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a>
+            <a href="/guild/{{ guild_id }}/stickyroles" class="{{ 'active' if active == 'stickyroles' else '' }}">🧷 Sticky Roles</a>
             <a href="/guild/{{ guild_id }}/permissions" class="{{ 'active' if active == 'permissions' else '' }}">🔐 Permissions</a>
         </nav>
+        {% else %}
+        <nav class="nav-spacer"></nav>
+        {% endif %}
+
+        {# This footer (theme menu, current server + switch, logged-in-as,
+           log out) is intentionally OUTSIDE the "{% if guild_id %}" block
+           above so it renders identically on every page - including the
+           server picker, which has no guild_id yet. #}
         <div class="sidebar-footer">
+            <div class="theme-menu" id="theme-menu">
+                <span class="theme-menu-label">Theme</span>
+                <button type="button" id="theme-menu-button" class="theme-menu-button" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="theme-swatch" id="theme-menu-swatch"><i class="sw sw-bg"></i><i class="sw sw-accent"></i></span>
+                    <span id="theme-menu-current">Catppuccin Mocha</span>
+                    <svg class="theme-menu-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div id="theme-menu-panel" class="theme-menu-panel" role="listbox" aria-labelledby="theme-menu-button" hidden></div>
+            </div>
+            {% if guild_id %}
             <form action="/switch-guild" method="post">
                 <span class="muted">{{ guild_name }}</span>
                 <button type="submit" class="link-btn">switch</button>
             </form>
+            {% endif %}
             {% if discord_username %}<div class="muted logged-in-as">Logged in as {{ discord_username }}</div>{% endif %}
             <a href="/logout" class="logout">Log out</a>
         </div>

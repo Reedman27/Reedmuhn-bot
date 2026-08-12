@@ -9,6 +9,7 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 
 - 🛡️ Moderation: tempbans, warnings, timeouts, kicks, purges, tempnick, and a configurable mute role
 - 🚨 Automod: invite blocking, banned words, caps, mention spam, message spam, duplicate spam, and violation escalation
+- 🧷 Sticky roles: persist eligible member roles across leaves/rejoins, with Discord and WebUI controls plus role exclusions for privileged roles
 - 👋 Welcome messages, optional generated welcome cards, and autoroles
 - 🎂 Birthday tracking and announcements
 - 🔢 Counting with high scores and earned saves
@@ -18,6 +19,7 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 - 🎙️ Temporary voice channels
 - 🎭 Reaction roles - react to a message to get a role, un-react to remove it
 - 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel. Purges get a full transcript: every purged message's author and content, with any pasted links (gifs, images, etc.) kept as plain text rather than re-hosted embeds, plus a `.txt` attachment with the complete list so nothing is lost even on a large purge
+- 🖥️ WebUI parity: analytics streams, temp-voice shutdowns, banned-word configuration, sticky-role exclusions, and targeted purges can all be managed from the dashboard
 - 🎉 Fun commands
 - 🌐 Web dashboard for configuration, protected by a single shared password (no Discord OAuth or public callback required)
 
@@ -271,3 +273,12 @@ If you redistribute or modify Reedmuhn, keep the AGPL-3.0 license and the third-
 ## License
 
 AGPL-3.0. See [`LICENSE`](LICENSE).
+
+
+### Moderation additions
+
+- `/purge amount:<1-1000> user:<member>` deletes recent messages, optionally restricted to a specific member. Discord's 14-day bulk-delete limit is handled automatically by falling back to individual deletes for older messages.
+- `/automodword add word:<word-or-phrase>` adds a server-wide banned word/phrase.
+- `/automodword remove word:<word-or-phrase>` removes one.
+- `/automodword list` shows the configured list.
+- The existing WebUI **AutoMod → Banned words** editor manages the same list, so changes made in Discord and the WebUI stay synchronized.

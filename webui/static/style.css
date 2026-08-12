@@ -1,4 +1,4 @@
-:root {
+:root, [data-theme="mocha"], [data-theme-preview="mocha"] {
     --bg: #1e1e2e;
     --card: #313244;
     --sidebar: #181825;
@@ -6,9 +6,540 @@
     --muted: #a6adc8;
     --accent: #89b4fa;
     --accent-dim: #45475a;
+    --accent-contrast: #1e1e2e;
     --danger: #f38ba8;
     --border: #45475a;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- themes ----
+   Mocha (above) is the original palette the WebUI was designed around and
+   stays the default. Every other theme just swaps this same set of 10 CSS
+   variables - see .theme-menu in base.html for the switcher UI (styled
+   near the bottom of this file, under "theme menu"). Applied via
+   <html data-theme="..."> and persisted in localStorage (theme.js), so the
+   whole UI reads these vars, nothing else needs to change per-theme.
+   Each block also matches [data-theme-preview="..."] so the swatch in the
+   theme menu can show a theme's real colors without switching to it or
+   duplicating any color value in JS - see THEMES in theme.js for the
+   id/label/group list (text only, no colors) that builds the menu. */
+
+[data-theme="latte"], [data-theme-preview="latte"] {
+    --bg: #eff1f5;
+    --card: #ffffff;
+    --sidebar: #e6e9ef;
+    --text: #4c4f69;
+    --muted: #6c6f85;
+    --accent: #8839ef;
+    --accent-dim: #dce0e8;
+    --accent-contrast: #ffffff;
+    --danger: #d20f39;
+    --border: #ccd0da;
+    --shadow: 0 1px 2px rgba(76, 79, 105, 0.06), 0 6px 16px rgba(76, 79, 105, 0.08);
+}
+
+[data-theme="frappe"], [data-theme-preview="frappe"] {
+    --bg: #303446;
+    --card: #414559;
+    --sidebar: #292c3c;
+    --text: #c6d0f5;
+    --muted: #a5adce;
+    --accent: #8caaee;
+    --accent-dim: #51576d;
+    --accent-contrast: #232634;
+    --danger: #e78284;
+    --border: #51576d;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="macchiato"], [data-theme-preview="macchiato"] {
+    --bg: #24273a;
+    --card: #363a4f;
+    --sidebar: #1e2030;
+    --text: #cad3f5;
+    --muted: #a5adcb;
+    --accent: #8aadf4;
+    --accent-dim: #494d64;
+    --accent-contrast: #181926;
+    --danger: #ed8796;
+    --border: #494d64;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="midnight"], [data-theme-preview="midnight"] {
+    --bg: #080b12;
+    --card: #131a26;
+    --sidebar: #0d111a;
+    --text: #f5f7ff;
+    --muted: #9ba7bd;
+    --accent: #5865f2;
+    --accent-dim: #1c2534;
+    --accent-contrast: #f5f7ff;
+    --danger: #ff6b7f;
+    --border: #1f2836;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 16px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="oled"], [data-theme-preview="oled"] {
+    --bg: #000000;
+    --card: #0e0e0e;
+    --sidebar: #000000;
+    --text: #f2f2f2;
+    --muted: #8a8a8a;
+    --accent: #7c8cff;
+    --accent-dim: #1a1a1a;
+    --accent-contrast: #000000;
+    --danger: #ff5c72;
+    --border: #1e1e1e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="high-contrast"], [data-theme-preview="high-contrast"] {
+    --bg: #000000;
+    --card: #0a0a0a;
+    --sidebar: #000000;
+    --text: #ffffff;
+    --muted: #d8d8d8;
+    --accent: #ffd400;
+    --accent-dim: #2a2a2a;
+    --accent-contrast: #000000;
+    --danger: #ff4d4d;
+    --border: #ffffff;
+    --shadow: none;
+}
+
+/* Deep blue / warm red / cream / gold - a calm alternative palette. */
+[data-theme="adriatic"], [data-theme-preview="adriatic"] {
+    --bg: #0e1a2b;
+    --card: #14263e;
+    --sidebar: #0a1420;
+    --text: #f2ede1;
+    --muted: #a9b7c9;
+    --accent: #d4a531;
+    --accent-dim: #23374f;
+    --accent-contrast: #0e1a2b;
+    --danger: #c0392b;
+    --border: #23374f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Soft pastel blue / pink / white - light and airy. */
+[data-theme="pastel-dawn"], [data-theme-preview="pastel-dawn"] {
+    --bg: #faf7fb;
+    --card: #ffffff;
+    --sidebar: #f2eefc;
+    --text: #4a4458;
+    --muted: #8b8398;
+    --accent: #f0a6ca;
+    --accent-dim: #eef1fb;
+    --accent-contrast: #4a4458;
+    --danger: #e0607e;
+    --border: #e6ddef;
+    --shadow: 0 1px 2px rgba(74, 68, 88, 0.06), 0 6px 16px rgba(74, 68, 88, 0.08);
+}
+
+/* Dark counterpart to Pastel Dawn - same pink/lavender accent, moved onto a
+   deep plum-black base instead of the light airy one above. */
+[data-theme="pastel-dusk"], [data-theme-preview="pastel-dusk"] {
+    --bg: #1f1b24;
+    --card: #2b2530;
+    --sidebar: #17141c;
+    --text: #f3eef8;
+    --muted: #a99bb4;
+    --accent: #f0a6ca;
+    --accent-dim: #3a3040;
+    --accent-contrast: #2b2530;
+    --danger: #f2718f;
+    --border: #3a3040;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Light companion to Adriatic (above), same family accent, moved onto a
+   warm cream base instead of the deep navy one. */
+[data-theme="adriatic-light"], [data-theme-preview="adriatic-light"] {
+    --bg: #f4f1e6;
+    --card: #ffffff;
+    --sidebar: #e9e2cd;
+    --text: #16324a;
+    --muted: #5d7488;
+    --accent: #b3841f;
+    --accent-dim: #eef0e0;
+    --accent-contrast: #ffffff;
+    --danger: #a5281b;
+    --border: #ddd6bd;
+    --shadow: 0 1px 2px rgba(22, 50, 74, 0.06), 0 6px 16px rgba(22, 50, 74, 0.08);
+}
+
+[data-theme="nord"], [data-theme-preview="nord"] {
+    --bg: #2e3440;
+    --card: #3b4252;
+    --sidebar: #272c37;
+    --text: #eceff4;
+    --muted: #a9b6c9;
+    --accent: #88c0d0;
+    --accent-dim: #434c5e;
+    --accent-contrast: #2e3440;
+    --danger: #bf616a;
+    --border: #434c5e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dracula"], [data-theme-preview="dracula"] {
+    --bg: #282a36;
+    --card: #343746;
+    --sidebar: #21222c;
+    --text: #f8f8f2;
+    --muted: #6272a4;
+    --accent: #bd93f9;
+    --accent-dim: #44475a;
+    --accent-contrast: #282a36;
+    --danger: #ff5555;
+    --border: #44475a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="gruvbox-dark"], [data-theme-preview="gruvbox-dark"] {
+    --bg: #282828;
+    --card: #3c3836;
+    --sidebar: #1d2021;
+    --text: #ebdbb2;
+    --muted: #a89984;
+    --accent: #fe8019;
+    --accent-dim: #504945;
+    --accent-contrast: #282828;
+    --danger: #fb4934;
+    --border: #504945;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="gruvbox-light"], [data-theme-preview="gruvbox-light"] {
+    --bg: #fbf1c7;
+    --card: #f2e5bc;
+    --sidebar: #ebdbb2;
+    --text: #3c3836;
+    --muted: #7c6f64;
+    --accent: #d65d0e;
+    --accent-dim: #e3d5ab;
+    --accent-contrast: #fbf1c7;
+    --danger: #cc241d;
+    --border: #d5c4a1;
+    --shadow: 0 1px 2px rgba(60, 56, 54, 0.06), 0 6px 16px rgba(60, 56, 54, 0.08);
+}
+
+[data-theme="solarized-dark"], [data-theme-preview="solarized-dark"] {
+    --bg: #002b36;
+    --card: #073642;
+    --sidebar: #00212b;
+    --text: #eee8d5;
+    --muted: #93a1a1;
+    --accent: #268bd2;
+    --accent-dim: #0a4a5c;
+    --accent-contrast: #002b36;
+    --danger: #dc322f;
+    --border: #0a4a5c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="solarized-light"], [data-theme-preview="solarized-light"] {
+    --bg: #fdf6e3;
+    --card: #eee8d5;
+    --sidebar: #f5efdc;
+    --text: #586e75;
+    --muted: #839496;
+    --accent: #268bd2;
+    --accent-dim: #e4ddc4;
+    --accent-contrast: #fdf6e3;
+    --danger: #dc322f;
+    --border: #d9d0b6;
+    --shadow: 0 1px 2px rgba(88, 110, 117, 0.06), 0 6px 16px rgba(88, 110, 117, 0.08);
+}
+
+[data-theme="tokyo-night"], [data-theme-preview="tokyo-night"] {
+    --bg: #1a1b26;
+    --card: #24283b;
+    --sidebar: #16161e;
+    --text: #c0caf5;
+    --muted: #565f89;
+    --accent: #7aa2f7;
+    --accent-dim: #292e42;
+    --accent-contrast: #1a1b26;
+    --danger: #f7768e;
+    --border: #292e42;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="one-dark"], [data-theme-preview="one-dark"] {
+    --bg: #282c34;
+    --card: #2c313c;
+    --sidebar: #21252b;
+    --text: #abb2bf;
+    --muted: #5c6370;
+    --accent: #61afef;
+    --accent-dim: #3e4451;
+    --accent-contrast: #282c34;
+    --danger: #e06c75;
+    --border: #3e4451;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="monokai"], [data-theme-preview="monokai"] {
+    --bg: #272822;
+    --card: #34352d;
+    --sidebar: #1e1f1a;
+    --text: #f8f8f2;
+    --muted: #918f81;
+    --accent: #a6e22e;
+    --accent-dim: #3e3d32;
+    --accent-contrast: #272822;
+    --danger: #f92672;
+    --border: #3e3d32;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="everforest-dark"], [data-theme-preview="everforest-dark"] {
+    --bg: #2d353b;
+    --card: #343f44;
+    --sidebar: #232a2e;
+    --text: #d3c6aa;
+    --muted: #859289;
+    --accent: #a7c080;
+    --accent-dim: #3d484d;
+    --accent-contrast: #2d353b;
+    --danger: #e67e80;
+    --border: #3d484d;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="everforest-light"], [data-theme-preview="everforest-light"] {
+    --bg: #fdf6e3;
+    --card: #f4f0d9;
+    --sidebar: #efebd4;
+    --text: #5c6a72;
+    --muted: #829181;
+    --accent: #8da101;
+    --accent-dim: #e6e2cc;
+    --accent-contrast: #fdf6e3;
+    --danger: #f85552;
+    --border: #e0dcc7;
+    --shadow: 0 1px 2px rgba(92, 106, 114, 0.06), 0 6px 16px rgba(92, 106, 114, 0.08);
+}
+
+/* Icy pale base, green/cyan aurora accent - see Aurora Night for the dark
+   companion. */
+[data-theme="aurora"], [data-theme-preview="aurora"] {
+    --bg: #f4f9f7;
+    --card: #ffffff;
+    --sidebar: #e9f5f1;
+    --text: #24352f;
+    --muted: #5f7d74;
+    --accent: #34c9a3;
+    --accent-dim: #dff3ec;
+    --accent-contrast: #0b2a22;
+    --danger: #d1495b;
+    --border: #cfe8de;
+    --shadow: 0 1px 2px rgba(36, 53, 47, 0.06), 0 6px 16px rgba(36, 53, 47, 0.08);
+}
+
+[data-theme="aurora-night"], [data-theme-preview="aurora-night"] {
+    --bg: #0b1a17;
+    --card: #12261f;
+    --sidebar: #081411;
+    --text: #d8f3e8;
+    --muted: #7fa695;
+    --accent: #34e0b3;
+    --accent-dim: #163229;
+    --accent-contrast: #06120f;
+    --danger: #ff6b7a;
+    --border: #1c3a30;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Clean icy blue, less colorful than Aurora - see Arctic Night for the
+   dark companion. */
+[data-theme="arctic"], [data-theme-preview="arctic"] {
+    --bg: #f5fafd;
+    --card: #ffffff;
+    --sidebar: #e7f2f8;
+    --text: #23343d;
+    --muted: #6a8494;
+    --accent: #2fa8d6;
+    --accent-dim: #dcf0f8;
+    --accent-contrast: #ffffff;
+    --danger: #de5b5b;
+    --border: #cfe4ee;
+    --shadow: 0 1px 2px rgba(35, 52, 61, 0.06), 0 6px 16px rgba(35, 52, 61, 0.08);
+}
+
+[data-theme="arctic-night"], [data-theme-preview="arctic-night"] {
+    --bg: #0a1620;
+    --card: #10202d;
+    --sidebar: #060f16;
+    --text: #e6f2f8;
+    --muted: #7a97a8;
+    --accent: #4fc3f0;
+    --accent-dim: #163648;
+    --accent-contrast: #06121a;
+    --danger: #ff7373;
+    --border: #1b3646;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Deep blue/teal, a shade brighter than Deep Ocean below. */
+[data-theme="oceanic"], [data-theme-preview="oceanic"] {
+    --bg: #0d2331;
+    --card: #123044;
+    --sidebar: #081a25;
+    --text: #dff0f5;
+    --muted: #7fa9b8;
+    --accent: #29b6d8;
+    --accent-dim: #1a4256;
+    --accent-contrast: #06131a;
+    --danger: #ef6a6a;
+    --border: #1a4256;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="deep-ocean"], [data-theme-preview="deep-ocean"] {
+    --bg: #050d16;
+    --card: #0a1826;
+    --sidebar: #030810;
+    --text: #cfe6f2;
+    --muted: #5f7f92;
+    --accent: #1e88c7;
+    --accent-dim: #0f2536;
+    --accent-contrast: #ffffff;
+    --danger: #e6584f;
+    --border: #10263a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Warm dusk sky, orange/coral on a light base - see Sunset Night for the
+   dark companion. */
+[data-theme="sunset"], [data-theme-preview="sunset"] {
+    --bg: #fff6f0;
+    --card: #ffffff;
+    --sidebar: #ffe9db;
+    --text: #4a2e2a;
+    --muted: #9c6e60;
+    --accent: #ff7847;
+    --accent-dim: #ffe0cf;
+    --accent-contrast: #2c1712;
+    --danger: #d1495b;
+    --border: #f4d5c2;
+    --shadow: 0 1px 2px rgba(74, 46, 42, 0.06), 0 6px 16px rgba(74, 46, 42, 0.08);
+}
+
+[data-theme="sunset-night"], [data-theme-preview="sunset-night"] {
+    --bg: #1f1522;
+    --card: #2b1d30;
+    --sidebar: #150e18;
+    --text: #f7e6da;
+    --muted: #b090a0;
+    --accent: #ff8c5a;
+    --accent-dim: #3a2740;
+    --accent-contrast: #1f1522;
+    --danger: #ff6161;
+    --border: #3a2740;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Pink/burgundy - see Rose Night for the dark companion. */
+[data-theme="rose"], [data-theme-preview="rose"] {
+    --bg: #fff5f7;
+    --card: #ffffff;
+    --sidebar: #fde8ee;
+    --text: #55232f;
+    --muted: #9c6b76;
+    --accent: #c94f6d;
+    --accent-dim: #f9dde3;
+    --accent-contrast: #ffffff;
+    --danger: #b3273f;
+    --border: #f2ccd6;
+    --shadow: 0 1px 2px rgba(85, 35, 47, 0.06), 0 6px 16px rgba(85, 35, 47, 0.08);
+}
+
+[data-theme="rose-night"], [data-theme-preview="rose-night"] {
+    --bg: #23131a;
+    --card: #301b24;
+    --sidebar: #180c11;
+    --text: #fbe3ea;
+    --muted: #b68391;
+    --accent: #e56d8a;
+    --accent-dim: #3d222c;
+    --accent-contrast: #23131a;
+    --danger: #ff7086;
+    --border: #3d222c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="synthwave"], [data-theme-preview="synthwave"] {
+    --bg: #1a1030;
+    --card: #26163f;
+    --sidebar: #120a24;
+    --text: #f4e9ff;
+    --muted: #a58fc7;
+    --accent: #ff4fd8;
+    --accent-dim: #3a2354;
+    --accent-contrast: #1a1030;
+    --danger: #ff4d6d;
+    --border: #3a2354;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(255, 79, 216, 0.15);
+}
+
+[data-theme="terminal"], [data-theme-preview="terminal"] {
+    --bg: #060a06;
+    --card: #0d140d;
+    --sidebar: #030503;
+    --text: #33ff66;
+    --muted: #1e8f3e;
+    --accent: #33ff66;
+    --accent-dim: #123319;
+    --accent-contrast: #060a06;
+    --danger: #ff3333;
+    --border: #123319;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="amber-terminal"], [data-theme-preview="amber-terminal"] {
+    --bg: #0a0704;
+    --card: #140f09;
+    --sidebar: #050301;
+    --text: #ffb000;
+    --muted: #a06a00;
+    --accent: #ffb000;
+    --accent-dim: #332200;
+    --accent-contrast: #0a0704;
+    --danger: #ff5533;
+    --border: #332200;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="royal"], [data-theme-preview="royal"] {
+    --bg: #14102b;
+    --card: #1e1840;
+    --sidebar: #0d0a1d;
+    --text: #f1e9ff;
+    --muted: #a89bcf;
+    --accent: #d4af37;
+    --accent-dim: #322a57;
+    --accent-contrast: #14102b;
+    --danger: #e0546a;
+    --border: #322a57;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="obsidian"], [data-theme-preview="obsidian"] {
+    --bg: #0c0c10;
+    --card: #17171d;
+    --sidebar: #08080b;
+    --text: #eaeaef;
+    --muted: #8b8b96;
+    --accent: #8878e6;
+    --accent-dim: #232330;
+    --accent-contrast: #0c0c10;
+    --danger: #e5566a;
+    --border: #232330;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
 * { box-sizing: border-box; }
@@ -52,7 +583,7 @@ body.app {
     font-size: 1.05rem;
 }
 
-.sidebar nav {
+.sidebar nav, .sidebar .nav-spacer {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
@@ -68,8 +599,12 @@ body.app {
 }
 
 .sidebar nav a:hover { color: var(--text); background: var(--accent-dim); }
-.sidebar nav a.active { color: #1e1e2e; background: var(--accent); font-weight: 600; }
+.sidebar nav a.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
 
+/* Shown on every page - including the server picker (no guild_id yet), so
+   it's deliberately outside the "{% if guild_id %}" nav block in
+   base.html. Holds the theme menu, current server + switch, who's logged
+   in, and log out. */
 .sidebar-footer {
     border-top: 1px solid var(--border);
     padding-top: 0.75rem;
@@ -91,10 +626,27 @@ main {
 
 @media (max-width: 700px) {
     body.app { flex-direction: column; }
-    .sidebar { width: 100%; flex-direction: row; align-items: center; padding: 0.75rem 1rem; overflow-x: auto; }
+    .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
     .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }
-    .sidebar nav { flex-direction: row; }
-    .sidebar-footer { display: none; }
+    .sidebar .server-name { display: none; }
+    .sidebar nav { flex-direction: row; flex-grow: 1; overflow-x: auto; }
+    .sidebar .nav-spacer { flex-grow: 1; }
+    /* Was "display: none" - the theme menu / account controls were
+       invisible on mobile entirely. Now it wraps onto its own row below
+       the nav instead, full width, laid out horizontally. */
+    .sidebar-footer {
+        flex-basis: 100%;
+        border-top: 1px solid var(--border);
+        margin-top: 0.6rem;
+        padding-top: 0.6rem;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+    }
+    .sidebar-footer .theme-menu { flex-grow: 1; min-width: 160px; }
+    .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
+    .sidebar-footer .logged-in-as { margin-bottom: 0; }
 }
 
 /* ---- shared components ---- */
@@ -153,7 +705,7 @@ input:focus, textarea:focus {
 
 button {
     background: var(--accent);
-    color: #1e1e2e;
+    color: var(--accent-contrast);
     border: none;
     border-radius: 6px;
     padding: 0.6rem 1.2rem;
@@ -169,7 +721,7 @@ button.link-btn { background: none; color: var(--accent); padding: 0; margin: 0;
 .button {
     display: inline-block;
     background: var(--accent);
-    color: #1e1e2e;
+    color: var(--accent-contrast);
     border: none;
     border-radius: 6px;
     padding: 0.6rem 1.2rem;
@@ -202,6 +754,14 @@ code {
 }
 
 .add-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+
+/* Reusable "N <unit>" duration picker (value + unit side by side), first
+   used for automod escalation tier durations. */
+.duration-field-row { display: flex; gap: 0.5rem; align-items: stretch; }
+.duration-field-row input[type="number"] { flex: 0 0 40%; min-width: 0; }
+.duration-field-row select { flex: 1 1 auto; min-width: 0; }
+.duration-field .hint { margin-top: 0.35rem; }
+.member-search { width: 100%; max-width: 320px; margin: 0.75rem 0 0.25rem; display: block; }
 .stat { font-size: 0.9rem; margin: 0.5rem 0; }
 
 /* ---- overview stat grid ---- */
@@ -317,7 +877,7 @@ select option {
 .tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0 0 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
 .tab { color: var(--muted); text-decoration: none; padding: 0.55rem 0.8rem; border-radius: 7px; }
 .tab:hover { color: var(--text); background: var(--accent-dim); }
-.tab.active { color: #1e1e2e; background: var(--accent); font-weight: 600; }
+.tab.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
 .tab-count { display: inline-block; min-width: 1.25rem; text-align: center; margin-left: 0.3rem; padding: 0.05rem 0.3rem; border-radius: 999px; background: var(--border); color: var(--text); font-size: 0.75rem; }
 
 
@@ -363,6 +923,14 @@ select option {
 
 .page-heading-icon svg { width: 1.5rem; height: 1.5rem; }
 
+.page-heading-icon.analytics-purple,
+.page-heading-icon.analytics-green,
+.page-heading-icon.analytics-blue,
+.page-heading-icon.analytics-yellow,
+.page-heading-icon.analytics-red {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
 .analytics-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -379,6 +947,10 @@ select option {
     overflow: hidden;
     box-shadow: var(--shadow);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+    /* analytics-card is an <a> so each figure can link to its drill-down page */
+    display: block;
+    text-decoration: none;
+    cursor: pointer;
 }
 
 .analytics-card:hover {
@@ -463,3 +1035,137 @@ select option {
     .analytics-grid { grid-template-columns: 1fr; }
     .analytics-range { flex-wrap: wrap; }
 }
+
+/* ---- overview: compact activity snapshot ---- */
+
+.overview-analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.85rem;
+}
+
+.overview-analytics-grid .analytics-card {
+    min-height: auto;
+    padding: 0.9rem 1rem 0.8rem;
+}
+
+.overview-analytics-grid .analytics-value { font-size: 1.4rem; }
+.overview-analytics-grid .analytics-icon { width: 1.9rem; height: 1.9rem; margin-bottom: 0.55rem; }
+
+/* ---- analytics drill-down: daily bar list ---- */
+
+.daybar-list { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
+
+.daybar-row {
+    display: grid;
+    grid-template-columns: 6.5rem 1fr 2.5rem;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.daybar-date { font-size: 0.78rem; }
+
+.daybar-track {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    height: 0.75rem;
+    overflow: hidden;
+}
+
+.daybar-fill { height: 100%; background: currentColor; opacity: 0.85; border-radius: 4px 0 0 4px; }
+.daybar-count { text-align: right; color: var(--text); font-weight: 600; }
+
+/* ---- theme menu ----
+   A custom button + grouped panel instead of a plain <select>, so themes
+   can be organized into families (Catppuccin, Nord, Ocean, ...) with a
+   live color swatch per option. See theme.js for THEMES (the id/label/
+   group list - text only) and the [data-theme-preview] rules alongside
+   every [data-theme] block above for the swatch colors themselves. */
+
+.theme-menu { position: relative; margin-bottom: 0.6rem; }
+.theme-menu-label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0 0 0.3rem; }
+
+.theme-menu-button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.55rem;
+    font-size: 0.82rem;
+    font-weight: 400;
+    cursor: pointer;
+    margin-top: 0;
+    text-align: left;
+}
+.theme-menu-button:hover { opacity: 1; border-color: var(--accent); }
+.theme-menu-button:focus { outline: none; border-color: var(--accent); }
+
+#theme-menu-current { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.theme-menu-caret { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; transition: transform 0.15s ease; }
+.theme-menu-button[aria-expanded="true"] .theme-menu-caret { transform: rotate(180deg); }
+
+.theme-swatch { display: inline-flex; gap: 2px; flex-shrink: 0; }
+.theme-swatch .sw { width: 9px; height: 9px; border-radius: 3px; background: var(--bg); border: 1px solid rgba(127, 127, 127, 0.35); }
+.theme-swatch .sw-accent { background: var(--accent); }
+
+.theme-menu-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 0.4rem);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    max-height: min(60vh, 380px);
+    overflow-y: auto;
+    padding: 0.35rem;
+    z-index: 30;
+}
+.theme-menu-panel[hidden] { display: none; }
+
+.theme-menu-group-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    padding: 0.5rem 0.5rem 0.25rem;
+}
+.theme-menu-group:first-child .theme-menu-group-label { padding-top: 0.2rem; }
+
+.theme-menu-option {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text);
+    padding: 0.45rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+    margin-top: 0;
+    font-weight: 400;
+}
+.theme-menu-option:hover, .theme-menu-option:focus { outline: none; background: var(--accent-dim); opacity: 1; }
+.theme-menu-option.is-selected { background: var(--accent); color: var(--accent-contrast); font-weight: 600; }
+.theme-menu-option-name { flex-grow: 1; }
+.theme-menu-option-check { width: 14px; height: 14px; flex-shrink: 0; opacity: 0; }
+.theme-menu-option.is-selected .theme-menu-option-check { opacity: 1; }
+
+
+.analytics-settings { margin-top: 1.5rem; }
+.toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .65rem; margin: 1rem 0; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 1rem; border: 1px solid var(--surface1, #313244); border-radius: .7rem; cursor: pointer; }
+.toggle-row span { display: flex; flex-direction: column; gap: .2rem; }
+.toggle-row small { opacity: .65; }
+.toggle-row input[type="checkbox"] { width: 1.2rem; height: 1.2rem; accent-color: var(--blue, #89b4fa); }
