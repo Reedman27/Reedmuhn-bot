@@ -14,8 +14,17 @@
                 <option value="{{ cid }}" {% if cfg.welcome_channel_id == cid %}selected{% endif %}>#{{ name }}</option>
             {% endfor %}
         </select>
-        <label for="message">Welcome message (use {user} to mention the new member)</label>
+        <label for="message">Welcome message</label>
         <textarea id="message" name="message" rows="2" required>{{ cfg.welcome_message or '' }}</textarea>
+        <p class="hint">
+            Variables you can use: <code>{mention}</code> mentions the person joining ·
+            <code>{user(name)}</code> their username, no ping ·
+            <code>{user(proper)}</code> their display name/nickname, no ping ·
+            <code>{server}</code> the server's name ·
+            <code>{server(members)}</code> total members after they join ·
+            <code>{user(id)}</code> / <code>{server(id)}</code> the raw IDs.
+            These work whether or not the generated welcome card image (below) is on - handy if you'd rather write your own text-only welcome.
+        </p>
         <button type="submit">Save welcome message</button>
     </form>
     <hr>
@@ -28,11 +37,12 @@
     <h2>Autorole</h2>
     <form method="post" action="/guild/{{ guild_id }}/autorole">
         <label for="role_id">Role given to new members</label>
-        <select id="role_id" name="role_id" required>
-            <option value="" disabled {% if not cfg.autorole_id %}selected{% endif %}>Choose a role…</option>
+        <select id="role_id" name="role_id">
+            <option value="" {% if not cfg.autorole_id %}selected{% endif %}>No autorole</option>
             {% if cfg.autorole_id and not roles|selectattr(0, 'equalto', cfg.autorole_id)|list %}<option value="{{ cfg.autorole_id }}" selected>Deleted role ({{ cfg.autorole_id }})</option>{% endif %}
             {% for rid, name, pos in roles %}<option value="{{ rid }}" {% if cfg.autorole_id == rid %}selected{% endif %}>@{{ name }}</option>{% endfor %}
         </select>
+        <p class="hint">Make sure the bot's own role is above this one in Discord's role list, or it won't be able to assign it.</p>
         <button type="submit">Save autorole</button>
     </form>
 </section>

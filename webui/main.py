@@ -509,12 +509,20 @@ async def save_welcome_card(request: Request, guild_id: int, enabled: str = Form
 
 
 @app.post("/guild/{guild_id}/autorole")
-async def save_autorole(request: Request, guild_id: int, role_id: int = Form(...)):
+async def save_autorole(request: Request, guild_id: int, role_id: str = Form("")):
     if (r := await require_auth(request)):
         return r
-    if not validate_role(guild_id, role_id):
+    role_id = role_id.strip()
+    if not role_id:
+        db.clear_autorole(guild_id)
+        return RedirectResponse(f"/guild/{guild_id}/welcome", status_code=303)
+    try:
+        role_id_int = int(role_id)
+    except ValueError:
         return RedirectResponse(f"/guild/{guild_id}/welcome?error=role", status_code=303)
-    db.set_autorole(guild_id, role_id)
+    if not validate_role(guild_id, role_id_int):
+        return RedirectResponse(f"/guild/{guild_id}/welcome?error=role", status_code=303)
+    db.set_autorole(guild_id, role_id_int)
     return RedirectResponse(f"/guild/{guild_id}/welcome", status_code=303)
 
 
@@ -967,12 +975,21 @@ async def youtube_page(request: Request, guild_id: int):
         {
             "yt_channel_id": yt_id,
             "display": channel_name if channel_name else yt_id,
+            "announce_channel_id": announce_channel_id,
             "announce_name": channel_label(guild_id, announce_channel_id),
+            "role_id": role_id,
+            "notify_videos": notify_videos,
+            "notify_lives": notify_lives,
+            "live_announce_channel_id": live_announce_channel_id,
         }
-        for yt_id, announce_channel_id, _last_video_id, channel_name, _role_id, _mode in db.list_youtube_watches(guild_id)
+        for yt_id, announce_channel_id, _last_video_id, channel_name, role_id,
+            notify_videos, notify_lives, live_announce_channel_id in db.list_youtube_watches(guild_id)
     ]
-    return render(request, "youtube.html", guild_id, "youtube", watches=watches,
-                  text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
+    return render(
+        request, "youtube.html", guild_id, "youtube", watches=watches,
+        text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+        roles=db.list_bot_roles(guild_id),
+    )
 
 
 @app.post("/guild/{guild_id}/youtube/add")
@@ -1005,6 +1022,40 @@ async def delete_youtube_watch(request: Request, guild_id: int, yt_channel_id: s
     return RedirectResponse(f"/guild/{guild_id}/youtube", status_code=303)
 
 
+@app.post("/guild/{guild_id}/youtube/settings")
+async def save_youtube_settings(
+    request: Request, guild_id: int, yt_channel_id: str = Form(...),
+    notify_videos: str = Form(default=""), notify_lives: str = Form(default=""),
+    role_id: str = Form(default=""), live_announce_channel_id: str = Form(default=""),
+):
+    if (r := await require_auth(request)):
+        return r
+
+    if not any(yt_id == yt_channel_id for yt_id, *_rest in db.list_youtube_watches(guild_id)):
+        return RedirectResponse(f"/guild/{guild_id}/youtube?error=notfound", status_code=303)
+
+    videos_on, lives_on = notify_videos == "on", notify_lives == "on"
+    if not videos_on and not lives_on:
+        return RedirectResponse(f"/guild/{guild_id}/youtube?error=notifytype", status_code=303)
+
+    parsed_role_id = None
+    if role_id:
+        if not role_id.isdigit() or not validate_role(guild_id, int(role_id)):
+            return RedirectResponse(f"/guild/{guild_id}/youtube?error=role", status_code=303)
+        parsed_role_id = int(role_id)
+
+    parsed_live_channel_id = None
+    if live_announce_channel_id:
+        if not live_announce_channel_id.isdigit() or not validate_channel(guild_id, int(live_announce_channel_id), ("text", "news")):
+            return RedirectResponse(f"/guild/{guild_id}/youtube?error=channel", status_code=303)
+        parsed_live_channel_id = int(live_announce_channel_id)
+
+    db.set_youtube_notify(guild_id, yt_channel_id, videos_on, lives_on)
+    db.set_youtube_role(guild_id, yt_channel_id, parsed_role_id)
+    db.set_youtube_live_channel(guild_id, yt_channel_id, parsed_live_channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/youtube?saved=1", status_code=303)
+
+
 # ---- automod ----
 
 def format_duration(seconds: int) -> str:
@@ -1018,6 +1069,7 @@ def format_duration(seconds: int) -> str:
 
 
 AUTOMOD_ACTION_LABELS = {
+    "warn": "Warn",
     "mute_role": "Mute (role)",
     "timeout": "Timeout",
     "kick": "Kick",
@@ -1353,7 +1405,7 @@ async def talk_page(request: Request, guild_id: int):
             "channel_name": db.get_channel_name(guild_id, row[1]) or f"Deleted channel ({row[1]})",
             "content": row[2], "status": row[3], "attempts": row[4],
             "created_at": row[5], "sent_at": row[6], "failed_at": row[7],
-            "last_error": row[8], "discord_message_id": row[9],
+            "last_error": row[8], "discord_message_id": row[9], "deleted_at": row[10],
         }
         for row in recent_rows
     ]
@@ -1376,6 +1428,22 @@ async def retry_talk_message(request: Request, guild_id: int, message_id: int = 
             pass
         return RedirectResponse(f"/guild/{guild_id}/talk?retried={message_id}", status_code=303)
     return RedirectResponse(f"/guild/{guild_id}/talk?error=notretryable", status_code=303)
+
+
+@app.post("/guild/{guild_id}/talk/delete")
+async def delete_talk_message(request: Request, guild_id: int, message_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    row = db.get_outbound_message(message_id)
+    if row is None or row[1] != guild_id:
+        return RedirectResponse(f"/guild/{guild_id}/talk?error=notfound", status_code=303)
+    if db.request_message_delete(guild_id, message_id):
+        try:
+            db.record_bot_event("dashboard.talk.delete_requested", guild_id, None, row[2], f"message_id={message_id}", source="dashboard_talk")
+        except Exception:
+            pass
+        return RedirectResponse(f"/guild/{guild_id}/talk?delete_queued={message_id}", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/talk?error=notdeletable", status_code=303)
 
 
 @app.post("/guild/{guild_id}/talk")

@@ -30,6 +30,22 @@ CHANNEL_NAME_PATTERNS = [
     re.compile(r'"channelMetadataRenderer":\{"title":"((?:[^"\\]|\\.)*)"'),
     re.compile(r'"ownerChannelName":"((?:[^"\\]|\\.)*)"'),
 ]
+# A currently-active broadcast carries "isLive":true inside the watch
+# page's embedded videoDetails block, which also carries that same video's
+# own videoId - anchoring the search to "this video's ID, then isLive
+# shortly after" (rather than a bare page-wide search for "isLive":true)
+# avoids picking up an unrelated live video mentioned elsewhere on the page
+# (autoplay-next/sidebar data can embed other videos' details, and some of
+# those could be live even when the one we're checking isn't). The gap is
+# generous since JSON key order within videoDetails isn't guaranteed, but
+# bounded so it can't match something from a completely different part of
+# the page. This is the same "scrape the page, don't need an API key"
+# approach resolve_youtube_channel already uses.
+_IS_LIVE_SEARCH_WINDOW = 2000
+
+
+def _is_live_pattern(video_id: str) -> re.Pattern:
+    return re.compile(r'"videoId":"%s".{0,%d}?"isLive":true' % (re.escape(video_id), _IS_LIVE_SEARCH_WINDOW), re.DOTALL)
 
 
 _ALLOWED_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
@@ -100,6 +116,22 @@ async def resolve_youtube_channel(session: aiohttp.ClientSession, raw: str) -> t
     return channel_id, name
 
 
+async def is_live_now(session: aiohttp.ClientSession, video_id: str) -> bool:
+    """Best-effort check of whether a video is a broadcast that's live right
+    now, by scraping its watch page - the RSS feed itself carries no live/
+    video distinction. Treated as "not live" (i.e. a normal video) on any
+    fetch failure, so a network hiccup never blocks the announcement."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                return False
+            html = await resp.text()
+    except aiohttp.ClientError:
+        return False
+    return bool(_is_live_pattern(video_id).search(html))
+
+
 def extract_latest_video(feed_text: str):
     """Parses feed XML text and returns (video_id, title, author, url) for
     the newest entry, or None if the feed has no entries / didn't parse.
@@ -135,6 +167,11 @@ class YouTube(commands.Cog):
 
     def cog_unload(self):
         self.check_feeds.cancel()
+        if self.session is not None and not self.session.closed:
+            # cog_unload isn't a coroutine, but ClientSession.close() is -
+            # schedule it rather than leaving the connector open (and
+            # aiohttp complaining about it) until the process exits.
+            self.bot.loop.create_task(self.session.close())
 
     @app_commands.command(name="setyoutube", description="Announce new uploads from a YouTube channel")
     @app_commands.describe(
@@ -206,9 +243,18 @@ class YouTube(commands.Cog):
             await interaction.response.send_message("Not watching any YouTube channels yet.")
             return
         lines = []
-        for yt_id, announce_channel_id, _last_video_id, channel_name, _role_id, _mode in rows:
+        for yt_id, announce_channel_id, _last_video_id, channel_name, _role_id, notify_videos, notify_lives, live_announce_channel_id in rows:
             display = channel_name if channel_name else f"`{yt_id}`"
-            lines.append(f"{display} -> <#{announce_channel_id}>")
+            if notify_videos and notify_lives:
+                kind = ""
+            elif notify_lives:
+                kind = " (live streams only)"
+            else:
+                kind = " (uploads only)"
+            line = f"{display} -> <#{announce_channel_id}>{kind}"
+            if notify_lives and live_announce_channel_id and live_announce_channel_id != announce_channel_id:
+                line += f" (lives in <#{live_announce_channel_id}>)"
+            lines.append(line)
         await interaction.response.send_message("\n".join(lines))
 
     @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
@@ -216,13 +262,20 @@ class YouTube(commands.Cog):
         if self.session is None:
             self.session = aiohttp.ClientSession()
 
-        for guild_id, yt_channel_id, announce_channel_id, last_video_id, _channel_name, _role_id, _mode in self.bot.db.all_youtube_watches():
+        for (guild_id, yt_channel_id, announce_channel_id, last_video_id, _channel_name, role_id,
+             notify_videos, notify_lives, live_announce_channel_id) in self.bot.db.all_youtube_watches():
             try:
-                await self._check_one(guild_id, yt_channel_id, announce_channel_id, last_video_id)
+                await self._check_one(
+                    guild_id, yt_channel_id, announce_channel_id, last_video_id,
+                    role_id, notify_videos, notify_lives, live_announce_channel_id,
+                )
             except Exception:
                 logger.exception("failed checking youtube channel %s", yt_channel_id)
 
-    async def _check_one(self, guild_id: int, yt_channel_id: str, announce_channel_id: int, last_video_id):
+    async def _check_one(
+        self, guild_id: int, yt_channel_id: str, announce_channel_id: int, last_video_id,
+        role_id: int | None, notify_videos: bool, notify_lives: bool, live_announce_channel_id: int | None,
+    ):
         url = FEED_URL.format(channel_id=yt_channel_id)
         async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
@@ -244,16 +297,35 @@ class YouTube(commands.Cog):
             self.bot.db.record_bot_event("youtube.baseline", guild_id, None, None, f"channel={yt_channel_id} video={video_id}")
             return
 
-        channel = self.bot.get_channel(announce_channel_id)
-        if channel is None:
-            logger.warning("youtube announcement channel %s is unavailable for guild %s", announce_channel_id, guild_id)
+        is_live = await is_live_now(self.session, video_id)
+        wanted = notify_lives if is_live else notify_videos
+        if not wanted:
+            # This kind of upload is toggled off for this watch - still
+            # advance the cursor so it isn't re-checked (and re-scraped for
+            # live status) every poll from here on.
+            self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
             return
+
+        target_channel_id = announce_channel_id
+        if is_live and live_announce_channel_id:
+            target_channel_id = live_announce_channel_id
+        channel = self.bot.get_channel(target_channel_id)
+        if channel is None:
+            logger.warning("youtube announcement channel %s is unavailable for guild %s", target_channel_id, guild_id)
+            return
+
+        role_mention = f"<@&{role_id}> " if role_id else ""
+        if is_live:
+            content = f"{role_mention}🔴 **{author}** is live now: {title}\n{url}"
+        else:
+            content = f"{role_mention}📺 New video from **{author}**: {title}\n{url}"
 
         # Only advance the cursor after Discord accepts the announcement. A
         # transient Discord outage must not permanently lose a notification.
-        await channel.send(f"📺 New video from **{author}**: {title}\n{url}")
+        await channel.send(content, allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True))
         self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
-        self.bot.db.record_bot_event("youtube.announced", guild_id, None, announce_channel_id, f"channel={yt_channel_id} video={video_id}")
+        event_type = "youtube.live_announced" if is_live else "youtube.announced"
+        self.bot.db.record_bot_event(event_type, guild_id, None, target_channel_id, f"channel={yt_channel_id} video={video_id}")
 
     @check_feeds.before_loop
     async def before_check_feeds(self):

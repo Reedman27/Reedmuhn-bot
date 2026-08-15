@@ -6,8 +6,10 @@
     <p class="hint">Messages are placed into a durable outbox and delivered by ReedMuhn. The page only says <strong>queued</strong> when the message has been safely stored; delivery is confirmed separately below.</p>
     {% if request.query_params.get('queued') %}<p class="success">Message queued successfully. Outbox ID #{{ request.query_params.get('queued') }}.</p>{% endif %}
     {% if request.query_params.get('retried') %}<p class="success">Failed message #{{ request.query_params.get('retried') }} was placed back into the queue.</p>{% endif %}
+    {% if request.query_params.get('delete_queued') %}<p class="success">Message #{{ request.query_params.get('delete_queued') }} will be deleted from Discord shortly.</p>{% endif %}
     {% if request.query_params.get('error') == 'notfound' %}<p class="error">That Talk message could not be found.</p>{% endif %}
     {% if request.query_params.get('error') == 'notretryable' %}<p class="error">That message is no longer in a retryable state.</p>{% endif %}
+    {% if request.query_params.get('error') == 'notdeletable' %}<p class="error">That message can't be deleted right now - it isn't sent yet, or a deletion is already in progress.</p>{% endif %}
     {% if request.query_params.get('error') == 'empty' %}<p class="error">Enter a message.</p>{% endif %}
     {% if request.query_params.get('error') == 'length' %}<p class="error">Discord messages are limited to 2,000 characters.</p>{% endif %}
     {% if request.query_params.get('error') == 'channel' %}<p class="error">Choose a valid text channel for this server.</p>{% endif %}
@@ -39,11 +41,14 @@
                 {% if message.status == 'sent' %}<span class="success">Sent</span>
                 {% elif message.status == 'failed' %}<span class="error">Failed</span>
                 {% elif message.status == 'sending' %}<span class="muted">Sending…</span>
+                {% elif message.status == 'delete_requested' or message.status == 'deleting' %}<span class="muted">Deleting…</span>
+                {% elif message.status == 'deleted' %}<span class="muted">Deleted</span>
                 {% else %}<span class="muted">Queued</span>{% endif %}
             </td>
             <td>{{ message.attempts }}</td>
             <td>{% if message.last_error %}<span class="error">{{ message.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}
-                {% if message.status == 'failed' %}<form method="post" action="/guild/{{ guild_id }}/talk/retry" class="inline"><input type="hidden" name="message_id" value="{{ message.id }}"><button type="submit">Retry</button></form>{% endif %}</td>
+                {% if message.status == 'failed' %}<form method="post" action="/guild/{{ guild_id }}/talk/retry" class="inline"><input type="hidden" name="message_id" value="{{ message.id }}"><button type="submit">Retry</button></form>{% endif %}
+                {% if message.status == 'sent' %}<form method="post" action="/guild/{{ guild_id }}/talk/delete" class="inline" onsubmit="return confirm('Delete this message from Discord? This cannot be undone.');"><button type="submit" class="danger">Delete</button><input type="hidden" name="message_id" value="{{ message.id }}"></form>{% endif %}</td>
         </tr>
         {% endfor %}
         </tbody>

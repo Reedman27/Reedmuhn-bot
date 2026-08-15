@@ -68,6 +68,45 @@ def format_duration(seconds: int) -> str:
     return f"{seconds}s"
 
 
+# Placeholders supported in the welcome message template, along with the
+# blurb shown for each on the WebUI. Order matters slightly only in that
+# {user} and {mention} are aliases - both listed so people coming from
+# other bots' docs (which tend to use {mention}) find a familiar name.
+WELCOME_VARIABLES = [
+    ("{mention}", "Mentions the member who joined"),
+    ("{user}", "Same as {mention} - kept for older configs"),
+    ("{user(name)}", "The member's account username, no mention/ping"),
+    ("{user(proper)}", "The member's display name (server nickname if set)"),
+    ("{user(id)}", "The member's user ID"),
+    ("{server}", "The server's name"),
+    ("{server(id)}", "The server's ID"),
+    ("{server(members)}", "Total member count after the join, e.g. 8,102"),
+]
+
+
+def format_welcome_message(template: str, member) -> str:
+    """Expands the variables listed in WELCOME_VARIABLES against a joining
+    member. Plain string replacement (no nested/conditional tagscript) -
+    good enough for the placeholders on offer and keeps this trivially
+    safe against malformed templates typed into the WebUI."""
+    guild = member.guild
+    member_count = guild.member_count
+    replacements = {
+        "{mention}": member.mention,
+        "{user}": member.mention,
+        "{user(name)}": member.name,
+        "{user(proper)}": member.display_name,
+        "{user(id)}": str(member.id),
+        "{server}": guild.name,
+        "{server(id)}": str(guild.id),
+        "{server(members)}": f"{member_count:,}" if member_count is not None else "?",
+    }
+    result = template
+    for token, value in replacements.items():
+        result = result.replace(token, value)
+    return result
+
+
 def tempnick_self_allowed(mode: str, member_role_ids: set, configured_role_ids: set) -> bool:
     """Whether a member is allowed to use /tempnick on themselves, per the
     server's configured rule. Pulled out as a plain function (no discord.py

@@ -129,15 +129,24 @@ class Db:
                 PRIMARY KEY (guild_id, yt_channel_id)
             )"""
         )
-        # youtube_watches predates channel_name/role_id/mode - add them for
+        # youtube_watches predates channel_name/role_id - add them for
         # anyone upgrading from an older db without wiping their data.
         yt_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(youtube_watches)")}
         if "channel_name" not in yt_cols:
             self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN channel_name TEXT")
         if "role_id" not in yt_cols:
             self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN role_id INTEGER")
-        if "mode" not in yt_cols:
-            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN mode TEXT NOT NULL DEFAULT 'embed'")
+        # notify_videos/notify_lives let a watch announce just uploads, just
+        # live streams, or both - both default on so existing watches keep
+        # today's "announce everything" behavior. live_announce_channel_id
+        # is optional - NULL means lives post in announce_channel_id same
+        # as videos, same as before this existed.
+        if "notify_videos" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN notify_videos INTEGER NOT NULL DEFAULT 1")
+        if "notify_lives" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN notify_lives INTEGER NOT NULL DEFAULT 1")
+        if "live_announce_channel_id" not in yt_cols:
+            self.conn.execute("ALTER TABLE youtube_watches ADD COLUMN live_announce_channel_id INTEGER")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS reaction_role_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,6 +355,7 @@ class Db:
             "failed_at": "ALTER TABLE outbound_messages ADD COLUMN failed_at INTEGER",
             "last_error": "ALTER TABLE outbound_messages ADD COLUMN last_error TEXT",
             "discord_message_id": "ALTER TABLE outbound_messages ADD COLUMN discord_message_id INTEGER",
+            "deleted_at": "ALTER TABLE outbound_messages ADD COLUMN deleted_at INTEGER",
         }
         for col, statement in migrations.items():
             if col not in outbound_cols:
@@ -726,6 +736,15 @@ class Db:
                VALUES (?, ?)
                ON CONFLICT(guild_id) DO UPDATE SET autorole_id = excluded.autorole_id""",
             (guild_id, role_id),
+        )
+        self.conn.commit()
+
+    def clear_autorole(self, guild_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO guild_config (guild_id, autorole_id)
+               VALUES (?, NULL)
+               ON CONFLICT(guild_id) DO UPDATE SET autorole_id = NULL""",
+            (guild_id,),
         )
         self.conn.commit()
 
@@ -1276,21 +1295,26 @@ class Db:
     def add_youtube_watch(self, guild_id: int, yt_channel_id: str, announce_channel_id: int) -> None:
         # Re-adding an already-watched channel (e.g. just to change the
         # announce channel) must preserve last_video_id, channel_name,
-        # role_id, and mode - INSERT OR REPLACE would silently wipe all of
-        # those back to defaults, so every preserved field is carried over
-        # via a self-referencing subquery instead.
+        # role_id, and the notify/live-channel settings - INSERT OR REPLACE
+        # would silently wipe all of those back to defaults, so every
+        # preserved field is carried over via a self-referencing subquery
+        # instead.
         self.conn.execute(
             """INSERT OR REPLACE INTO youtube_watches
-                   (guild_id, yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode)
+                   (guild_id, yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id,
+                    notify_videos, notify_lives, live_announce_channel_id)
                VALUES (
                    ?, ?, ?,
                    (SELECT last_video_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
                    (SELECT channel_name FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
                    (SELECT role_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?),
-                   COALESCE((SELECT mode FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?), 'embed')
+                   COALESCE((SELECT notify_videos FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?), 1),
+                   COALESCE((SELECT notify_lives FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?), 1),
+                   (SELECT live_announce_channel_id FROM youtube_watches WHERE guild_id = ? AND yt_channel_id = ?)
                )""",
             (
                 guild_id, yt_channel_id, announce_channel_id,
+                guild_id, yt_channel_id, guild_id, yt_channel_id,
                 guild_id, yt_channel_id, guild_id, yt_channel_id,
                 guild_id, yt_channel_id, guild_id, yt_channel_id,
             ),
@@ -1305,21 +1329,22 @@ class Db:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def list_youtube_watches(self, guild_id: int) -> list[tuple[str, int, Optional[str], Optional[str], Optional[int], str]]:
+    _YOUTUBE_WATCH_COLUMNS = (
+        "yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, "
+        "notify_videos, notify_lives, live_announce_channel_id"
+    )
+
+    def list_youtube_watches(self, guild_id: int) -> list[tuple[str, int, Optional[str], Optional[str], Optional[int], bool, bool, Optional[int]]]:
         cur = self.conn.execute(
-            """SELECT yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode
-               FROM youtube_watches WHERE guild_id = ?""",
+            f"SELECT {self._YOUTUBE_WATCH_COLUMNS} FROM youtube_watches WHERE guild_id = ?",
             (guild_id,),
         )
-        return cur.fetchall()
+        return [row[:5] + (bool(row[5]), bool(row[6]), row[7]) for row in cur.fetchall()]
 
-    def all_youtube_watches(self) -> list[tuple[int, str, int, Optional[str], Optional[str], Optional[int], str]]:
+    def all_youtube_watches(self) -> list[tuple[int, str, int, Optional[str], Optional[str], Optional[int], bool, bool, Optional[int]]]:
         """Every watch across every guild - used by the background poller."""
-        cur = self.conn.execute(
-            """SELECT guild_id, yt_channel_id, announce_channel_id, last_video_id, channel_name, role_id, mode
-               FROM youtube_watches"""
-        )
-        return cur.fetchall()
+        cur = self.conn.execute(f"SELECT guild_id, {self._YOUTUBE_WATCH_COLUMNS} FROM youtube_watches")
+        return [row[:6] + (bool(row[6]), bool(row[7]), row[8]) for row in cur.fetchall()]
 
     def set_youtube_last_video(self, guild_id: int, yt_channel_id: str, video_id: str) -> None:
         self.conn.execute(
@@ -1342,10 +1367,17 @@ class Db:
         )
         self.conn.commit()
 
-    def set_youtube_mode(self, guild_id: int, yt_channel_id: str, mode: str) -> None:
+    def set_youtube_notify(self, guild_id: int, yt_channel_id: str, notify_videos: bool, notify_lives: bool) -> None:
         self.conn.execute(
-            "UPDATE youtube_watches SET mode = ? WHERE guild_id = ? AND yt_channel_id = ?",
-            (mode, guild_id, yt_channel_id),
+            "UPDATE youtube_watches SET notify_videos = ?, notify_lives = ? WHERE guild_id = ? AND yt_channel_id = ?",
+            (1 if notify_videos else 0, 1 if notify_lives else 0, guild_id, yt_channel_id),
+        )
+        self.conn.commit()
+
+    def set_youtube_live_channel(self, guild_id: int, yt_channel_id: str, live_announce_channel_id: Optional[int]) -> None:
+        self.conn.execute(
+            "UPDATE youtube_watches SET live_announce_channel_id = ? WHERE guild_id = ? AND yt_channel_id = ?",
+            (live_announce_channel_id, guild_id, yt_channel_id),
         )
         self.conn.commit()
 
@@ -1856,7 +1888,7 @@ class Db:
     def get_outbound_message(self, message_id: int):
         return self.conn.execute(
             """SELECT id, guild_id, channel_id, content, status, attempts, created_at,
-                      available_at, sent_at, failed_at, last_error, discord_message_id
+                      available_at, sent_at, failed_at, last_error, discord_message_id, deleted_at
                FROM outbound_messages WHERE id = ?""",
             (message_id,),
         ).fetchone()
@@ -1865,12 +1897,75 @@ class Db:
         limit = max(1, min(int(limit), 100))
         return self.conn.execute(
             """SELECT id, channel_id, content, status, attempts, created_at, sent_at,
-                      failed_at, last_error, discord_message_id
+                      failed_at, last_error, discord_message_id, deleted_at
                FROM outbound_messages
                WHERE guild_id = ?
                ORDER BY id DESC LIMIT ?""",
             (guild_id, limit),
         ).fetchall()
+
+    # ---- deleting a message the bot already sent via Talk ----
+    # Same outbox pattern as sending: the dashboard only marks intent, and
+    # the bot (a separate process) is the one that actually talks to
+    # Discord. A message can only be queued for deletion once it's really
+    # on Discord (status='sent' with a known discord_message_id) - there's
+    # nothing to delete yet for a still-queued or already-failed message.
+
+    def request_message_delete(self, guild_id: int, message_id: int) -> bool:
+        cur = self.conn.execute(
+            """UPDATE outbound_messages
+               SET status='delete_requested'
+               WHERE id=? AND guild_id=? AND status='sent' AND discord_message_id IS NOT NULL""",
+            (message_id, guild_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def claim_message_delete_requests(self, limit: int = 10) -> list[tuple[int, int, int, int]]:
+        """Claim queued delete requests as (id, guild_id, channel_id,
+        discord_message_id) tuples. Low-volume, dashboard-triggered action,
+        so a simple claim-then-process is enough - no stale-lease recovery
+        like the send queue needs. A crash mid-delete just leaves the row
+        as 'deleting'; the Discord message either got deleted or didn't,
+        and the dashboard's retry button covers either case."""
+        limit = max(1, min(int(limit), 50))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                """SELECT id, guild_id, channel_id, discord_message_id
+                   FROM outbound_messages
+                   WHERE status = 'delete_requested'
+                   ORDER BY id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            ids = [row[0] for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE outbound_messages SET status='deleting' WHERE id IN ({placeholders})",
+                    ids,
+                )
+            self.conn.commit()
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def mark_message_deleted(self, message_id: int) -> None:
+        self.conn.execute(
+            "UPDATE outbound_messages SET status='deleted', last_error=NULL, deleted_at=? WHERE id=?",
+            (int(time.time()), message_id),
+        )
+        self.conn.commit()
+
+    def mark_message_delete_failed(self, message_id: int, error: str) -> None:
+        # Back to 'sent' rather than a terminal state, so the Delete button
+        # reappears on the dashboard and the person can just try again.
+        self.conn.execute(
+            "UPDATE outbound_messages SET status='sent', last_error=? WHERE id=?",
+            (error[:1000], message_id),
+        )
+        self.conn.commit()
 
     # Backwards-compatible helper retained for extensions that may still call it.
     def list_unsent_outbound_messages(self) -> list[tuple[int, int, int, str]]:

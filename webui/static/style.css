@@ -755,6 +755,40 @@ code {
 
 .add-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 
+/* ---- youtube watch settings ---- */
+
+.yt-watch {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 1rem;
+    background: var(--bg);
+}
+
+.yt-watch-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.yt-watch-header form { margin: 0; }
+
+.yt-watch-settings { margin-top: 0.25rem; }
+
+.yt-watch-row {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+}
+
+.yt-watch-row label:has(input[type="checkbox"]) { margin: 0; }
+.yt-watch-row label:not(:has(input)) { margin: 0; min-width: 9rem; }
+.yt-watch-row select { width: auto; min-width: 14rem; margin: 0; }
+.yt-watch-settings button { padding: 0.5rem 1rem; font-size: 0.85rem; }
+
 /* Reusable "N <unit>" duration picker (value + unit side by side), first
    used for automod escalation tier durations. */
 .duration-field-row { display: flex; gap: 0.5rem; align-items: stretch; }

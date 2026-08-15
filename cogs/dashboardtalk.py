@@ -22,11 +22,13 @@ class DashboardTalk(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.poll_outbound_messages.start()
+        self.poll_delete_requests.start()
 
     def cog_unload(self):
         self.poll_outbound_messages.cancel()
+        self.poll_delete_requests.cancel()
 
-    async def _get_channel(self, guild_id: int, channel_id: int):
+    async def _get_channel(self, guild_id: int, channel_id: int, *, require_send: bool = True):
         guild = self.bot.get_guild(guild_id)
         if guild is None:
             return None, "The bot is no longer in that server."
@@ -49,14 +51,16 @@ class DashboardTalk(commands.Cog):
 
         # Check permissions before attempting the API call when Discord gives
         # us a guild channel with permission information. This produces a much
-        # clearer failure than a generic HTTP 403.
+        # clearer failure than a generic HTTP 403. Deleting the bot's own
+        # message only needs view_channel, not send_messages, so callers that
+        # are only deleting pass require_send=False.
         me = guild.me
         permissions_for = getattr(channel, "permissions_for", None)
         if me is not None and permissions_for is not None:
             perms = permissions_for(me)
             if not perms.view_channel:
                 return None, "The bot cannot view that channel."
-            if not perms.send_messages:
+            if require_send and not perms.send_messages:
                 return None, "The bot does not have Send Messages permission there."
 
         return channel, None
@@ -150,8 +154,90 @@ class DashboardTalk(commands.Cog):
         except Exception:
             logger.exception("dashboard talk: failed to write audit event")
 
+    @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
+    async def poll_delete_requests(self):
+        try:
+            requests = self.bot.db.claim_message_delete_requests(limit=CLAIM_BATCH_SIZE)
+        except Exception:
+            logger.exception("dashboard talk: failed to claim delete requests")
+            return
+
+        for message_id, guild_id, channel_id, discord_message_id in requests:
+            channel, lookup_error = await self._get_channel(guild_id, channel_id, require_send=False)
+            if channel is None:
+                self.bot.db.mark_message_delete_failed(message_id, lookup_error or "Unable to resolve channel")
+                logger.warning("dashboard talk: delete %s failed to resolve channel: %s", message_id, lookup_error)
+                self._record_event(
+                    "dashboard.talk.delete_failed", guild_id, channel_id,
+                    f"message_id={message_id} error={lookup_error}", status="failed"
+                )
+                continue
+
+            try:
+                discord_message = await channel.fetch_message(discord_message_id)
+            except discord.NotFound:
+                # Already gone on Discord's side (deleted manually, channel
+                # purged, etc.) - that's a success from the dashboard's
+                # point of view, nothing left to do.
+                self.bot.db.mark_message_deleted(message_id)
+                self._record_event(
+                    "dashboard.talk.deleted", guild_id, channel_id,
+                    f"message_id={message_id} discord_message_id={discord_message_id} already_gone=true"
+                )
+                continue
+            except discord.Forbidden:
+                error = "The bot cannot view that channel anymore."
+                self.bot.db.mark_message_delete_failed(message_id, error)
+                self._record_event(
+                    "dashboard.talk.delete_failed", guild_id, channel_id,
+                    f"message_id={message_id} error={error}", status="failed"
+                )
+                continue
+            except discord.HTTPException as exc:
+                error = f"Discord HTTP {getattr(exc, 'status', 'error')}: {exc}"
+                self.bot.db.mark_message_delete_failed(message_id, error)
+                self._record_event(
+                    "dashboard.talk.delete_failed", guild_id, channel_id,
+                    f"message_id={message_id} error={error}", status="failed"
+                )
+                continue
+
+            try:
+                await discord_message.delete()
+            except discord.NotFound:
+                pass  # Deleted between the fetch and the delete - fine either way.
+            except discord.Forbidden:
+                error = "Discord denied deleting that message (check Manage Messages permission)."
+                self.bot.db.mark_message_delete_failed(message_id, error)
+                logger.warning("dashboard talk: delete %s forbidden in channel %s", message_id, channel_id)
+                self._record_event(
+                    "dashboard.talk.delete_failed", guild_id, channel_id,
+                    f"message_id={message_id} error={error}", status="failed"
+                )
+                continue
+            except discord.HTTPException as exc:
+                error = f"Discord HTTP {getattr(exc, 'status', 'error')}: {exc}"
+                self.bot.db.mark_message_delete_failed(message_id, error)
+                logger.warning("dashboard talk: delete %s HTTP failure: %s", message_id, error)
+                self._record_event(
+                    "dashboard.talk.delete_failed", guild_id, channel_id,
+                    f"message_id={message_id} error={error}", status="failed"
+                )
+                continue
+
+            self.bot.db.mark_message_deleted(message_id)
+            logger.info("dashboard talk: message %s (discord %s) deleted from channel %s", message_id, discord_message_id, channel_id)
+            self._record_event(
+                "dashboard.talk.deleted", guild_id, channel_id,
+                f"message_id={message_id} discord_message_id={discord_message_id}"
+            )
+
     @poll_outbound_messages.before_loop
     async def before_poll(self):
+        await self.bot.wait_until_ready()
+
+    @poll_delete_requests.before_loop
+    async def before_poll_delete(self):
         await self.bot.wait_until_ready()
 
 

@@ -88,7 +88,7 @@
 
 <section class="card">
     <h2>Escalation tiers</h2>
-    <p class="hint">Pick what happens once a member racks up a given number of warnings within the window above. Add as many tiers as you like - e.g. 3 warnings → mute, 5 → kick, 8 → ban. Reaching a tier resets the member's warning count back to zero.</p>
+    <p class="hint">Pick what happens once a member racks up a given number of warnings within the window above. Add as many tiers as you like - e.g. 3 warnings → warn, 5 → mute, 8 → kick, 12 → ban. Reaching a mute/timeout/kick/ban/temp-ban tier resets the member's warning count back to zero; a "Warn" tier logs a formal warning (visible on the Moderation tab) but leaves the count running, so it doesn't delay the tiers above it.</p>
     {% if tiers %}
     <table><thead><tr><th>Warnings</th><th>Punishment</th><th></th></tr></thead><tbody>
     {% for tier in tiers %}

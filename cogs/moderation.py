@@ -139,7 +139,14 @@ class Moderation(commands.Cog):
             return
 
         # Ban immediately, same as a normal ban.
-        await interaction.guild.ban(user, reason=reason, delete_message_seconds=0)
+        try:
+            await interaction.guild.ban(user, reason=reason, delete_message_seconds=0)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I can't ban that member - check my role is above theirs and I have Ban Members.",
+                ephemeral=True,
+            )
+            return
 
         # Store the unban time so the background scheduler can unban them
         # later even if the bot restarts before then.

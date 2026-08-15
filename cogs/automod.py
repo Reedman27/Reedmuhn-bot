@@ -2,9 +2,9 @@
 Detection algorithms live in automod_checks.py (pure, unit-tested);
 this file is just the Discord-facing wiring: per-message checks, deleting
 violations, and escalating through a configurable ladder of punishments
-(mute role, timeout, kick, ban, temp ban) once someone racks up enough
-warnings in a rolling window. The ladder itself - how many warnings and
-which punishment at each step - is fully configurable per guild from the
+(warn, mute role, timeout, kick, ban, temp ban) once someone racks up
+enough warnings in a rolling window. The ladder itself - how many warnings
+and what happens at each step - is fully configurable per guild from the
 WebUI (or /automodescalation), not hardcoded here.
 """
 import datetime
@@ -33,14 +33,21 @@ logger = logging.getLogger("automod")
 # member/mod-log. Kept as a plain dict (rather than an enum) since it's
 # read/written straight out of SQLite and the WebUI form.
 ACTION_LABELS = {
+    "warn": "warned",
     "mute_role": "muted",
     "timeout": "timed out",
     "kick": "kicked",
     "ban": "banned",
     "tempban": "temporarily banned",
 }
-# Actions that take a duration (seconds). Kick/ban are permanent/instant.
+# Actions that take a duration (seconds). Kick/ban/warn are permanent/instant.
 TIMED_ACTIONS = {"mute_role", "timeout", "tempban"}
+# Actions that resolve the current "cycle" of warnings, so the automod
+# violation count resets afterwards. "warn" deliberately isn't one of
+# these - it's meant as an early, non-restrictive rung on the ladder (e.g.
+# 3 warnings -> formal warn, 5 -> mute, 8 -> ban) and shouldn't erase the
+# progress that's building toward the harsher tiers above it.
+RESOLVING_ACTIONS = {"mute_role", "timeout", "kick", "ban", "tempban"}
 # Discord's own hard cap on a single timeout.
 MAX_TIMEOUT_SECONDS = 28 * 86400
 
@@ -178,6 +185,7 @@ class AutoMod(commands.Cog):
         duration="Required for mute/timeout/tempban, e.g. 10m, 1h, 1d. Ignored for kick/ban.",
     )
     @app_commands.choices(action=[
+        app_commands.Choice(name="Warn", value="warn"),
         app_commands.Choice(name="Mute (role)", value="mute_role"),
         app_commands.Choice(name="Timeout", value="timeout"),
         app_commands.Choice(name="Kick", value="kick"),
@@ -356,7 +364,9 @@ class AutoMod(commands.Cog):
         reason = f"Automod: {tier['threshold']} warnings (latest: {violation_reason})"
 
         try:
-            if action == "timeout":
+            if action == "warn":
+                self.bot.db.add_warn(guild.id, member.id, self.bot.user.id, reason, int(time.time()))
+            elif action == "timeout":
                 await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=duration), reason=reason)
             elif action == "mute_role":
                 moderation_cog = self.bot.get_cog("Moderation")
@@ -384,10 +394,13 @@ class AutoMod(commands.Cog):
             )
             return
 
-        # Every action above either removes the member (kick/ban/tempban)
-        # or otherwise restricts them (mute/timeout) - either way this
-        # "cycle" of warnings is resolved, so reset the count.
-        self.bot.db.clear_automod_violations(guild.id, member.id)
+        # Every other action either removes the member (kick/ban/tempban)
+        # or otherwise restricts them (mute/timeout) - either way that
+        # "cycle" of warnings is resolved, so reset the count. A "warn"
+        # tier is deliberately excluded (see RESOLVING_ACTIONS above) so
+        # the member keeps climbing toward whatever tier comes next.
+        if action in RESOLVING_ACTIONS:
+            self.bot.db.clear_automod_violations(guild.id, member.id)
         self.bot.db.record_member_history(
             guild.id, member.id, f"automod_{action}", self.bot.user.id if self.bot.user else None,
             reason, f"duration_seconds={duration}" if duration else None,
