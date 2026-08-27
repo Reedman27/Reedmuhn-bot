@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Moderation Queue - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Moderation Queue</h1>
+{% if request.query_params.get("dismissed") %}<p class="success">Dismissed.</p>
+{% elif request.query_params.get("confirmqueued") %}<p class="success">Confirmed - the bot will apply it shortly.</p>
+{% elif request.query_params.get("error") == "notfound" %}<p class="error">That entry was already resolved.</p>{% endif %}
+<section class="card">
+    <p class="hint">Messages caught by a fuzzy "alike words" match, held here instead of acting immediately - see the toggle on the <a href="/guild/{{ guild_id }}/automod">AutoMod</a> page. The message itself is already deleted; confirming applies the warn/mute/kick/ban escalation ladder as if it had matched immediately, dismissing takes no further action.</p>
+    {% if queue %}
+    <table><thead><tr><th>Member</th><th>Channel</th><th>Matched</th><th>Message</th><th>When</th><th></th></tr></thead><tbody>
+    {% for item in queue %}
+    <tr>
+        <td>{{ item.user_name }}</td>
+        <td>{{ item.channel_label }}</td>
+        <td>{{ item.rule_label }}</td>
+        <td>{{ item.content_snapshot }}</td>
+        <td>{{ item.created_at }}</td>
+        <td>
+            <form method="post" action="/guild/{{ guild_id }}/moderationqueue/decide" class="inline">
+                <input type="hidden" name="review_id" value="{{ item.id }}">
+                <input type="hidden" name="decision" value="confirm">
+                <button type="submit">Confirm</button>
+            </form>
+            <form method="post" action="/guild/{{ guild_id }}/moderationqueue/decide" class="inline">
+                <input type="hidden" name="review_id" value="{{ item.id }}">
+                <input type="hidden" name="decision" value="dismiss">
+                <button type="submit" class="danger">Dismiss</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}</tbody></table>
+    {% else %}<p class="muted">Nothing pending review.</p>{% endif %}
+</section>
+{% endblock %}

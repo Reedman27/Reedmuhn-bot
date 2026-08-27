@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Tickets · Reedmuhn Bot{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🎫 Tickets</h1>
+        <p class="muted">Members open a private channel with /ticket, or by clicking the button on the panel below. Closing here queues the bot to lock and rename the channel.</p>
+    </div>
+</div>
+
+{% if request.query_params.get("error") == "category" %}<p class="error">Choose a valid category.</p>
+{% elif request.query_params.get("error") == "role" %}<p class="error">Choose a valid support role.</p>
+{% elif request.query_params.get("error") == "panelchannel" %}<p class="error">Choose a valid channel for the panel.</p>
+{% elif request.query_params.get("error") == "notfound" %}<p class="error">That ticket could not be found.</p>
+{% elif request.query_params.get("error") == "alreadyclosed" %}<p class="error">That ticket is already closed.</p>
+{% elif request.query_params.get("saved") %}<p class="success">Saved.</p>
+{% elif request.query_params.get("panelsaved") %}<p class="success">Saved - the panel will be posted or updated within a couple seconds.</p>
+{% elif request.query_params.get("closequeued") %}<p class="success">Close requested - the bot will lock the channel shortly.</p>{% endif %}
+
+<section class="card">
+    <h2>Settings</h2>
+    <p class="muted">Currently: {{ category_label }} / {{ support_role_label }}</p>
+    <form method="post" action="/guild/{{ guild_id }}/tickets/config">
+        <label for="category_id">Category tickets are created under</label>
+        <select id="category_id" name="category_id" required>
+            <option value="" disabled {% if not cfg.category_id %}selected{% endif %}>Choose a category…</option>
+            {% for cid, name, ctype, pos in categories %}
+            <option value="{{ cid }}" {% if cid == cfg.category_id %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <label for="support_role_id">Support role (sees and manages every ticket)</label>
+        <select id="support_role_id" name="support_role_id" required>
+            <option value="" disabled {% if not cfg.support_role_id %}selected{% endif %}>Choose a role…</option>
+            {% for rid, name, position in roles %}
+            <option value="{{ rid }}" {% if rid == cfg.support_role_id %}selected{% endif %}>@{{ name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Ticket panel</h2>
+    <p class="hint">
+        Posts a persistent "Open a Ticket" button in one channel - this is the "ticket tool" replacement:
+        members click the button instead of needing to know /ticket. Clicking it always opens a brand new
+        private channel just for them (the same category/support-role settings above apply), so there's no
+        need to lock down who can type in the panel channel itself - everyone can see the button, but only
+        the person who clicks it ever gets into the ticket it creates.
+    </p>
+    <p class="muted">Currently posted in: {{ panel_channel_label }}</p>
+    <form method="post" action="/guild/{{ guild_id }}/tickets/panel">
+        <label for="panel_channel_id">Panel channel</label>
+        <select id="panel_channel_id" name="panel_channel_id" required>
+            <option value="" disabled {% if not cfg.panel_channel_id %}selected{% endif %}>Choose a channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}
+            <option value="{{ cid }}" {% if cid == cfg.panel_channel_id %}selected{% endif %}>#{{ name }}</option>
+            {% endfor %}
+        </select>
+        <label for="panel_title">Panel title</label>
+        <input id="panel_title" type="text" name="panel_title" maxlength="256" value="{{ cfg.panel_title }}">
+        <label for="panel_description">Panel description</label>
+        <textarea id="panel_description" name="panel_description" rows="3" maxlength="1000">{{ cfg.panel_description }}</textarea>
+        <button type="submit">Save & post panel</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Tickets</h2>
+    {% if tickets %}
+    <div class="table-wrap">
+    <table><thead><tr><th>#</th><th>Subject</th><th>Opened by</th><th>Channel</th><th>Status</th><th>Opened</th><th>Closed</th><th></th></tr></thead><tbody>
+    {% for t in tickets %}
+    <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.subject or "—" }}</td>
+        <td>{{ t.opener }}</td>
+        <td>{{ t.channel_label }}</td>
+        <td>{% if t.status == "open" %}<span class="badge">Open</span>{% else %}Closed{% endif %}</td>
+        <td>{{ t.created_at }}</td>
+        <td>{% if t.closed_at %}{{ t.closed_at }} by {{ t.closed_by }}{% if t.close_reason %} - {{ t.close_reason }}{% endif %}{% else %}—{% endif %}</td>
+        <td>
+            {% if t.status == "open" %}
+            <form method="post" action="/guild/{{ guild_id }}/tickets/close" class="inline">
+                <input type="hidden" name="ticket_id" value="{{ t.id }}">
+                <input type="text" name="reason" placeholder="Reason (optional)" style="width:10em">
+                <button type="submit" class="danger">Close</button>
+            </form>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody></table>
+    </div>
+    {% else %}<p class="muted">No tickets yet.</p>{% endif %}
+</section>
+{% endblock %}

@@ -1,4 +1,5 @@
 import datetime
+import json
 import time
 
 import discord
@@ -6,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import scheduler
-from utils import format_duration, parse_duration, tempnick_self_allowed, can_moderate
+from utils import format_duration, parse_duration, tempnick_self_allowed, can_moderate, removable_roles_for_strip, restore_stripped_roles
 
 
 from utils import manager_or_permission
@@ -41,6 +42,12 @@ class Moderation(commands.Cog):
         before = None
         scanned = 0
         fourteen_days = 14 * 86400
+        author_counts: dict[int, int] = {}
+        author_names: dict[int, str] = {}
+
+        def _record(msg: discord.Message) -> None:
+            author_counts[msg.author.id] = author_counts.get(msg.author.id, 0) + 1
+            author_names[msg.author.id] = str(msg.author)
 
         # When a user is supplied, `amount` means matching messages to delete,
         # not messages to scan. This makes /purge behave like Carl's targeted
@@ -66,14 +73,19 @@ class Moderation(commands.Cog):
 
             if recent:
                 try:
-                    deleted += len(await interaction.channel.delete_messages(recent))
+                    await interaction.channel.delete_messages(recent)
                 except (discord.Forbidden, discord.HTTPException):
                     for message in recent:
                         try:
                             await message.delete(reason=reason)
                             deleted += 1
+                            _record(message)
                         except (discord.NotFound, discord.Forbidden):
                             pass
+                else:
+                    deleted += len(recent)
+                    for message in recent:
+                        _record(message)
 
             for message in old:
                 if deleted >= amount:
@@ -81,6 +93,7 @@ class Moderation(commands.Cog):
                 try:
                     await message.delete(reason=reason)
                     deleted += 1
+                    _record(message)
                 except (discord.NotFound, discord.Forbidden):
                     pass
 
@@ -89,8 +102,22 @@ class Moderation(commands.Cog):
                 break
 
         target_text = f" from {user.mention}" if user else ""
+
+        # Carl-style breakdown: who the deleted messages actually belonged
+        # to, not just a raw count. Sorted by volume, capped so a purge
+        # across a very chatty channel doesn't produce a wall of names.
+        breakdown_lines = []
+        if author_counts:
+            ranked = sorted(author_counts.items(), key=lambda pair: pair[1], reverse=True)
+            shown, remainder = ranked[:10], ranked[10:]
+            breakdown_lines = [f"• {author_names[uid]} — {count}" for uid, count in shown]
+            if remainder:
+                remainder_total = sum(count for _uid, count in remainder)
+                breakdown_lines.append(f"• …and {len(remainder)} more member{'s' if len(remainder) != 1 else ''} ({remainder_total} message{'s' if remainder_total != 1 else ''})")
+        breakdown_text = ("\n" + "\n".join(breakdown_lines)) if breakdown_lines else ""
+
         await interaction.followup.send(
-            f"Deleted **{deleted}** message{'s' if deleted != 1 else ''}{target_text}.",
+            f"Deleted **{deleted}** message{'s' if deleted != 1 else ''}{target_text}.{breakdown_text}",
             ephemeral=True,
         )
 
@@ -104,6 +131,13 @@ class Moderation(commands.Cog):
             embed.add_field(name="Moderator", value=interaction.user.mention)
             embed.add_field(name="Channel", value=interaction.channel.mention)
             embed.add_field(name="Reason", value=reason)
+            if breakdown_lines:
+                # Embed fields cap at 1024 chars - fall back to a shorter cut
+                # if the breakdown itself is unusually long.
+                breakdown_value = "\n".join(breakdown_lines)
+                if len(breakdown_value) > 1024:
+                    breakdown_value = breakdown_value[:1000] + "\n…"
+                embed.add_field(name="Deleted by", value=breakdown_value, inline=False)
             await logging_cog.log_event(interaction.guild, "moderation", embed)
 
     @app_commands.command(name="tempban", description="Temporarily ban a user")
@@ -240,6 +274,44 @@ class Moderation(commands.Cog):
             f"Changed {target.mention}'s nickname to \"{nickname}\" for {format_duration(seconds)}."
         )
 
+    @app_commands.command(name="removetempnick", description="End a member's temporary nickname early and restore their original one")
+    @app_commands.describe(user="Whose temp nickname to end early")
+    @manager_or_permission("manage_nicknames")
+    async def remove_tempnick(self, interaction: discord.Interaction, user: discord.Member):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+
+        event = None
+        for event_id, _name, _run_at, data in self.bot.db.list_scheduled_events(interaction.guild.id, "revert_nick"):
+            parsed = json.loads(data)
+            if parsed["user_id"] == user.id:
+                event = (event_id, parsed)
+                break
+
+        if event is None:
+            await interaction.response.send_message(f"{user.mention} doesn't have a temp nickname pending.", ephemeral=True)
+            return
+
+        event_id, parsed = event
+        # Try the actual revert BEFORE touching the DB - if this fails, the
+        # scheduled event needs to stay in place so the nickname still gets
+        # reverted automatically later (e.g. once the role hierarchy is
+        # fixed), instead of silently losing the scheduled revert entirely.
+        try:
+            await user.edit(nick=parsed.get("original_nick"), reason=f"Tempnick ended early by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I can't change that nickname - check that my role sits above theirs "
+                "and that I have the Manage Nicknames permission. The scheduled revert is "
+                "still in place and will retry when it's due.",
+                ephemeral=True,
+            )
+            return
+
+        self.bot.db.delete_scheduled_event(event_id, interaction.guild.id)
+        await interaction.response.send_message(f"Reverted {user.mention}'s nickname early.")
+        await self._log_action(interaction.guild, "Tempnick ended early", user, interaction.user)
 
     # ---- warns ----
 
@@ -264,9 +336,9 @@ class Moderation(commands.Cog):
         await logging_cog.log_event(guild, "moderation", embed)
 
     @app_commands.command(name="warn", description="Warn a member")
-    @app_commands.describe(user="Who to warn", reason="Why they're being warned")
+    @app_commands.describe(user="Who to warn", reason="Why they're being warned", rule="Rule number they broke (see /rules) - optional")
     @manager_or_permission("moderate_members")
-    async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str):
+    async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str, rule: int | None = None):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
@@ -277,11 +349,20 @@ class Moderation(commands.Cog):
             )
             return
 
-        self.bot.db.add_warn(interaction.guild.id, user.id, interaction.user.id, reason, int(time.time()))
+        rule_id = None
+        if rule is not None:
+            found = self.bot.db.get_rule_by_number(interaction.guild.id, rule)
+            if found is None:
+                await interaction.response.send_message(f"There's no rule #{rule}. Check `/rules`.", ephemeral=True)
+                return
+            rule_id = found[0]
+
+        self.bot.db.add_warn(interaction.guild.id, user.id, interaction.user.id, reason, int(time.time()), rule_id=rule_id)
         total = self.bot.db.count_warns(interaction.guild.id, user.id)
 
+        rule_note = f" (Rule #{rule})" if rule is not None else ""
         await interaction.response.send_message(
-            f"Warned {user.mention}. Reason: {reason}\nThey now have {total} warning{'s' if total != 1 else ''}."
+            f"Warned {user.mention}. Reason: {reason}{rule_note}\nThey now have {total} warning{'s' if total != 1 else ''}."
         )
         await self._log_action(interaction.guild, "Warned", user, interaction.user, reason)
 
@@ -289,6 +370,10 @@ class Moderation(commands.Cog):
             await user.send(f"You were warned in **{interaction.guild.name}**: {reason}")
         except discord.Forbidden:
             pass  # DMs closed - the mod-facing message above already confirms the warn happened
+
+        automod_cog = self.bot.get_cog("AutoMod")
+        if automod_cog is not None:
+            await automod_cog.apply_warn_escalation(interaction.guild, user, reason)
 
     @app_commands.command(name="warnings", description="List a member's warnings")
     @app_commands.describe(user="Whose warnings to list")
@@ -304,9 +389,16 @@ class Moderation(commands.Cog):
             return
 
         lines = []
-        for warn_id, moderator_id, reason, created_at in rows:
+        for warn_id, moderator_id, reason, created_at, rule_id, notes in rows:
             when = time.strftime("%Y-%m-%d", time.localtime(created_at))
-            lines.append(f"`#{warn_id}` {when} by <@{moderator_id}>: {reason}")
+            line = f"`#{warn_id}` {when} by <@{moderator_id}>: {reason}"
+            if rule_id is not None:
+                rule_number = self.bot.db.rule_number_for_id(interaction.guild.id, rule_id)
+                if rule_number is not None:
+                    line += f" (Rule #{rule_number})"
+            if notes:
+                line += f"\n> {notes}"
+            lines.append(line)
 
         embed = discord.Embed(
             title=f"Warnings for {user.display_name}",
@@ -354,7 +446,7 @@ class Moderation(commands.Cog):
         existing = discord.utils.find(lambda r: r.name.lower() == "muted", guild.roles)
         if existing is not None:
             self.bot.db.set_muted_role(guild.id, existing.id)
-            await self._apply_muted_role_overwrites(guild, existing)
+            await self.apply_muted_role_overwrites(guild, existing)
             return existing
 
         try:
@@ -367,10 +459,10 @@ class Moderation(commands.Cog):
             return None
 
         self.bot.db.set_muted_role(guild.id, role.id)
-        await self._apply_muted_role_overwrites(guild, role)
+        await self.apply_muted_role_overwrites(guild, role)
         return role
 
-    async def _apply_muted_role_overwrites(self, guild: discord.Guild, role: discord.Role) -> tuple[int, int]:
+    async def apply_muted_role_overwrites(self, guild: discord.Guild, role: discord.Role) -> tuple[int, int]:
         cfg = self.bot.db.get_guild_config(guild.id)
         changed = 0
         failed = 0
@@ -387,7 +479,15 @@ class Moderation(commands.Cog):
                     overwrite.connect = False if cfg["muted_deny_connect"] else None
                     overwrite.speak = False if cfg["muted_deny_speak"] else None
                     overwrite.stream = False if cfg["muted_deny_stream"] else None
-                await channel.set_permissions(role, overwrite=overwrite, reason="Updated Muted role configuration")
+                # An overwrite with every field left at None is a no-op -
+                # writing it anyway would leave a pointless empty entry for
+                # this role in every channel's permission list (visible,
+                # confusing clutter in Discord's own UI). Remove it outright
+                # instead, same as Emergency lockdown's Unlock does.
+                if overwrite.is_empty():
+                    await channel.set_permissions(role, overwrite=None, reason="Updated Muted role configuration")
+                else:
+                    await channel.set_permissions(role, overwrite=overwrite, reason="Updated Muted role configuration")
                 changed += 1
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
@@ -410,7 +510,7 @@ class Moderation(commands.Cog):
         # Sweeping every channel can take longer than Discord's 3-second
         # interaction deadline, so defer before doing the bulk work.
         await interaction.response.defer()
-        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
             f"Muted role set to {role.mention}. Applied the current mute policy to {changed} channel(s)"
             + (f"; {failed} could not be updated." if failed else ".")
@@ -432,7 +532,7 @@ class Moderation(commands.Cog):
         if interaction.guild.me and role.position >= interaction.guild.me.top_role.position:
             await interaction.followup.send("The Muted role is not below my bot role. Move my bot role higher first.", ephemeral=True)
             return
-        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
             f"Muted role is {role.mention}. Applied the current mute policy to {changed} channel(s)"
             + (f"; {failed} could not be updated." if failed else ".")
@@ -467,7 +567,7 @@ class Moderation(commands.Cog):
         if role is None:
             await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/muterole create` after granting Manage Roles.", ephemeral=True)
             return
-        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
             f"Muted role settings saved and applied to {changed} channel(s)"
             + (f"; {failed} could not be updated." if failed else ".")
@@ -510,7 +610,7 @@ class Moderation(commands.Cog):
         if role is None:
             await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/muterole create` after granting Manage Roles.", ephemeral=True)
             return
-        changed, failed = await self._apply_muted_role_overwrites(interaction.guild, role)
+        changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
             f"Applied \"{preset.name}\" to {changed} channel(s)"
             + (f"; {failed} could not be updated." if failed else ".")
@@ -522,6 +622,13 @@ class Moderation(commands.Cog):
         AutoMod's escalation tiers so both go through the exact same
         role-lookup, hierarchy check, and scheduling logic.
 
+        If the guild has strip-roles muting turned on, this also strips
+        every other removable role from the member (stashing them in the
+        db) so a member can't lean on some other role's permission
+        overwrites to get around the Muted role - the stash is restored by
+        restore_stripped_roles() wherever the mute ends (auto-expiry,
+        /unmute, or the WebUI).
+
         Returns (True, "") on success, or (False, human_readable_reason) on
         failure - the caller decides how to surface that (an interaction
         reply for /mute, a log line for AutoMod).
@@ -532,10 +639,22 @@ class Moderation(commands.Cog):
             return False, "couldn't find or create the Muted role"
         if guild.me and role.position >= guild.me.top_role.position:
             return False, "the Muted role is at or above my highest role"
-        try:
-            await member.add_roles(role, reason=reason)
-        except discord.Forbidden:
-            return False, "missing permission or role hierarchy to add the Muted role"
+
+        cfg = self.bot.db.get_guild_config(guild.id)
+        if cfg["muted_strip_roles"]:
+            stripped = removable_roles_for_strip(guild, member, muted_role_id=role.id)
+            kept = [r for r in member.roles if r not in stripped and r.id != role.id]
+            try:
+                await member.edit(roles=kept + [role], reason=reason)
+            except discord.Forbidden:
+                return False, "missing permission or role hierarchy to strip roles and add the Muted role"
+            if stripped:
+                self.bot.db.save_stripped_roles(guild.id, member.id, [r.id for r in stripped])
+        else:
+            try:
+                await member.add_roles(role, reason=reason)
+            except discord.Forbidden:
+                return False, "missing permission or role hierarchy to add the Muted role"
 
         run_at = int(time.time()) + seconds
         scheduler.schedule_role_unmute(self.bot.db, guild.id, run_at, member.id, role.id)
@@ -575,36 +694,20 @@ class Moderation(commands.Cog):
         # /muterole commands instead of being reapplied on every mute.
         await interaction.response.defer()
 
-        role = await self.get_or_create_muted_role(interaction.guild)
-        if role is None:
+        ok, why = await self.apply_role_mute(user, seconds, reason)
+        if not ok:
             await interaction.followup.send(
-                "I can't create/find the Muted role. Grant me Manage Roles or configure an existing role with `/muterole set`.",
+                f"I couldn't mute that member - {why}.",
                 ephemeral=True,
             )
             return
 
-        if role.position >= interaction.guild.me.top_role.position:
-            await interaction.followup.send(
-                f"The Muted role ({role.mention}) is above my own role. Move my bot role higher first.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            await user.add_roles(role, reason=reason)
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "I can't give that member the Muted role. Check my role is above theirs and I have Manage Roles.",
-                ephemeral=True
-            )
-            return
-
-        run_at = int(time.time()) + seconds
-        scheduler.schedule_role_unmute(self.bot.db, interaction.guild.id, run_at, user.id, role.id)
         self.bot.db.record_member_history(interaction.guild.id, user.id, "mute", interaction.user.id, reason, f"duration_seconds={seconds}")
 
+        cfg = self.bot.db.get_guild_config(interaction.guild.id)
+        strip_note = " and stripped their other roles for the duration" if cfg["muted_strip_roles"] else ""
         await interaction.followup.send(
-            f"Muted {user.mention} for {format_duration(seconds)} using {role.mention}. Reason: {reason}"
+            f"Muted {user.mention} for {format_duration(seconds)}{strip_note}. Reason: {reason}"
         )
         await self._log_action(interaction.guild, f"Muted ({format_duration(seconds)})", user, interaction.user, reason)
 
@@ -630,6 +733,8 @@ class Moderation(commands.Cog):
                 "I can't remove that member's Muted role - check my role is above theirs.", ephemeral=True
             )
             return
+
+        await restore_stripped_roles(self.bot.db, interaction.guild, user, reason=f"Unmuted by {interaction.user}")
 
         self.bot.db.record_member_history(interaction.guild.id, user.id, "unmute", interaction.user.id, "Manual unmute")
         await interaction.response.send_message(f"Unmuted {user.mention}.")

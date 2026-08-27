@@ -7,9 +7,19 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 
 ## What it does
 
-- 🛡️ Moderation: tempbans, warnings, timeouts, kicks, purges, tempnick, and a configurable mute role
-- 🚨 Automod: invite blocking, banned words, caps, mention spam, message spam, duplicate spam, and violation escalation
+- 🛡️ Moderation: tempbans, warnings (with citable numbered rules and free-text evidence/notes), timeouts, kicks, purges, tempnick, and a configurable mute role
+- 🚨 Automod: invite blocking, GIF blocking (uploads and Tenor/Giphy links), banned words, caps, mention spam, message spam, duplicate spam, violation escalation, and an optional review queue that holds fuzzy-match catches for a moderator to confirm or dismiss instead of auto-punishing
+- 📋 Server rules: numbered rules a warning can cite, managed from Discord or the dashboard
+- 🚩 Reports: members can flag something for staff with `/report`; the dashboard's triage queue can resolve a report straight into a real warning, linking it to that member's actual history
+- 👮 Staff activity: per-moderator counts of warnings, tickets closed, and reports resolved, over 7/30/90-day/all-time windows
+- 🔎 Dashboard search: one query box across warnings, reports, rules, tickets, polls, and the automod review queue
+- 🆘 Emergency Control Center: dashboard-only, confirmation-gated actions for an active incident - server-wide lockdown/unlock (remembers and restores each channel's exact prior state), revoke every active invite, and mass-timeout everyone holding a chosen role
+- 💾 Config snapshots: save and restore this bot's own settings (automod, verification, tickets, reports, tempnick permissions, bot manager roles, voice hubs, logging routes, welcome/autorole) as a named point-in-time backup - does not touch real Discord role/channel permissions
+- ✅ Verification: a persistent button in a chosen channel grants a role on click
+- 🎫 Tickets: `/ticket` opens a private support channel, or members can click a persistent "Open a Ticket" panel button in one designated channel (no slash command needed - a drop-in replacement for a dedicated ticket-tool bot), closeable via command, button, or dashboard
+- 📊 Polls: up to 5 options, live results, optional auto-close
 - 🧷 Sticky roles: persist eligible member roles across leaves/rejoins, with Discord and WebUI controls plus role exclusions for privileged roles
+- 🎭 Reaction roles - react to a message to get a role, un-react to remove it
 - 👋 Welcome messages, optional generated welcome cards, and autoroles
 - 🎂 Birthday tracking and announcements
 - 🔢 Counting with high scores and earned saves
@@ -17,11 +27,10 @@ A self-hosted Discord moderation and utility bot built with `discord.py`, SQLite
 - 🔔 Reminders and scheduled nickname/tempban actions
 - 📺 YouTube upload notifications through RSS (no YouTube API key)
 - 🎙️ Temporary voice channels
-- 🎭 Reaction roles - react to a message to get a role, un-react to remove it
-- 📋 Server activity logging - message edits/deletes, joins/leaves/kicks/bans (resolved against the audit log for who + why), role/channel/server changes, and voice activity, each routed to its own configurable channel. Purges get a full transcript: every purged message's author and content, with any pasted links (gifs, images, etc.) kept as plain text rather than re-hosted embeds, plus a `.txt` attachment with the complete list so nothing is lost even on a large purge
-- 🖥️ WebUI parity: analytics streams, temp-voice shutdowns, banned-word configuration, sticky-role exclusions, and targeted purges can all be managed from the dashboard
+- 📋 Server activity logging - messages, members (including verification), moderation, automod, tickets, reports, server, and voice each route to their own configurable channel, with an ignore list. Manual Discord moderation actions are resolved against the audit log for who + why. Purges get a full transcript: every purged message's author and content, with any pasted links (gifs, images, etc.) kept as plain text rather than re-hosted embeds, plus a `.txt` attachment with the complete list so nothing is lost even on a large purge
+- 🖥️ WebUI parity: every feature above has a matching dashboard page - analytics streams, temp-voice shutdowns, banned-word configuration, sticky-role exclusions, targeted purges, ticket/verification panel posting, and more
 - 🎉 Fun commands
-- 🌐 Web dashboard for configuration, protected by a single shared password (no Discord OAuth or public callback required)
+- 🌐 Web dashboard for configuration, protected by a single shared password (no Discord OAuth or public callback required) - 30+ built-in themes plus a custom theme editor, and its own login/action audit log
 
 The dashboard is designed for people who **do not want to copy Discord IDs everywhere**. Server, channel, role, and member choices are presented by their Discord names. IDs remain internal values used by Discord and the database.
 
@@ -228,6 +237,19 @@ Discord commands:
 
 The bot needs **Manage Roles**, and its highest role must be above the configured Muted role.
 
+## Ticket panel ("ticket tool" replacement)
+
+`/setticketpanel <channel> [title] [description]` posts a persistent embed with an **Open a Ticket** button in one channel - members click it, fill in an optional one-line subject, and get their own private ticket channel immediately, with no slash command to remember. Anyone can see the panel message; only the person who clicks it ever gets access to the channel it creates, and a member can only have one open ticket at a time.
+
+`/setuptickets <category> <support_role>` still needs to be run once to say where ticket channels go and who on staff can see them - the panel and `/ticket` both use that same configuration. The panel channel and its wording can also be set from the dashboard's Tickets page, which posts/updates the live message within a couple seconds since the dashboard itself has no direct Discord connection.
+
+## Emergency Control Center and Config Snapshots
+
+Two dashboard-only tools for larger-scale situations, both reached from the sidebar:
+
+- **Emergency Control Center** - server-wide lockdown (denies Send Messages for @everyone across every text channel the bot can manage, remembering each channel's exact prior permission so Unlock restores it precisely rather than opening everything), revoke every active invite link, and mass-timeout every current member of a chosen role. The server owner, Administrators, bots, and anyone above the bot's own role are automatically skipped by mass timeout. Every action requires typing a confirmation phrase before it's queued.
+- **Config Snapshots** - saves a named, restorable copy of this bot's own settings: automod (including escalation tiers), welcome/autorole, verification, tickets (including the panel), reports, tempnick permissions, bot manager roles, voice hubs, and logging routes. Deliberately does **not** touch real Discord role/channel permissions, so restoring one can't clobber a manual permission change made outside the bot. Restoring a snapshot that changes the Muted role still needs a manual `/muterole` sync afterward to apply it to every channel, same as any other Muted-role change.
+
 ## Durable bot memory and logs
 
 The bot keeps persistent state in the configured SQLite database (normally `data/bot.db`) and an append-only application log at `data/bot.log`. Do not delete or replace the `data/` directory when updating the bot code.
@@ -281,4 +303,9 @@ AGPL-3.0. See [`LICENSE`](LICENSE).
 - `/automodword add word:<word-or-phrase>` adds a server-wide banned word/phrase.
 - `/automodword remove word:<word-or-phrase>` removes one.
 - `/automodword list` shows the configured list.
+- `/automodinvites block:<true|false>` toggles Discord invite-link blocking.
+- `/automodgifs block:<true|false>` toggles GIF blocking - catches uploaded `.gif` attachments and links to GIF-hosting sites (Tenor, Giphy), which is also what Discord's own built-in GIF picker posts. Static images are unaffected.
 - The existing WebUI **AutoMod → Banned words** editor manages the same list, so changes made in Discord and the WebUI stay synchronized.
+- `/automodqueue`, `/automodqueueconfirm <id>`, `/automodqueuedismiss <id>` - when the AutoMod review queue is turned on (WebUI AutoMod page), a fuzzy word-filter match is deleted immediately but held for a moderator to confirm (apply the escalation ladder) or dismiss, instead of auto-punishing on a match type that's inherently more false-positive-prone. Also manageable from the dashboard's Moderation Queue page.
+- `/rules`, `/addrule <text>`, `/removerule <number>` manage numbered server rules; `/warn` takes an optional rule number to cite.
+- `/report <user> <reason>`, `/reports` (staff shortcut to the open queue), `/setreportschannel <channel>` - members can flag something for staff, who triage from Discord or the dashboard's Reports page. Resolving a report can issue a real warning through the same path `/warn` uses, so it's linked into that member's actual warning history and staff stats rather than being a separate record.

@@ -48,6 +48,48 @@ def can_moderate(actor, target) -> bool:
     return actor.top_role > target.top_role
 
 
+def removable_roles_for_strip(guild, member, muted_role_id=None) -> list:
+    """Roles this member currently holds that a strip-roles mute can safely
+    take away and later restore: not @everyone (implicit, can't be
+    removed), not managed (booster/integration/bot roles - Discord won't
+    let us touch these regardless), not the Muted role itself, and below
+    the bot's own top role (anything at or above that the bot couldn't
+    remove or re-add either way, so leave it alone rather than fail the
+    whole mute over it).
+    """
+    me = guild.me
+    top_position = me.top_role.position if me else None
+    return [
+        role for role in member.roles
+        if role != guild.default_role
+        and not role.managed
+        and role.id != muted_role_id
+        and (top_position is None or role.position < top_position)
+    ]
+
+
+async def restore_stripped_roles(db, guild, member, reason: str) -> None:
+    """Adds back whatever roles a strip-roles mute took from this member, if
+    any were stored for them. Silently no-ops if nothing was stored, the
+    member has left, or every stored role has since been deleted - a
+    missing role to restore isn't a failure worth surfacing, unlike failing
+    to apply/remove the Muted role itself.
+    """
+    import discord
+
+    role_ids = db.pop_stripped_roles(guild.id, member.id)
+    if not role_ids:
+        return
+    roles = [guild.get_role(rid) for rid in role_ids]
+    roles = [r for r in roles if r is not None and r not in member.roles]
+    if not roles:
+        return
+    try:
+        await member.add_roles(*roles, reason=reason)
+    except discord.Forbidden:
+        pass
+
+
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 

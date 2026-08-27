@@ -81,6 +81,19 @@ async def security_headers_and_origin_check(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
+    # Dashboard action log: every mutating (POST) request an authenticated
+    # session makes, beyond login itself (which is logged separately in
+    # login_submit) and static assets. Best-effort - a logging failure
+    # should never break the actual request.
+    if request.method == "POST" and request.url.path not in ("/login",) and is_authed(request):
+        try:
+            guild_id = None
+            parts = request.url.path.split("/")
+            if len(parts) >= 3 and parts[1] == "guild":
+                guild_id = int(parts[2])
+            db.record_webui_action(guild_id, _client_ip(request), request.method, request.url.path, response.status_code)
+        except Exception:
+            pass
     return response
 
 
@@ -238,9 +251,11 @@ async def login_submit(request: Request, password: str = Form(...)):
 
     if not hmac.compare_digest(password, WEBUI_PASSWORD):
         record_failed_login(request)
+        db.record_webui_login(_client_ip(request), False)
         return RedirectResponse("/login?error=failed", status_code=303)
 
     clear_failed_logins(request)
+    db.record_webui_login(_client_ip(request), True)
     request.session.clear()
     request.session["authenticated"] = True
     request.session["discord_username"] = "Dashboard Admin"
@@ -251,6 +266,37 @@ async def login_submit(request: Request, password: str = Form(...)):
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
+
+
+# ---- dashboard log (login attempts + actions taken through the WebUI) ----
+# Global rather than per-guild: login happens before a server is even
+# selected, and the shared-password model (see the note atop this file)
+# means there's no per-admin identity to scope it to anyway.
+
+@app.get("/dashboard-log")
+async def dashboard_log_page(request: Request):
+    if not is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    logins = [
+        {"created_at": datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S"), "ip": row[1], "success": bool(row[2])}
+        for row in db.list_webui_login_events(50)
+    ]
+    actions = [
+        {
+            "created_at": datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S"), "guild_id": row[1],
+            "guild_name": (db.get_guild_name(row[1]) if row[1] else None),
+            "ip": row[2], "method": row[3], "path": row[4], "status_code": row[5],
+        }
+        for row in db.list_webui_action_log(100)
+    ]
+    return templates.TemplateResponse(
+        request, "dashboard_log.html",
+        {
+            "guild_id": None, "guild_name": None, "active": "dashboard_log",
+            "discord_username": request.session.get("discord_username"),
+            "logins": logins, "actions": actions,
+        },
+    )
 
 
 # ---- guild picker ----
@@ -635,7 +681,7 @@ async def save_counting_highscorealerts(request: Request, guild_id: int, enabled
 # ---- scheduled background tasks (reminders and nickname reverts) ----
 
 @app.get("/guild/{guild_id}/scheduled")
-async def scheduled_page(request: Request, guild_id: int):
+async def scheduled_page(request: Request, guild_id: int, nick_q: str = ""):
     if (r := await require_auth(request)):
         return r
 
@@ -650,19 +696,24 @@ async def scheduled_page(request: Request, guild_id: int):
             "run_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
+    nick_q = nick_q.strip()
     nick_reverts = []
     for event_id, _, run_at, data in db.list_scheduled_events(guild_id, "revert_nick"):
         parsed = json.loads(data)
+        user_id = parsed["user_id"]
+        user_name = member_label(guild_id, user_id)
+        if nick_q and nick_q != str(user_id) and nick_q.lower() not in user_name.lower():
+            continue
         nick_reverts.append({
             "id": event_id,
-            "user_id": parsed["user_id"],
-            "user_name": member_label(guild_id, parsed["user_id"]),
+            "user_id": user_id,
+            "user_name": user_name,
             "reverts_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
     return render(
         request, "scheduled.html", guild_id, "scheduled",
-        reminders=reminders, nick_reverts=nick_reverts,
+        reminders=reminders, nick_reverts=nick_reverts, nick_q=nick_q,
     )
 
 
@@ -672,6 +723,27 @@ async def cancel_reminder(request: Request, guild_id: int, event_id: int = Form(
         return r
     db.delete_scheduled_event(event_id, guild_id)
     return RedirectResponse(f"/guild/{guild_id}/scheduled", status_code=303)
+
+
+@app.post("/guild/{guild_id}/scheduled/revert-nick-now")
+async def revert_nick_now(request: Request, guild_id: int, event_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    event = db.get_scheduled_event(event_id, guild_id, "revert_nick")
+    if event:
+        _event_id, _name, _run_at, data = event
+        db.delete_scheduled_event(event_id, guild_id)
+        parsed = json.loads(data)
+        # Same pattern as the tempbans tab's "unban now" - reinsert the
+        # same event with an immediate run_at rather than performing the
+        # Discord edit here, since the WebUI process has no Discord
+        # connection of its own. The scheduler loop picks it up on its
+        # next tick (every 30s).
+        db.insert_scheduled_event(
+            "revert_nick", guild_id, int(time.time()),
+            {"user_id": parsed["user_id"], "original_nick": parsed.get("original_nick")},
+        )
+    return RedirectResponse(f"/guild/{guild_id}/scheduled?reverted={event_id}", status_code=303)
 
 
 # ---- permissions (tempnick access rule) ----
@@ -736,21 +808,78 @@ async def delete_tempnick_role(request: Request, guild_id: int, role_id: int = F
 
 # ---- moderation (warn lookup) ----
 
+MOD_ACTION_LABELS = {
+    "kick": "Kick",
+    "ban": "Ban",
+    "tempban": "Temporary ban",
+    "unban": "Unban",
+    "mute_role": "Mute (role)",
+    "unmute_role": "Unmute (remove role)",
+    "timeout": "Timeout",
+    "untimeout": "Remove timeout",
+}
+MOD_TIMED_ACTIONS = {"tempban", "mute_role", "timeout"}
+MOD_ACTION_TIMEOUT_MAX_SECONDS = 28 * 86400
+
+
+def queue_warn_escalation_if_due(guild_id: int, user_id: int, latest_reason: str) -> None:
+    """Mirrors AutoMod.apply_warn_escalation on the bot side, run from the
+    WebUI process instead: checks a freshly-added manual warning against
+    the same escalation tiers configured on the Automod tab, using the
+    member's warning count within the configured window. A "warn" tier is
+    applied directly here (it's DB-only, no Discord connection needed); any
+    other tier (mute/timeout/kick/ban/tempban) is queued onto
+    dashboard_mod_actions for the bot process to actually execute, exactly
+    like the moderation tab's own action buttons.
+    """
+    cfg = db.get_automod_config(guild_id)
+    since = int(time.time()) - cfg["violation_window_seconds"]
+    recent = db.count_recent_warns(guild_id, user_id, since)
+    tiers = db.list_automod_escalation_tiers(guild_id)
+    # Exact match only (not "past every tier") - manual warns are a
+    # permanent record that's never auto-cleared, so falling back to "past
+    # every tier" here would re-fire the harshest punishment on every
+    # single warning after the last configured threshold.
+    tier = next((t for t in tiers if t["threshold"] == recent), None)
+    if tier is None:
+        return
+    reason = f"Warnings: {tier['threshold']} warnings (latest: {latest_reason})"
+    if tier["action"] == "warn":
+        db.add_warn(guild_id, user_id, 0, reason, int(time.time()))
+        return
+    if tier["action"] not in MOD_ACTION_LABELS:
+        return
+    db.queue_mod_action(guild_id, user_id, tier["action"], tier["duration_seconds"], reason)
+
+
 @app.get("/guild/{guild_id}/moderation")
 async def moderation_page(request: Request, guild_id: int, user_id: Optional[int] = None, tab: str = "overview"):
     if (r := await require_auth(request)):
         return r
 
-    if tab not in {"overview", "warnings", "tempbans"}:
+    if tab not in {"overview", "warnings", "tempbans", "tempnicks"}:
         tab = "overview"
 
     warns = []
     if user_id:
         rows = db.list_warns(guild_id, user_id)
-        warns = [
-            (warn_id, moderator_id, ("Dashboard" if moderator_id == 0 else member_label(guild_id, moderator_id)), reason, datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"))
-            for warn_id, moderator_id, reason, created_at in rows
-        ]
+        warns = []
+        for warn_id, moderator_id, reason, created_at, rule_id, notes in rows:
+            rule_label = None
+            if rule_id is not None:
+                rule_number = db.rule_number_for_id(guild_id, rule_id)
+                rule_text = db.get_rule_by_id(guild_id, rule_id)
+                if rule_number is not None and rule_text is not None:
+                    rule_label = f"Rule #{rule_number}: {rule_text}"
+            warns.append({
+                "id": warn_id,
+                "moderator_id": moderator_id,
+                "moderator_name": "Dashboard" if moderator_id == 0 else member_label(guild_id, moderator_id),
+                "reason": reason,
+                "date_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+                "rule_label": rule_label,
+                "notes": notes,
+            })
 
     warned_users = [
         (uid, member_label(guild_id, uid), count, datetime.fromtimestamp(last_at).strftime("%Y-%m-%d %H:%M"))
@@ -767,16 +896,64 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
             "unban_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
+    tempnicks = []
+    for event_id, _, run_at, data in db.list_scheduled_events(guild_id, "revert_nick"):
+        parsed = json.loads(data)
+        tempnicks.append({
+            "id": event_id,
+            "user_id": parsed["user_id"],
+            "user_name": member_label(guild_id, parsed["user_id"]),
+            "original_nick": parsed.get("original_nick"),
+            "revert_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
+        })
+
     cfg = db.get_guild_config(guild_id)
     members = db.list_bot_members(guild_id)
+    purge_requests = []
+    for row in db.recent_purge_requests(guild_id, 15):
+        (pid, cid, uid, amount, reason, status, created_at, completed_at, error,
+         deleted_count, breakdown_json) = row
+        breakdown = None
+        if breakdown_json:
+            try:
+                # Sorted by volume so the biggest contributor to the purge
+                # shows first, same as /purge's ephemeral reply.
+                breakdown = sorted(json.loads(breakdown_json).items(), key=lambda pair: pair[1], reverse=True)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                breakdown = None
+        purge_requests.append({
+            "id": pid, "channel_id": cid, "user_id": uid, "amount": amount, "reason": reason,
+            "status": status, "error": error, "deleted_count": deleted_count, "breakdown": breakdown,
+        })
+    mod_actions = [
+        {
+            "id": row[0], "user_id": row[1], "user_name": member_label(guild_id, row[1]),
+            "action": row[2], "action_label": MOD_ACTION_LABELS.get(row[2], row[2]),
+            "duration": format_duration(row[3]) if row[3] else None,
+            "reason": row[4], "status": row[5],
+            "created_at": datetime.fromtimestamp(row[6]).strftime("%Y-%m-%d %H:%M"),
+            "error": row[8],
+        }
+        for row in db.recent_mod_actions(guild_id, 15)
+    ]
+    mute_sync = None
+    sync_row = db.latest_mute_role_sync(guild_id)
+    if sync_row:
+        status, created_at, error, changed, failed = sync_row
+        mute_sync = {
+            "status": status, "error": error, "changed": changed, "failed": failed,
+            "created_at": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+        }
     return render(
         request, "moderation.html", guild_id, "moderation",
         tab=tab, looked_up_user_id=user_id,
         looked_up_user_name=(member_label(guild_id, user_id) if user_id else None),
-        warns=warns, warned_users=warned_users, members=members, tempbans=tempbans,
-        text_channels=db.list_bot_channels(guild_id, "text"), purge_requests=db.recent_purge_requests(guild_id, 15),
+        warns=warns, warned_users=warned_users, members=members, tempbans=tempbans, tempnicks=tempnicks,
+        text_channels=db.list_bot_channels(guild_id, "text"), purge_requests=purge_requests,
         purge_member_names={uid: display for uid, display, _name in members},
         muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
+        mod_action_requests=mod_actions, mod_action_choices=list(MOD_ACTION_LABELS.items()),
+        mod_timed_actions=list(MOD_TIMED_ACTIONS), mute_sync=mute_sync,
     )
 
 
@@ -818,6 +995,7 @@ async def add_warn_route(request: Request, guild_id: int, user_id: int = Form(..
     # there's no per-admin dashboard login to attribute it to a specific
     # Discord user, unlike /warn issued in Discord itself.
     db.add_warn(guild_id, user_id, 0, reason, int(time.time()))
+    queue_warn_escalation_if_due(guild_id, user_id, reason)
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
 
 
@@ -829,6 +1007,15 @@ async def remove_warn_route(request: Request, guild_id: int, warn_id: int = Form
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
 
 
+@app.post("/guild/{guild_id}/moderation/warn-notes")
+async def set_warn_notes_route(request: Request, guild_id: int, warn_id: int = Form(...), user_id: int = Form(...), notes: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    notes = notes.strip()[:1000]
+    db.set_warn_notes(guild_id, warn_id, notes or None)
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
+
+
 @app.post("/guild/{guild_id}/moderation/muted-role")
 async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("auto")):
     if (r := await require_auth(request)):
@@ -837,6 +1024,9 @@ async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("
         db.set_muted_role(guild_id, None)
     elif validate_role(guild_id, int(role_id)):
         db.set_muted_role(guild_id, int(role_id))
+    else:
+        return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
+    db.queue_mute_role_sync(guild_id, "WebUI: Muted role changed")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 MUTE_PRESETS = {
@@ -861,7 +1051,7 @@ async def save_muted_role_settings(
     messages: Optional[str] = Form(None), reactions: Optional[str] = Form(None),
     threads: Optional[str] = Form(None), connect: Optional[str] = Form(None),
     speak: Optional[str] = Form(None), stream: Optional[str] = Form(None),
-    view_channel: Optional[str] = Form(None),
+    view_channel: Optional[str] = Form(None), strip_roles: Optional[str] = Form(None),
 ):
     if (r := await require_auth(request)):
         return r
@@ -875,6 +1065,8 @@ async def save_muted_role_settings(
         deny_stream=stream == "on",
         deny_view_channel=view_channel == "on",
     )
+    db.set_muted_strip_roles(guild_id, strip_roles == "on")
+    db.queue_mute_role_sync(guild_id, "WebUI: Muted role settings changed")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
@@ -885,6 +1077,7 @@ async def save_muted_role_preset(request: Request, guild_id: int, preset: str = 
     if preset not in MUTE_PRESETS:
         return RedirectResponse(f"/guild/{guild_id}/moderation?error=invalid", status_code=303)
     db.set_muted_settings(guild_id, **MUTE_PRESETS[preset])
+    db.queue_mute_role_sync(guild_id, f"WebUI: Muted role preset applied ({preset})")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
@@ -901,12 +1094,79 @@ async def unban_tempban_now(request: Request, guild_id: int, event_id: int = For
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=tempbans", status_code=303)
 
 
+@app.post("/guild/{guild_id}/moderation/tempnicks/revert")
+async def revert_tempnick_now(request: Request, guild_id: int, event_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    event = db.get_scheduled_event(event_id, guild_id, "revert_nick")
+    if event:
+        _event_id, _name, _run_at, data = event
+        db.delete_scheduled_event(event_id, guild_id)
+        parsed = json.loads(data)
+        # Same near-immediate-reschedule pattern as "Unban now" above - the
+        # dashboard has no Discord connection of its own, so the bot process
+        # picks this up and reverts the nickname on its next scheduler tick.
+        db.insert_scheduled_event(
+            "revert_nick", guild_id, int(time.time()),
+            {"user_id": parsed["user_id"], "original_nick": parsed.get("original_nick")},
+        )
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=tempnicks", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/action")
+async def queue_dashboard_mod_action(
+    request: Request, guild_id: int, action: str = Form(...),
+    user_id: str = Form(""), user_id_manual: str = Form(""),
+    duration_value: str = Form(""), duration_unit: str = Form("m"),
+    reason: str = Form("WebUI moderation action"),
+):
+    if (r := await require_auth(request)):
+        return r
+    if action not in MOD_ACTION_LABELS:
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+
+    manual = user_id_manual.strip()
+    if manual:
+        if not manual.isdigit():
+            return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+        target_id = int(manual)
+    elif user_id.strip().isdigit():
+        target_id = int(user_id)
+        # For every action except unban, the target needs to be a cached
+        # (currently-present) member - the manual ID field exists
+        # specifically so a mod can unban someone no longer in the server.
+        if action != "unban" and not any(uid == target_id for uid, _display, _name in db.list_bot_members(guild_id)):
+            return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+    else:
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+
+    duration_seconds = None
+    if action in MOD_TIMED_ACTIONS:
+        unit_seconds = {
+            "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800,
+            "mo": 30 * 86400, "y": 365 * 86400,
+        }.get(duration_unit)
+        if not duration_value.strip().isdigit() or unit_seconds is None:
+            return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+        duration_seconds = int(duration_value) * unit_seconds
+        max_seconds = MOD_ACTION_TIMEOUT_MAX_SECONDS if action == "timeout" else 365 * 86400
+        if not 1 <= duration_seconds <= max_seconds:
+            return RedirectResponse(f"/guild/{guild_id}/moderation?error=action", status_code=303)
+
+    reason = reason.strip()[:500] or "WebUI moderation action"
+    db.queue_mod_action(guild_id, target_id, action, duration_seconds, reason)
+    return RedirectResponse(f"/guild/{guild_id}/moderation?action=queued", status_code=303)
+
+
 # ---- logging ----
 
 LOG_CATEGORIES = [
     ("messages", "Messages", "Edits, deletes, and bulk deletes"),
-    ("members", "Members", "Joins, leaves, nicknames, and role changes"),
-    ("moderation", "Moderation", "Bans, unbans, kicks, and timeouts"),
+    ("members", "Members", "Joins, leaves, nicknames, role changes, and verification"),
+    ("moderation", "Moderation", "Staff-issued warns, mutes, kicks, bans, tempbans, and emergency actions"),
+    ("automod", "AutoMod", "Filter catches (deleted messages, DMs sent), escalations, and queued-for-review holds"),
+    ("tickets", "Tickets", "Ticket opened and closed"),
+    ("reports", "Reports", "Reports filed, resolved, and dismissed"),
     ("server", "Server", "Channel, role, and server changes"),
     ("voice", "Voice", "Voice joins, leaves, and moves"),
 ]
@@ -963,6 +1223,52 @@ async def delete_logging_ignore(request: Request, guild_id: int, channel_id: int
         return r
     db.remove_ignored_log_channel(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
+
+
+# ---- channel feed ----
+# A read-only mirror of channel messages, written by cogs/channelfeed.py on
+# the bot side when enabled. Lets you keep an eye on a server's channels
+# from this dashboard alone, without the Discord client open.
+
+@app.get("/guild/{guild_id}/feed")
+async def feed_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    return render(
+        request, "feed.html", guild_id, "feed",
+        enabled=db.get_feed_enabled(guild_id),
+        channels=db.list_feed_channels(guild_id),
+    )
+
+
+@app.post("/guild/{guild_id}/feed/toggle")
+async def toggle_feed(request: Request, guild_id: int, enabled: str = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_feed_enabled(guild_id, enabled == "on")
+    return RedirectResponse(f"/guild/{guild_id}/feed", status_code=303)
+
+
+@app.get("/guild/{guild_id}/feed/{channel_id}")
+async def feed_channel_page(request: Request, guild_id: int, channel_id: int):
+    if (r := await require_auth(request)):
+        return r
+    messages = db.get_feed_messages(guild_id, channel_id)
+    return render(
+        request, "feed_channel.html", guild_id, "feed",
+        channel_id=channel_id,
+        channel_name=db.get_channel_name(guild_id, channel_id) or f"deleted-channel-{channel_id}",
+        messages=messages,
+        last_id=messages[-1]["id"] if messages else 0,
+        enabled=db.get_feed_enabled(guild_id),
+    )
+
+
+@app.get("/guild/{guild_id}/feed/{channel_id}/poll")
+async def feed_channel_poll(request: Request, guild_id: int, channel_id: int, after: int = 0):
+    if (r := await require_auth(request)):
+        return r
+    return {"messages": db.get_feed_messages_after(guild_id, channel_id, after)}
 
 
 # ---- youtube ----
@@ -1115,11 +1421,35 @@ async def save_automod_invites(request: Request, guild_id: int, block_invites: s
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
 
+@app.post("/guild/{guild_id}/automod/gifs")
+async def save_automod_gifs(request: Request, guild_id: int, block_gifs: str = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_automod_block_gifs(guild_id, block_gifs == "on")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
 @app.post("/guild/{guild_id}/automod/words")
 async def save_automod_words(request: Request, guild_id: int, words: str = Form("")):
     if (r := await require_auth(request)):
         return r
     db.set_automod_words(guild_id, words.split(","))
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/fuzzy-words")
+async def save_automod_fuzzy_words(request: Request, guild_id: int, fuzzy_words: str = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_automod_fuzzy_words(guild_id, fuzzy_words == "on")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/queue-fuzzy")
+async def save_automod_queue_fuzzy(request: Request, guild_id: int, queue_fuzzy_matches: str = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_automod_queue_fuzzy(guild_id, queue_fuzzy_matches == "on")
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
 
@@ -1304,23 +1634,39 @@ async def delete_reaction_role(request: Request, guild_id: int, message_id: int 
 async def tempvoice_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
-    hub_ids = db.list_voice_hubs(guild_id)
+    hubs = db.list_voice_hubs(guild_id)
     return render(
         request, "tempvoice.html", guild_id, "tempvoice",
-        hubs=[(cid, channel_label(guild_id, cid)) for cid in hub_ids],
-        active_channels=[(cid, member_label(guild_id, owner_id), channel_label(guild_id, cid)) for cid, owner_id in db.list_temp_voice_channels(guild_id)],
+        hubs=[(cid, channel_label(guild_id, cid), user_limit) for cid, user_limit in hubs],
+        active_channels=[
+            (cid, member_label(guild_id, owner_id), channel_label(guild_id, cid), user_limit)
+            for cid, owner_id, user_limit in db.list_temp_voice_channels(guild_id)
+        ],
         voice_channels=db.list_bot_channels(guild_id, "voice"),
     )
 
 
 @app.post("/guild/{guild_id}/tempvoice/hub")
-async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form(...)):
+async def save_voice_hub(request: Request, guild_id: int, channel_id: int = Form(...), user_limit: int = Form(0)):
     if (r := await require_auth(request)):
         return r
     if not validate_channel(guild_id, channel_id, ("voice",)):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=channel", status_code=303)
-    db.add_voice_hub(guild_id, channel_id)
+    if not 0 <= user_limit <= 99:
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=invalid", status_code=303)
+    db.add_voice_hub(guild_id, channel_id, user_limit)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice", status_code=303)
+
+
+@app.post("/guild/{guild_id}/tempvoice/hub/limit")
+async def update_voice_hub_limit_route(request: Request, guild_id: int, channel_id: int = Form(...), user_limit: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not 0 <= user_limit <= 99:
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=invalid", status_code=303)
+    if not db.set_voice_hub_limit(guild_id, channel_id, user_limit):
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/tempvoice?hublimit=1", status_code=303)
 
 
 @app.post("/guild/{guild_id}/tempvoice/delete")
@@ -1332,6 +1678,19 @@ async def delete_tempvoice_route(request: Request, guild_id: int, channel_id: in
     if not db.request_temp_voice_delete(guild_id, channel_id):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
     return RedirectResponse(f"/guild/{guild_id}/tempvoice?requested=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/tempvoice/limit")
+async def queue_tempvoice_limit_route(request: Request, guild_id: int, channel_id: int = Form(...), user_limit: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not 0 <= user_limit <= 99:
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=invalid", status_code=303)
+    if not db.is_temp_voice_channel(channel_id, guild_id):
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    if not db.request_temp_voice_limit(guild_id, channel_id, user_limit):
+        return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/tempvoice?limitrequested=1", status_code=303)
 
 
 @app.post("/guild/{guild_id}/tempvoice/remove")
@@ -1395,10 +1754,11 @@ async def stickyroles_include(request: Request, guild_id: int, role_id: int = Fo
 # there's no per-admin dashboard login, just a shared password.
 
 @app.get("/guild/{guild_id}/talk")
-async def talk_page(request: Request, guild_id: int):
+async def talk_page(request: Request, guild_id: int, show_deleted: str = ""):
     if (r := await require_auth(request)):
         return r
-    recent_rows = db.recent_outbound_messages(guild_id, 20)
+    show_deleted_bool = show_deleted == "1"
+    recent_rows = db.recent_outbound_messages(guild_id, 20, include_deleted=show_deleted_bool)
     recent_messages = [
         {
             "id": row[0], "channel_id": row[1],
@@ -1411,7 +1771,7 @@ async def talk_page(request: Request, guild_id: int):
     ]
     return render(request, "talk.html", guild_id, "talk",
                   text_channels=db.list_bot_channels(guild_id, "text"),
-                  recent_messages=recent_messages)
+                  recent_messages=recent_messages, show_deleted=show_deleted_bool)
 
 
 @app.post("/guild/{guild_id}/talk/retry")
@@ -1468,3 +1828,550 @@ async def send_talk_message(request: Request, guild_id: int, channel_id: int = F
         error = "length" if "2000" in str(exc) else "empty"
         return RedirectResponse(f"/guild/{guild_id}/talk?error={error}", status_code=303)
     return RedirectResponse(f"/guild/{guild_id}/talk?queued={message_id}", status_code=303)
+
+
+# ---- verification ----
+
+@app.get("/guild/{guild_id}/verification")
+async def verification_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_verification_config(guild_id)
+    recent = [
+        {"user": member_label(guild_id, uid), "created_at": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M")}
+        for uid, _actor_id, _reason, created_at in db.list_member_history_by_type(guild_id, "verify", 20)
+    ]
+    return render(
+        request, "verification.html", guild_id, "verification",
+        cfg=cfg,
+        channel_label=channel_label(guild_id, cfg["channel_id"]),
+        role_label=role_label(guild_id, cfg["role_id"]),
+        text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+        roles=db.list_bot_roles(guild_id),
+        recent=recent,
+    )
+
+
+@app.post("/guild/{guild_id}/verification")
+async def save_verification(
+    request: Request, guild_id: int, enabled: Optional[str] = Form(None),
+    channel_id: int = Form(...), role_id: int = Form(...), message: str = Form(...),
+):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/verification?error=channel", status_code=303)
+    if not validate_role(guild_id, role_id):
+        return RedirectResponse(f"/guild/{guild_id}/verification?error=role", status_code=303)
+    message = message.strip()[:1000] or "Click the button below to verify and unlock the rest of the server."
+    db.set_verification_config(guild_id, enabled == "on", channel_id, role_id, message)
+    if enabled == "on":
+        db.queue_verify_post(guild_id)
+    return RedirectResponse(f"/guild/{guild_id}/verification?saved=1", status_code=303)
+
+
+# ---- tickets ----
+
+@app.get("/guild/{guild_id}/tickets")
+async def tickets_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_ticket_config(guild_id)
+    tickets = [
+        {
+            "id": row[0], "channel_id": row[1],
+            "channel_label": channel_label(guild_id, row[1]),
+            "opener": member_label(guild_id, row[2]),
+            "subject": row[3], "status": row[4],
+            "created_at": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M"),
+            "closed_at": datetime.fromtimestamp(row[6]).strftime("%Y-%m-%d %H:%M") if row[6] else None,
+            "closed_by": member_label(guild_id, row[7]) if row[7] else None,
+            "close_reason": row[8],
+        }
+        for row in db.list_tickets(guild_id, 50)
+    ]
+    categories = [c for c in db.list_bot_channels(guild_id, "category")]
+    text_channels = db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news")
+    return render(
+        request, "tickets.html", guild_id, "tickets",
+        cfg=cfg,
+        category_label=channel_label(guild_id, cfg["category_id"]),
+        support_role_label=role_label(guild_id, cfg["support_role_id"]),
+        panel_channel_label=channel_label(guild_id, cfg["panel_channel_id"]),
+        categories=categories,
+        text_channels=text_channels,
+        roles=db.list_bot_roles(guild_id),
+        tickets=tickets,
+    )
+
+
+@app.post("/guild/{guild_id}/tickets/config")
+async def save_ticket_config(request: Request, guild_id: int, category_id: int = Form(...), support_role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, category_id, ("category",)):
+        return RedirectResponse(f"/guild/{guild_id}/tickets?error=category", status_code=303)
+    if not validate_role(guild_id, support_role_id):
+        return RedirectResponse(f"/guild/{guild_id}/tickets?error=role", status_code=303)
+    db.set_ticket_config(guild_id, category_id, support_role_id)
+    return RedirectResponse(f"/guild/{guild_id}/tickets?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/tickets/panel")
+async def save_ticket_panel_route(
+    request: Request, guild_id: int, panel_channel_id: int = Form(...),
+    panel_title: str = Form(...), panel_description: str = Form(...),
+):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, panel_channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/tickets?error=panelchannel", status_code=303)
+    panel_title = panel_title.strip()[:256] or "Support"
+    panel_description = panel_description.strip()[:1000] or "Click the button below to open a private ticket with the support team."
+    db.set_ticket_panel_config(guild_id, panel_channel_id, panel_title, panel_description)
+    db.queue_ticket_panel_post(guild_id)
+    return RedirectResponse(f"/guild/{guild_id}/tickets?panelsaved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/tickets/close")
+async def close_ticket_route(request: Request, guild_id: int, ticket_id: int = Form(...), reason: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    row = db.get_ticket(ticket_id)
+    if row is None or row[1] != guild_id:
+        return RedirectResponse(f"/guild/{guild_id}/tickets?error=notfound", status_code=303)
+    if row[5] != "open":
+        return RedirectResponse(f"/guild/{guild_id}/tickets?error=alreadyclosed", status_code=303)
+    db.queue_ticket_close(guild_id, ticket_id, reason.strip()[:500] or "Closed from the dashboard")
+    return RedirectResponse(f"/guild/{guild_id}/tickets?closequeued={ticket_id}", status_code=303)
+
+
+# ---- polls ----
+
+@app.get("/guild/{guild_id}/polls")
+async def polls_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    polls = []
+    for poll in db.list_polls(guild_id, 20):
+        counts = db.poll_results(poll["id"], len(poll["options"]))
+        total = sum(counts)
+        results = [
+            {
+                "option": opt, "count": counts[i],
+                "pct": round(counts[i] / total * 100) if total else 0,
+            }
+            for i, opt in enumerate(poll["options"])
+        ]
+        polls.append({
+            "id": poll["id"],
+            "question": poll["question"],
+            "results": results,
+            "total": total,
+            "closed": poll["closed"],
+            "created_by": member_label(guild_id, poll["created_by"]),
+            "created_at": datetime.fromtimestamp(poll["created_at"]).strftime("%Y-%m-%d %H:%M"),
+            "channel_label": channel_label(guild_id, poll["channel_id"]),
+        })
+    return render(request, "polls.html", guild_id, "polls", polls=polls)
+
+
+@app.post("/guild/{guild_id}/polls/close")
+async def close_poll_route(request: Request, guild_id: int, poll_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    poll = db.get_poll(poll_id)
+    if poll is None or poll["guild_id"] != guild_id:
+        return RedirectResponse(f"/guild/{guild_id}/polls?error=notfound", status_code=303)
+    if poll["closed"]:
+        return RedirectResponse(f"/guild/{guild_id}/polls?error=alreadyclosed", status_code=303)
+    db.queue_poll_close(guild_id, poll_id)
+    return RedirectResponse(f"/guild/{guild_id}/polls?closequeued={poll_id}", status_code=303)
+
+
+# ---- server rules ----
+
+@app.get("/guild/{guild_id}/rules")
+async def rules_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    rules = [
+        {"number": idx, "id": rule_id, "text": text}
+        for idx, (rule_id, text) in enumerate(db.list_rules(guild_id), start=1)
+    ]
+    return render(request, "rules.html", guild_id, "rules", rules=rules)
+
+
+@app.post("/guild/{guild_id}/rules/add")
+async def add_rule_route(request: Request, guild_id: int, text: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    text = text.strip()
+    if not text or len(text) > 500:
+        return RedirectResponse(f"/guild/{guild_id}/rules?error=invalid", status_code=303)
+    db.add_rule(guild_id, text)
+    return RedirectResponse(f"/guild/{guild_id}/rules", status_code=303)
+
+
+@app.post("/guild/{guild_id}/rules/delete")
+async def delete_rule_route(request: Request, guild_id: int, rule_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.delete_rule(guild_id, rule_id)
+    return RedirectResponse(f"/guild/{guild_id}/rules", status_code=303)
+
+
+# ---- member reports ----
+
+REPORT_STATUS_LABELS = {"open": "Open", "reviewing": "Reviewing", "resolved": "Resolved", "dismissed": "Dismissed"}
+
+
+@app.get("/guild/{guild_id}/reports")
+async def reports_page(request: Request, guild_id: int, status: str = "open"):
+    if (r := await require_auth(request)):
+        return r
+    if status not in {"open", "reviewing", "resolved", "dismissed", "all"}:
+        status = "open"
+    rows = db.list_reports(guild_id, status=None if status == "all" else status, limit=100)
+    reports = []
+    for r in rows:
+        reports.append({
+            "id": r["id"],
+            "reporter_name": member_label(guild_id, r["reporter_id"]),
+            "target_name": member_label(guild_id, r["target_user_id"]),
+            "target_user_id": r["target_user_id"],
+            "reason": r["reason"],
+            "status": r["status"],
+            "status_label": REPORT_STATUS_LABELS.get(r["status"], r["status"]),
+            "created_at": datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M"),
+            "resolved_by_name": ("Dashboard" if r["resolved_by"] == 0 else member_label(guild_id, r["resolved_by"])) if r["resolved_by"] is not None else None,
+            "resolution_note": r["resolution_note"],
+            "linked_warn_id": r["linked_warn_id"],
+        })
+    cfg = db.get_report_config(guild_id)
+    return render(
+        request, "reports.html", guild_id, "reports",
+        reports=reports, status_filter=status, status_choices=list(REPORT_STATUS_LABELS.items()),
+        report_channel_label=channel_label(guild_id, cfg["channel_id"]) if cfg["channel_id"] else None,
+        text_channels=db.list_bot_channels(guild_id, "text"), report_channel_id=cfg["channel_id"],
+    )
+
+
+@app.post("/guild/{guild_id}/reports/status")
+async def set_report_status_route(request: Request, guild_id: int, report_id: int = Form(...), status: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if status != "reviewing":
+        return RedirectResponse(f"/guild/{guild_id}/reports?error=invalid", status_code=303)
+    db.set_report_status(guild_id, report_id, status)
+    return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
+
+
+@app.post("/guild/{guild_id}/reports/dismiss")
+async def dismiss_report_route(request: Request, guild_id: int, report_id: int = Form(...), note: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    db.close_report(guild_id, report_id, "dismissed", 0, note.strip()[:500] or None)
+    return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
+
+
+@app.post("/guild/{guild_id}/reports/resolve")
+async def resolve_report_route(
+    request: Request, guild_id: int, report_id: int = Form(...), note: str = Form(""),
+    issue_warning: str = Form(None),
+):
+    if (r := await require_auth(request)):
+        return r
+    report = db.get_report(guild_id, report_id)
+    if report is None:
+        return RedirectResponse(f"/guild/{guild_id}/reports?error=notfound", status_code=303)
+    note = note.strip()[:500]
+    linked_warn_id = None
+    if issue_warning == "on":
+        # Resolving a report by issuing a warning uses the exact same
+        # add_warn path /warn and the dashboard's own "add warning" form
+        # use, so it shows up in that member's warning history and in
+        # staff_action_counts like any other warning - not a parallel
+        # record that could drift out of sync with the real one.
+        reason = note or report["reason"]
+        linked_warn_id = db.add_warn(guild_id, report["target_user_id"], 0, reason, int(time.time()))
+        queue_warn_escalation_if_due(guild_id, report["target_user_id"], reason)
+    db.close_report(guild_id, report_id, "resolved", 0, note or None, linked_warn_id)
+    return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
+
+
+@app.post("/guild/{guild_id}/reports/channel")
+async def set_report_channel_route(request: Request, guild_id: int, channel_id: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    if not channel_id.strip():
+        db.set_report_channel(guild_id, None)
+        return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
+    cid = int(channel_id)
+    if not validate_channel(guild_id, cid, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/reports?error=channel", status_code=303)
+    db.set_report_channel(guild_id, cid)
+    return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
+
+
+# ---- staff activity ----
+
+@app.get("/guild/{guild_id}/staffstats")
+async def staffstats_page(request: Request, guild_id: int, window: str = "30"):
+    if (r := await require_auth(request)):
+        return r
+    since = None
+    if window != "all":
+        try:
+            days = int(window)
+            since = int(time.time()) - days * 86400
+        except ValueError:
+            window = "30"
+            since = int(time.time()) - 30 * 86400
+    counts = db.staff_action_counts(guild_id, since=since)
+    staff = []
+    for moderator_id, c in counts.items():
+        total = c["warns"] + c["tickets_closed"] + c["reports_resolved"]
+        if total == 0:
+            continue
+        staff.append({
+            "moderator_id": moderator_id,
+            "moderator_name": "Dashboard" if moderator_id == 0 else member_label(guild_id, moderator_id),
+            "warns": c["warns"], "tickets_closed": c["tickets_closed"], "reports_resolved": c["reports_resolved"],
+            "total": total,
+        })
+    staff.sort(key=lambda s: s["total"], reverse=True)
+    return render(request, "staffstats.html", guild_id, "staffstats", staff=staff, window=window)
+
+
+# ---- automod moderation queue ----
+
+@app.get("/guild/{guild_id}/moderationqueue")
+async def moderationqueue_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    rows = db.list_automod_queue(guild_id, status="pending", limit=100)
+    queue = [
+        {
+            "id": row["id"],
+            "channel_label": channel_label(guild_id, row["channel_id"]),
+            "user_name": member_label(guild_id, row["user_id"]),
+            "rule_label": row["rule_label"],
+            "content_snapshot": row["content_snapshot"],
+            "created_at": datetime.fromtimestamp(row["created_at"]).strftime("%Y-%m-%d %H:%M"),
+        }
+        for row in rows
+    ]
+    return render(request, "moderationqueue.html", guild_id, "moderationqueue", queue=queue)
+
+
+@app.post("/guild/{guild_id}/moderationqueue/decide")
+async def moderationqueue_decide_route(request: Request, guild_id: int, review_id: int = Form(...), decision: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if decision not in {"confirm", "dismiss"}:
+        return RedirectResponse(f"/guild/{guild_id}/moderationqueue?error=invalid", status_code=303)
+    review = db.get_automod_review(guild_id, review_id)
+    if review is None or review["status"] != "pending":
+        return RedirectResponse(f"/guild/{guild_id}/moderationqueue?error=notfound", status_code=303)
+    # moderator_id 0 is the dashboard sentinel, same convention as every
+    # other dashboard-attributed action in this codebase.
+    if decision == "dismiss":
+        db.queue_automod_decision(guild_id, review_id, "dismiss", 0)
+        return RedirectResponse(f"/guild/{guild_id}/moderationqueue?dismissqueued={review_id}", status_code=303)
+    # Confirming needs to actually apply the escalation ladder, which needs
+    # a live Discord connection the dashboard process doesn't have - so
+    # it's queued and the bot's poller applies it (see automod.py's
+    # _poll_queue_decisions), same bridge pattern as every other
+    # WebUI->Discord action.
+    db.queue_automod_decision(guild_id, review_id, "confirm", 0)
+    return RedirectResponse(f"/guild/{guild_id}/moderationqueue?confirmqueued={review_id}", status_code=303)
+
+
+# ---- server-wide search ----
+
+@app.get("/guild/{guild_id}/search")
+async def search_page(request: Request, guild_id: int, q: str = ""):
+    if (r := await require_auth(request)):
+        return r
+    q = q.strip()
+    results = None
+    if q:
+        raw = db.search_all(guild_id, q)
+        results = {
+            "warns": [
+                {"id": row[0], "user_name": member_label(guild_id, row[1]), "moderator_name": ("Dashboard" if row[2] == 0 else member_label(guild_id, row[2])), "reason": row[3], "created_at": datetime.fromtimestamp(row[4]).strftime("%Y-%m-%d %H:%M")}
+                for row in raw["warns"]
+            ],
+            "reports": [
+                {"id": row[0], "reporter_name": member_label(guild_id, row[1]), "target_name": member_label(guild_id, row[2]), "reason": row[3], "status": row[4], "created_at": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M")}
+                for row in raw["reports"]
+            ],
+            "rules": [
+                {"number": db.rule_number_for_id(guild_id, row[0]), "text": row[1]}
+                for row in raw["rules"]
+            ],
+            "tickets": [
+                {"id": row[0], "channel_label": channel_label(guild_id, row[1]), "opener_name": member_label(guild_id, row[2]), "subject": row[3], "status": row[4], "created_at": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M")}
+                for row in raw["tickets"]
+            ],
+            "polls": [
+                {"id": row[0], "channel_label": channel_label(guild_id, row[1]), "question": row[2], "closed": bool(row[3]), "created_at": datetime.fromtimestamp(row[4]).strftime("%Y-%m-%d %H:%M")}
+                for row in raw["polls"]
+            ],
+            "automod_queue": [
+                {"id": row[0], "channel_label": channel_label(guild_id, row[1]), "user_name": member_label(guild_id, row[2]), "rule_label": row[3], "content_snapshot": row[4], "created_at": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M"), "status": row[6]}
+                for row in raw["automod_queue"]
+            ],
+        }
+        results["total"] = sum(len(v) for v in results.values())
+    return render(request, "search.html", guild_id, "search", query=q, results=results)
+
+
+# ---- emergency control center ----
+# Dashboard-only actions - no matching slash commands (see the module note
+# atop cogs/emergency.py for why). Every destructive action here goes
+# through the same "type a confirmation phrase" front-end guard as purge
+# and mod actions, at a bigger blast radius, so it gets checked twice:
+# once client-side (JS confirm/phrase match, in the template) and once by
+# a plain server-side "did they actually type the right word" check here -
+# the second check is what actually matters, the JS is just UX.
+
+EMERGENCY_CONFIRM_PHRASES = {
+    "lockdown": "LOCKDOWN",
+    "unlock": "UNLOCK",
+    "revoke_invites": "REVOKE INVITES",
+    "mass_timeout": "MASS TIMEOUT",
+}
+
+
+@app.get("/guild/{guild_id}/emergency")
+async def emergency_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    lockdown_state = db.get_lockdown_state(guild_id)
+    recent = []
+    for row in db.recent_emergency_requests(guild_id, 20):
+        recent.append({
+            "id": row["id"],
+            "action": row["action"],
+            "status": row["status"],
+            "created_at": datetime.fromtimestamp(row["created_at"]).strftime("%Y-%m-%d %H:%M"),
+            "error": row["error"],
+            "result": row["result"],
+        })
+    roles = [{"id": rid, "name": name} for rid, name, _pos in db.list_bot_roles(guild_id)]
+    return render(
+        request, "emergency.html", guild_id, "emergency",
+        locked=lockdown_state is not None,
+        locked_channel_count=len(lockdown_state["channel_overwrites"]) if lockdown_state else 0,
+        locked_since=datetime.fromtimestamp(lockdown_state["started_at"]).strftime("%Y-%m-%d %H:%M") if lockdown_state else None,
+        roles=roles,
+        recent=recent,
+    )
+
+
+def _check_confirm_phrase(action: str, confirm_text: str) -> bool:
+    expected = EMERGENCY_CONFIRM_PHRASES.get(action)
+    return expected is not None and confirm_text.strip().upper() == expected
+
+
+@app.post("/guild/{guild_id}/emergency/lockdown")
+async def emergency_lockdown_route(request: Request, guild_id: int, confirm_text: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    if not _check_confirm_phrase("lockdown", confirm_text):
+        return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
+    # actor 0: no per-admin dashboard login to attribute this to, same
+    # sentinel used by every other dashboard-issued action in this codebase.
+    db.queue_emergency_request(guild_id, "lockdown", {"started_by": 0})
+    return RedirectResponse(f"/guild/{guild_id}/emergency?queued=lockdown", status_code=303)
+
+
+@app.post("/guild/{guild_id}/emergency/unlock")
+async def emergency_unlock_route(request: Request, guild_id: int, confirm_text: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    if not _check_confirm_phrase("unlock", confirm_text):
+        return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
+    db.queue_emergency_request(guild_id, "unlock", {})
+    return RedirectResponse(f"/guild/{guild_id}/emergency?queued=unlock", status_code=303)
+
+
+@app.post("/guild/{guild_id}/emergency/revoke-invites")
+async def emergency_revoke_invites_route(request: Request, guild_id: int, confirm_text: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    if not _check_confirm_phrase("revoke_invites", confirm_text):
+        return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
+    db.queue_emergency_request(guild_id, "revoke_invites", {})
+    return RedirectResponse(f"/guild/{guild_id}/emergency?queued=revoke_invites", status_code=303)
+
+
+@app.post("/guild/{guild_id}/emergency/mass-timeout")
+async def emergency_mass_timeout_route(
+    request: Request, guild_id: int, role_id: int = Form(...), duration_minutes: int = Form(...),
+    reason: str = Form(""), confirm_text: str = Form(""),
+):
+    if (r := await require_auth(request)):
+        return r
+    if not _check_confirm_phrase("mass_timeout", confirm_text):
+        return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
+    if not validate_role(guild_id, role_id) or duration_minutes < 1 or duration_minutes > 40320:  # 28 days
+        return RedirectResponse(f"/guild/{guild_id}/emergency?error=masstimeout", status_code=303)
+    db.queue_emergency_request(guild_id, "mass_timeout", {
+        "role_id": role_id, "duration_seconds": duration_minutes * 60, "reason": reason.strip()[:500],
+    })
+    return RedirectResponse(f"/guild/{guild_id}/emergency?queued=mass_timeout", status_code=303)
+
+
+# ---- config snapshots ----
+# Scoped to ReedMuhn's own settings tables, not live Discord role/channel
+# permissions - see capture_config_snapshot_data's docstring in db.py.
+
+@app.get("/guild/{guild_id}/snapshots")
+async def snapshots_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    snapshots = [
+        {
+            "id": s["id"], "name": s["name"],
+            "created_at": datetime.fromtimestamp(s["created_at"]).strftime("%Y-%m-%d %H:%M"),
+        }
+        for s in db.list_config_snapshots(guild_id, 50)
+    ]
+    return render(request, "snapshots.html", guild_id, "snapshots", snapshots=snapshots)
+
+
+@app.post("/guild/{guild_id}/snapshots/create")
+async def create_snapshot_route(request: Request, guild_id: int, name: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    name = name.strip()[:80]
+    if not name:
+        return RedirectResponse(f"/guild/{guild_id}/snapshots?error=name", status_code=303)
+    data = db.capture_config_snapshot_data(guild_id)
+    # actor 0: same "no per-admin login" sentinel used everywhere else here.
+    db.create_config_snapshot(guild_id, name, data, 0)
+    return RedirectResponse(f"/guild/{guild_id}/snapshots?created=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/snapshots/restore")
+async def restore_snapshot_route(request: Request, guild_id: int, snapshot_id: int = Form(...), confirm_text: str = Form("")):
+    if (r := await require_auth(request)):
+        return r
+    if confirm_text.strip().upper() != "RESTORE":
+        return RedirectResponse(f"/guild/{guild_id}/snapshots?error=confirm", status_code=303)
+    snapshot = db.get_config_snapshot(guild_id, snapshot_id)
+    if snapshot is None:
+        return RedirectResponse(f"/guild/{guild_id}/snapshots?error=notfound", status_code=303)
+    db.restore_config_snapshot_data(guild_id, snapshot["data"])
+    return RedirectResponse(f"/guild/{guild_id}/snapshots?restored={snapshot_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/snapshots/delete")
+async def delete_snapshot_route(request: Request, guild_id: int, snapshot_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.delete_config_snapshot(guild_id, snapshot_id)
+    return RedirectResponse(f"/guild/{guild_id}/snapshots?deleted=1", status_code=303)

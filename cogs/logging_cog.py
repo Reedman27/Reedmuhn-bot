@@ -151,17 +151,49 @@ class LoggingCog(commands.Cog, name="Logging"):
             logger.warning("failed to send log message in guild %s channel %s", guild.id, channel_id)
 
     async def _find_audit_actor(
-        self, guild: discord.Guild, action: discord.AuditLogAction, target_id: int
+        self, guild: discord.Guild, action: discord.AuditLogAction, target_id: int,
+        channel_id: int | None = None, changed_attr: str | None = None,
     ) -> discord.AuditLogEntry | None:
         """Looks for a recent audit log entry matching this action/target,
-        so a kick/ban can be attributed to a moderator + reason instead of
-        just showing up as a bare member-remove event. Returns None (not an
-        exception) if the bot lacks View Audit Log permission, or if
-        nothing matching turns up in time - callers should treat that as
-        "fall back to the plain event", not an error."""
+        so an action can be attributed to a moderator + reason instead of
+        just showing up as a bare event. Returns None (not an exception) if
+        the bot lacks View Audit Log permission, or if nothing matching
+        turns up in time - callers should treat that as "fall back to the
+        plain event", not an error.
+
+        Entries whose actor is this bot are also treated as no-match: every
+        bot-driven action (a slash command, AutoMod, a dashboard-queued mod
+        action) already logs its own dedicated embed with the real
+        moderator/reason at the point it happens, so re-surfacing "the bot
+        did it" here would just be a confusing, less-specific duplicate.
+        This is purely about filling the gap for actions taken straight
+        from Discord's native UI, which otherwise show no actor at all.
+
+        `channel_id`, when given, additionally requires the entry's
+        `extra.channel` to match - needed for message-delete actions, whose
+        target is the message's author (a moderator could plausibly delete
+        that same person's message in two different channels within the
+        match window, so the author id alone isn't a precise enough match).
+
+        `changed_attr`, when given, additionally requires the entry's
+        `after` diff to actually include that attribute - needed for
+        AuditLogAction.member_update, which covers nickname changes AND
+        timeouts (and more) with no distinction in the `action` value
+        itself. Without this, a mod renaming and timing out the same member
+        within the match window could get the nickname-change log
+        attributed using the timeout's audit entry, or vice versa.
+        """
         try:
             async for entry in guild.audit_logs(action=action, limit=5):
                 if entry.target is None or entry.target.id != target_id:
+                    continue
+                if entry.user is not None and self.bot.user is not None and entry.user.id == self.bot.user.id:
+                    continue
+                if channel_id is not None:
+                    entry_channel = getattr(entry.extra, "channel", None)
+                    if entry_channel is None or entry_channel.id != channel_id:
+                        continue
+                if changed_attr is not None and not hasattr(entry.after, changed_attr):
                     continue
                 age = (discord.utils.utcnow() - entry.created_at).total_seconds()
                 if age <= _AUDIT_LOG_MATCH_WINDOW_SECONDS:
@@ -243,6 +275,20 @@ class LoggingCog(commands.Cog, name="Logging"):
             # link only, not a re-uploaded copy - just enough to see what it was
             links = "\n".join(f"{a.filename}: {a.url}" for a in message.attachments)
             embed.add_field(name="Attachments", value=_truncate(links, 1024), inline=False)
+        # Discord only writes a message_delete audit log entry when someone
+        # other than the author deletes it (self-deletes aren't audited at
+        # all), so finding an entry here means a moderator - not the author
+        # - removed it. entry.reason is whatever the deleter's client sent
+        # (often blank for a plain right-click delete), so only show it when
+        # actually present rather than displaying an empty field.
+        entry = await self._find_audit_actor(
+            message.guild, discord.AuditLogAction.message_delete, message.author.id,
+            channel_id=message.channel.id,
+        )
+        if entry is not None and entry.user is not None:
+            embed.add_field(name="Deleted by", value=str(entry.user), inline=True)
+            if entry.reason:
+                embed.add_field(name="Reason", value=_truncate(entry.reason, 512), inline=True)
         embed.set_footer(text=f"User ID: {message.author.id}")
         await self._log(message.guild, "messages", embed)
 
@@ -295,6 +341,16 @@ class LoggingCog(commands.Cog, name="Logging"):
             color=_COLOR_REMOVE,
             timestamp=discord.utils.utcnow(),
         )
+        # message_bulk_delete's audit log target is the channel (Discord
+        # doesn't attribute a bulk delete to individual authors), so this
+        # picks up whoever/whatever actually called it - a moderator's
+        # native "select and delete" in the Discord client, or the bot
+        # itself when it was /purge or a dashboard-queued purge.
+        entry = await self._find_audit_actor(
+            guild, discord.AuditLogAction.message_bulk_delete, channel.id,
+        )
+        if entry is not None and entry.user is not None:
+            embed.add_field(name="Deleted by", value=str(entry.user), inline=True)
 
         filename = f"purged-{channel.id}-{int(discord.utils.utcnow().timestamp())}.txt"
         file = discord.File(io.BytesIO(full_transcript.encode("utf-8")), filename=filename)
@@ -394,6 +450,15 @@ class LoggingCog(commands.Cog, name="Logging"):
             )
             embed.add_field(name="Before", value=_truncate(before.nick or before.name, 256), inline=True)
             embed.add_field(name="After", value=_truncate(after.nick or after.name, 256), inline=True)
+            # Discord doesn't audit-log members changing their own nickname -
+            # only entries where someone else changed it, so finding one
+            # here means staff (or the bot, e.g. tempnick) did this, not the
+            # member themselves.
+            entry = await self._find_audit_actor(
+                after.guild, discord.AuditLogAction.member_update, after.id, changed_attr="nick"
+            )
+            if entry is not None and entry.user is not None and entry.user.id != after.id:
+                embed.add_field(name="Changed by", value=str(entry.user), inline=True)
             embed.set_footer(text=f"User ID: {after.id}")
             await self._log(after.guild, "members", embed)
 
@@ -408,6 +473,9 @@ class LoggingCog(commands.Cog, name="Logging"):
                 embed.add_field(name="Added", value=", ".join(r.mention for r in added), inline=False)
             if removed:
                 embed.add_field(name="Removed", value=", ".join(r.mention for r in removed), inline=False)
+            entry = await self._find_audit_actor(after.guild, discord.AuditLogAction.member_role_update, after.id)
+            if entry is not None and entry.user is not None:
+                embed.add_field(name="Changed by", value=str(entry.user), inline=True)
             embed.set_footer(text=f"User ID: {after.id}")
             await self._log(after.guild, "members", embed)
 
@@ -425,6 +493,19 @@ class LoggingCog(commands.Cog, name="Logging"):
                     color=_COLOR_ADD,
                     timestamp=discord.utils.utcnow(),
                 )
+            # Bot-issued timeouts (/timeout, AutoMod, dashboard) already log
+            # their own dedicated moderation embed elsewhere - this listener
+            # fires for those too (it's a plain gateway event), so this adds
+            # the same attribution for a timeout applied straight from
+            # Discord's native member menu, which otherwise showed no actor
+            # at all.
+            entry = await self._find_audit_actor(
+                after.guild, discord.AuditLogAction.member_update, after.id, changed_attr="timed_out_until"
+            )
+            if entry is not None and entry.user is not None:
+                embed.add_field(name="Moderator", value=str(entry.user), inline=True)
+                if entry.reason:
+                    embed.add_field(name="Reason", value=_truncate(entry.reason, 512), inline=True)
             embed.set_footer(text=f"User ID: {after.id}")
             await self._log(after.guild, "moderation", embed)
 

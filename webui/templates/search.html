@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Search - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<section class="card">
+    <form method="get" action="/guild/{{ guild_id }}/search" class="add-form">
+        <label for="q">Search warnings, reports, rules, tickets, polls, and the moderation queue</label>
+        <input type="text" id="q" name="q" value="{{ query }}" placeholder="Search…" autofocus>
+        <button type="submit">Search</button>
+    </form>
+</section>
+
+{% if results %}
+{% if results.total == 0 %}
+<section class="card"><p class="muted">No results for "{{ query }}".</p></section>
+{% else %}
+
+{% if results.warns %}
+<section class="card">
+    <h2>Warnings</h2>
+    <table><thead><tr><th>Member</th><th>Moderator</th><th>Reason</th><th>Date</th></tr></thead><tbody>
+    {% for w in results.warns %}<tr><td>{{ w.user_name }}</td><td>{{ w.moderator_name }}</td><td>{{ w.reason }}</td><td>{{ w.created_at }}</td></tr>{% endfor %}
+    </tbody></table>
+</section>
+{% endif %}
+
+{% if results.reports %}
+<section class="card">
+    <h2>Reports</h2>
+    <table><thead><tr><th>Reported</th><th>Reporter</th><th>Reason</th><th>Status</th><th>Date</th></tr></thead><tbody>
+    {% for r in results.reports %}<tr><td>{{ r.target_name }}</td><td>{{ r.reporter_name }}</td><td>{{ r.reason }}</td><td>{{ r.status }}</td><td>{{ r.created_at }}</td></tr>{% endfor %}
+    </tbody></table>
+    <p><a href="/guild/{{ guild_id }}/reports?status=all">Open Reports →</a></p>
+</section>
+{% endif %}
+
+{% if results.rules %}
+<section class="card">
+    <h2>Rules</h2>
+    <table><thead><tr><th>#</th><th>Rule</th></tr></thead><tbody>
+    {% for rule in results.rules %}<tr><td>{{ rule.number }}</td><td>{{ rule.text }}</td></tr>{% endfor %}
+    </tbody></table>
+    <p><a href="/guild/{{ guild_id }}/rules">Open Rules →</a></p>
+</section>
+{% endif %}
+
+{% if results.tickets %}
+<section class="card">
+    <h2>Tickets</h2>
+    <table><thead><tr><th>Channel</th><th>Opened by</th><th>Subject</th><th>Status</th><th>Date</th></tr></thead><tbody>
+    {% for t in results.tickets %}<tr><td>{{ t.channel_label }}</td><td>{{ t.opener_name }}</td><td>{{ t.subject }}</td><td>{{ t.status }}</td><td>{{ t.created_at }}</td></tr>{% endfor %}
+    </tbody></table>
+    <p><a href="/guild/{{ guild_id }}/tickets">Open Tickets →</a></p>
+</section>
+{% endif %}
+
+{% if results.polls %}
+<section class="card">
+    <h2>Polls</h2>
+    <table><thead><tr><th>Channel</th><th>Question</th><th>Status</th><th>Date</th></tr></thead><tbody>
+    {% for p in results.polls %}<tr><td>{{ p.channel_label }}</td><td>{{ p.question }}</td><td>{{ "Closed" if p.closed else "Open" }}</td><td>{{ p.created_at }}</td></tr>{% endfor %}
+    </tbody></table>
+    <p><a href="/guild/{{ guild_id }}/polls">Open Polls →</a></p>
+</section>
+{% endif %}
+
+{% if results.automod_queue %}
+<section class="card">
+    <h2>Moderation Queue</h2>
+    <table><thead><tr><th>Member</th><th>Channel</th><th>Matched</th><th>Message</th><th>Status</th><th>Date</th></tr></thead><tbody>
+    {% for item in results.automod_queue %}<tr><td>{{ item.user_name }}</td><td>{{ item.channel_label }}</td><td>{{ item.rule_label }}</td><td>{{ item.content_snapshot }}</td><td>{{ item.status }}</td><td>{{ item.created_at }}</td></tr>{% endfor %}
+    </tbody></table>
+    <p><a href="/guild/{{ guild_id }}/moderationqueue">Open Moderation Queue →</a></p>
+</section>
+{% endif %}
+
+{% endif %}
+{% endif %}
+{% endblock %}

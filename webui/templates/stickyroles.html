@@ -12,7 +12,7 @@
     <h2>Feature</h2>
     <form method="post" action="/guild/{{ guild_id }}/stickyroles/toggle" class="inline-form">
         <label class="toggle">
-            <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %} onchange="this.form.submit()">
+            <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %} data-autosubmit="1">
             <span>Enable sticky roles</span>
         </label>
     </form>
@@ -67,4 +67,5 @@
         <li>Roles manually excluded above are never restored.</li>
     </ul>
 </section>
+<script src="/static/autosubmit.js"></script>
 {% endblock %}

@@ -26,11 +26,41 @@
 </section>
 
 <section class="card">
+    <h2>GIFs</h2>
+    <p class="hint">Catches uploaded .gif attachments and links to GIF sites (Tenor, Giphy) - including Discord's own built-in GIF picker, which posts a Tenor link. Static images aren't affected.</p>
+    <form method="post" action="/guild/{{ guild_id }}/automod/gifs">
+        <label>
+            <input type="checkbox" name="block_gifs" {{ "checked" if cfg.block_gifs }}>
+            Block GIFs
+        </label>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
     <h2>Banned words</h2>
     <form method="post" action="/guild/{{ guild_id }}/automod/words">
         <label for="words">Comma-separated, whole-word match</label>
         <textarea id="words" name="words" rows="3">{{ cfg.banned_words|join(", ") }}</textarea>
         <button type="submit">Save word list</button>
+    </form>
+    <hr>
+    <form method="post" action="/guild/{{ guild_id }}/automod/fuzzy-words">
+        <label>
+            <input type="checkbox" name="fuzzy_words" {{ "checked" if cfg.fuzzy_words }}>
+            Also catch look-alike spellings ("alike words")
+        </label>
+        <p class="hint">Matches spaced-out (<code>b a d</code>), leetspeak'd (<code>b4d</code>), punctuated (<code>b.a.d!</code>), and stretched-out (<code>baaaad</code>) versions of the words above, not just exact matches. More sensitive, so it can occasionally flag something you didn't mean to catch.</p>
+        <button type="submit">Save</button>
+    </form>
+    <hr>
+    <form method="post" action="/guild/{{ guild_id }}/automod/queue-fuzzy">
+        <label>
+            <input type="checkbox" name="queue_fuzzy_matches" {{ "checked" if cfg.queue_fuzzy_matches }}>
+            Hold "alike words" matches for review instead of acting immediately
+        </label>
+        <p class="hint">A fuzzy match is deleted right away either way - this only holds off the warn/mute/kick/ban step until a moderator confirms it in the <a href="/guild/{{ guild_id }}/moderationqueue">Moderation Queue</a>, since fuzzy matches are more prone to false positives than an exact word match. Exact matches always act immediately regardless of this setting.</p>
+        <button type="submit">Save</button>
     </form>
 </section>
 

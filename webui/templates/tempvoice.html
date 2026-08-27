@@ -2,24 +2,52 @@
 {% block title %}Temp Voice - {{ guild_name }}{% endblock %}
 {% block content %}
 <h1>Temporary Voice</h1>
+{% if request.query_params.get("error") == "channel" %}<p class="error">Choose a valid voice channel.</p>
+{% elif request.query_params.get("error") == "invalid" %}<p class="error">Channel limit must be between 0 (unlimited) and 99.</p>
+{% elif request.query_params.get("error") == "not_found" %}<p class="error">That channel could not be found.</p>{% endif %}
 <section class="card">
     <h2>Voice hubs</h2>
-    <p class="hint">People join any of these voice channels to create their own temporary room.</p>
-    {% if hubs %}<table><thead><tr><th>Hub channel</th><th></th></tr></thead><tbody>{% for cid, name in hubs %}<tr><td>{{ name }}</td><td><form method="post" action="/guild/{{ guild_id }}/tempvoice/remove"><input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit" class="danger">Remove</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No voice hubs are set.</p>{% endif %}
+    <p class="hint">People join any of these voice channels to create their own temporary room. The limit below is applied to new channels when they're created; it doesn't change channels that already exist.</p>
+    {% if request.query_params.get("hublimit") %}<p class="success">Default limit updated.</p>{% endif %}
+    {% if hubs %}
+    <table><thead><tr><th>Hub channel</th><th>Default limit</th><th></th></tr></thead><tbody>
+    {% for cid, name, user_limit in hubs %}
+    <tr><td>{{ name }}</td><td>
+        <form method="post" action="/guild/{{ guild_id }}/tempvoice/hub/limit" class="inline">
+            <input type="hidden" name="channel_id" value="{{ cid }}">
+            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" style="width:5em">
+            <button type="submit">Update</button>
+        </form>
+    </td><td>
+        <form method="post" action="/guild/{{ guild_id }}/tempvoice/remove">
+            <input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit" class="danger">Remove</button>
+        </form>
+    </td></tr>
+    {% endfor %}</tbody></table>
+    {% else %}<p class="muted">No voice hubs are set.</p>{% endif %}
     <form method="post" action="/guild/{{ guild_id }}/tempvoice/hub" class="add-form">
         <label for="hub_channel_id">Add a hub</label>
         <select id="hub_channel_id" name="channel_id" required><option value="" disabled selected>Choose a voice channel…</option>{% for cid, name, ctype, pos in voice_channels %}<option value="{{ cid }}">🔊 {{ name }}</option>{% endfor %}</select>
+        <label for="hub_user_limit">Default channel limit (0 = unlimited)</label>
+        <input type="number" id="hub_user_limit" name="user_limit" min="0" max="99" value="0" style="width:5em">
         <button type="submit">Add hub</button>
     </form>
 </section>
 <section class="card">
     <h2>Active temporary channels</h2>
-    <p class="hint">You can force-delete a room here. The bot performs the Discord deletion safely; members currently inside will be disconnected.</p>
+    <p class="hint">Change how many people can join a room, or force-delete it. The bot applies both safely; members currently inside a deleted room will be disconnected.</p>
     {% if request.query_params.get("requested") %}<p class="success">Deletion requested.</p>{% endif %}
+    {% if request.query_params.get("limitrequested") %}<p class="success">Limit change requested.</p>{% endif %}
     {% if active_channels %}
-    <table><thead><tr><th>Channel</th><th>Owner</th><th></th></tr></thead><tbody>
-    {% for cid, owner_name, channel_name in active_channels %}
+    <table><thead><tr><th>Channel</th><th>Owner</th><th>Limit</th><th></th></tr></thead><tbody>
+    {% for cid, owner_name, channel_name, user_limit in active_channels %}
     <tr><td>{{ channel_name }}</td><td>{{ owner_name }}</td><td>
+        <form method="post" action="/guild/{{ guild_id }}/tempvoice/limit" class="inline">
+            <input type="hidden" name="channel_id" value="{{ cid }}">
+            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" style="width:5em">
+            <button type="submit">Update</button>
+        </form>
+    </td><td>
         <form method="post" action="/guild/{{ guild_id }}/tempvoice/delete" onsubmit="return confirm('Delete this temporary voice channel?');">
             <input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit" class="danger">Delete</button>
         </form>

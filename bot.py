@@ -93,6 +93,13 @@ INITIAL_COGS = [
     "cogs.logging_cog",
     "cogs.dashboardtalk",
     "cogs.dashboardmoderation",
+    "cogs.channelfeed",
+    "cogs.verification",
+    "cogs.tickets",
+    "cogs.polls",
+    "cogs.rules",
+    "cogs.reports",
+    "cogs.emergency",
 ]
 
 FEATURES = FeatureStore([
@@ -107,6 +114,12 @@ FEATURES = FeatureStore([
     Feature("reactionroles", "cogs.reactionroles", "Reaction-based role assignment.", "community"),
     Feature("reminders", "cogs.reminders", "Scheduled reminders.", "utility"),
     Feature("fun", "cogs.fun", "Fun and lightweight community commands.", "fun"),
+    Feature("verification", "cogs.verification", "Button-based member verification gate.", "moderation"),
+    Feature("tickets", "cogs.tickets", "Private support ticket channels.", "utility"),
+    Feature("polls", "cogs.polls", "Button-based polls with live results.", "fun"),
+    Feature("rules", "cogs.rules", "Numbered server rules, citable from /warn.", "moderation"),
+    Feature("reports", "cogs.reports", "Member-submitted reports triaged on the dashboard.", "moderation"),
+    Feature("emergency", "cogs.emergency", "Dashboard-triggered server-wide lockdown, invite revoke, and mass timeout.", "moderation"),
 ])
 
 intents = discord.Intents.default()

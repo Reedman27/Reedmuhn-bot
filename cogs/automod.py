@@ -14,13 +14,14 @@ from collections import defaultdict
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import scheduler
 from automod_checks import (
     UserMessageTracker,
     caps_violation,
     contains_banned_word,
+    contains_gif,
     count_consecutive_duplicates,
     find_invite_codes,
     sliding_window_count,
@@ -60,6 +61,72 @@ class AutoMod(commands.Cog):
         # In-memory only, keyed by (guild_id, channel_id, user_id) - see
         # automod_checks.UserMessageTracker for why this isn't persisted.
         self.trackers: dict[tuple[int, int, int], UserMessageTracker] = defaultdict(UserMessageTracker)
+        self._poll_queue_decisions.start()
+
+    def cog_unload(self):
+        self._poll_queue_decisions.cancel()
+
+    async def _finalize_queued_violation(self, guild: discord.Guild, member: discord.Member, reason: str) -> None:
+        """Runs the same violation-recording + escalation-ladder logic
+        _handle_violation applies immediately for a non-queued violation,
+        for a queued match a moderator just confirmed. The message itself
+        was already deleted when it was queued - this only handles
+        counting the violation and applying the ladder, using confirm-time
+        as "now" for the counting window."""
+        cfg = self.bot.db.get_automod_config(guild.id)
+        now = int(time.time())
+        self.bot.db.add_automod_violation(guild.id, member.id, reason, now)
+        self.bot.db.record_member_history(
+            guild.id, member.id, "automod_violation", self.bot.user.id if self.bot.user else None, reason
+        )
+        recent = self.bot.db.count_recent_automod_violations(guild.id, member.id, now - cfg["violation_window_seconds"])
+        tiers = self.bot.db.list_automod_escalation_tiers(guild.id)
+        tier = next((t for t in tiers if t["threshold"] == recent), None)
+        if tier is None and tiers and recent > tiers[-1]["threshold"]:
+            tier = tiers[-1]
+        if tier is not None:
+            await self._apply_tier_action(guild, member, tier, reason, source="Automod (reviewed)")
+
+    async def _log_queue_dismissal(self, guild: discord.Guild, review: dict, resolved_by: int) -> None:
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is None:
+            return
+        actor = "Dashboard" if resolved_by == 0 else f"<@{resolved_by}>"
+        embed = discord.Embed(
+            description=f"**AutoMod: Queued match dismissed** - <@{review['user_id']}> by {actor}",
+            color=discord.Color.light_grey(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Reason", value=review["rule_label"], inline=True)
+        await logging_cog.log_event(guild, "automod", embed)
+
+    @tasks.loop(seconds=3)
+    async def _poll_queue_decisions(self):
+        for request_id, guild_id, review_id, decision, resolved_by in self.bot.db.claim_automod_decisions():
+            review = self.bot.db.get_automod_review(guild_id, review_id)
+            if review is None or review["status"] != "pending":
+                continue  # already resolved from Discord's side in the meantime
+            status = "confirmed" if decision == "confirm" else "dismissed"
+            applied = self.bot.db.resolve_automod_review(guild_id, review_id, resolved_by, status)
+            if not applied:
+                continue
+            guild = self.bot.get_guild(guild_id)
+            if decision != "confirm":
+                if guild is not None:
+                    await self._log_queue_dismissal(guild, review, resolved_by)
+                continue
+            if guild is None:
+                logger.warning("automod queue confirm for unknown guild %s (request %s)", guild_id, request_id)
+                continue
+            member = guild.get_member(review["user_id"])
+            if member is None:
+                logger.info("automod queue confirm for guild %s: member %s isn't in the guild anymore", guild_id, review["user_id"])
+                continue
+            await self._finalize_queued_violation(guild, member, review["rule_label"])
+
+    @_poll_queue_decisions.before_loop
+    async def _before_poll_queue_decisions(self):
+        await self.bot.wait_until_ready()
 
     # ---- configuration commands ----
 
@@ -140,6 +207,20 @@ class AutoMod(commands.Cog):
         self.bot.db.set_automod_words(interaction.guild.id, word_list)
         await interaction.response.send_message(f"Banned word list updated ({len(word_list)} words).")
 
+    @app_commands.command(name="automodalikewords", description="Toggle catching look-alike spellings of banned words")
+    @app_commands.describe(enabled="Whether to also catch spaced-out/leetspeak/stretched-out evasions of banned words")
+    @manager_or_permission("manage_guild")
+    async def automod_alike_words(self, interaction: discord.Interaction, enabled: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        self.bot.db.set_automod_fuzzy_words(interaction.guild.id, enabled)
+        await interaction.response.send_message(
+            f"Alike-words matching is now {'on' if enabled else 'off'}. "
+            "This makes the banned-word filter also catch spaced-out, leetspeak'd, "
+            "punctuated, and stretched-out versions of the words, not just exact matches."
+        )
+
     @app_commands.command(name="automodinvites", description="Toggle blocking Discord invite links")
     @manager_or_permission("manage_guild")
     async def automod_invites(self, interaction: discord.Interaction, block: bool):
@@ -148,6 +229,15 @@ class AutoMod(commands.Cog):
             return
         self.bot.db.set_automod_invites(interaction.guild.id, block)
         await interaction.response.send_message(f"Invite link blocking is now {'on' if block else 'off'}.")
+
+    @app_commands.command(name="automodgifs", description="Toggle blocking GIFs (uploaded, or linked from Tenor/Giphy)")
+    @manager_or_permission("manage_guild")
+    async def automod_gifs(self, interaction: discord.Interaction, block: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        self.bot.db.set_automod_block_gifs(interaction.guild.id, block)
+        await interaction.response.send_message(f"GIF blocking is now {'on' if block else 'off'}.")
 
     @app_commands.command(name="automodstatus", description="Show current automod settings")
     async def automod_status(self, interaction: discord.Interaction):
@@ -159,7 +249,8 @@ class AutoMod(commands.Cog):
         lines = [
             f"Enabled: {'yes' if cfg['enabled'] else 'no'}",
             f"Block invites: {'yes' if cfg['block_invites'] else 'no'}",
-            f"Banned words: {len(cfg['banned_words'])} configured",
+            f"Block GIFs: {'yes' if cfg['block_gifs'] else 'no'}",
+            f"Banned words: {len(cfg['banned_words'])} configured (alike-words matching: {'on' if cfg['fuzzy_words'] else 'off'})",
             f"Caps: {cfg['caps_percent']}% (min {cfg['caps_min_len']} capital letters)",
             f"Mention spam: {cfg['mention_threshold']} unique mentions per message",
             f"Message spam: {cfg['spam_count']} messages in {cfg['spam_window_seconds']}s",
@@ -246,6 +337,87 @@ class AutoMod(commands.Cog):
         self.bot.db.remove_automod_escalation_tier(interaction.guild.id, match["id"])
         await interaction.response.send_message(f"Removed the {warnings}-warning tier.")
 
+    @app_commands.command(name="automodqueue", description="List messages held for review (fuzzy word-filter matches)")
+    @manager_or_permission("moderate_members")
+    async def automodqueue(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        pending = self.bot.db.list_automod_queue(interaction.guild.id, status="pending", limit=15)
+        if not pending:
+            await interaction.response.send_message("Nothing pending review.", ephemeral=True)
+            return
+        lines = []
+        for item in pending:
+            snippet = item["content_snapshot"][:150]
+            lines.append(f"`#{item['id']}` <@{item['user_id']}> in <#{item['channel_id']}>: {snippet}")
+        embed = discord.Embed(
+            title="AutoMod review queue",
+            description="\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="/automodqueueconfirm <id> or /automodqueuedismiss <id> to resolve one")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="automodqueueconfirm", description="Confirm a queued match and apply the escalation ladder")
+    @app_commands.describe(review_id="The queue entry's number, from /automodqueue")
+    @manager_or_permission("moderate_members")
+    async def automodqueueconfirm(self, interaction: discord.Interaction, review_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        review = self.bot.db.get_automod_review(interaction.guild.id, review_id)
+        if review is None or review["status"] != "pending":
+            await interaction.response.send_message(f"No pending review entry #{review_id}.", ephemeral=True)
+            return
+        member = interaction.guild.get_member(review["user_id"])
+        applied = self.bot.db.resolve_automod_review(interaction.guild.id, review_id, interaction.user.id, "confirmed")
+        if not applied:
+            await interaction.response.send_message("That entry was just resolved by someone else.", ephemeral=True)
+            return
+        if member is None:
+            await interaction.response.send_message(
+                f"Confirmed #{review_id}, but that member isn't in the server anymore - no action applied.", ephemeral=True
+            )
+            return
+        await self._finalize_queued_violation(interaction.guild, member, review["rule_label"])
+        await interaction.response.send_message(f"Confirmed #{review_id} - escalation ladder applied if they hit a tier.", ephemeral=True)
+
+    @app_commands.command(name="automodqueuedismiss", description="Dismiss a queued match with no further action")
+    @app_commands.describe(review_id="The queue entry's number, from /automodqueue")
+    @manager_or_permission("moderate_members")
+    async def automodqueuedismiss(self, interaction: discord.Interaction, review_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        review = self.bot.db.get_automod_review(interaction.guild.id, review_id)
+        applied = self.bot.db.resolve_automod_review(interaction.guild.id, review_id, interaction.user.id, "dismissed")
+        if not applied:
+            await interaction.response.send_message(f"No pending review entry #{review_id}.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Dismissed #{review_id}.", ephemeral=True)
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is not None and review is not None:
+            embed = discord.Embed(
+                description=f"**AutoMod: Queued match dismissed** - <@{review['user_id']}> by {interaction.user.mention}",
+                color=discord.Color.light_grey(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Reason", value=review["rule_label"], inline=True)
+            await logging_cog.log_event(interaction.guild, "automod", embed)
+
+    @app_commands.command(name="automodqueuefuzzy", description="Toggle whether fuzzy word-filter matches get queued for review instead of acted on immediately")
+    @app_commands.describe(enabled="On to hold fuzzy matches for review; off to act on them immediately like other violations")
+    @manager_or_permission("manage_guild")
+    async def automodqueuefuzzy(self, interaction: discord.Interaction, enabled: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        self.bot.db.set_automod_queue_fuzzy(interaction.guild.id, enabled)
+        await interaction.response.send_message(
+            f"Fuzzy word-filter matches will {'be held for review' if enabled else 'act immediately'} from now on."
+        )
+
     # ---- detection ----
 
     @commands.Cog.listener()
@@ -275,52 +447,80 @@ class AutoMod(commands.Cog):
         tracker = self.trackers[key]
         now = time.time()
 
-        violation_reason = self._check_message(message, cfg, tracker, now)
+        violation = self._check_message(message, cfg, tracker, now)
 
         tracker.record(now, message.content)
 
-        if violation_reason is None:
+        if violation is None:
             return
 
-        await self._handle_violation(message, violation_reason, cfg)
+        reason, queue_for_review = violation
+        await self._handle_violation(message, reason, cfg, queue_for_review)
 
-    def _check_message(self, message: discord.Message, cfg: dict, tracker: UserMessageTracker, now: float) -> str | None:
-        """Returns a human-readable violation reason, or None if clean."""
+    def _check_message(self, message: discord.Message, cfg: dict, tracker: UserMessageTracker, now: float) -> tuple[str, bool] | None:
+        """Returns (reason, queue_for_review) or None if clean.
+        queue_for_review is only ever True for a fuzzy-only banned-word
+        match when the guild has opted into queuing those (see
+        cfg["queue_fuzzy_matches"]) - every other violation type still
+        acts immediately, same as before."""
         content = message.content
 
         if cfg["block_invites"] and find_invite_codes(content):
-            return "posting a Discord invite link"
+            return ("posting a Discord invite link", False)
 
-        banned = contains_banned_word(content, cfg["banned_words"])
+        if cfg["block_gifs"] and contains_gif(
+            content,
+            attachment_filenames=[a.filename for a in message.attachments],
+            attachment_content_types=[a.content_type for a in message.attachments],
+        ):
+            return ("posting a GIF", False)
+
+        banned = contains_banned_word(content, cfg["banned_words"], fuzzy=cfg["fuzzy_words"])
         if banned:
-            return "using a banned word"
+            word, was_fuzzy_only = banned
+            queue = was_fuzzy_only and cfg["queue_fuzzy_matches"]
+            return ("using a banned word", queue)
 
         if caps_violation(content, cfg["caps_min_len"], cfg["caps_percent"]):
-            return "excessive caps"
+            return ("excessive caps", False)
 
         if len(message.mentions) >= cfg["mention_threshold"] and cfg["mention_threshold"] > 0:
-            return "mentioning too many people at once"
+            return ("mentioning too many people at once", False)
 
         if cfg["spam_count"] > 0:
             # +1 to count this message itself alongside its recent history
             recent_count = sliding_window_count(list(tracker.timestamps), now, cfg["spam_window_seconds"]) + 1
             if recent_count >= cfg["spam_count"]:
-                return "sending messages too quickly"
+                return ("sending messages too quickly", False)
 
         if cfg["duplicate_count"] > 0:
             dup_count = count_consecutive_duplicates(
                 list(tracker.contents), now, cfg["duplicate_window_seconds"], content
             )
             if dup_count >= cfg["duplicate_count"]:
-                return "repeating the same message"
+                return ("repeating the same message", False)
 
         return None
 
-    async def _handle_violation(self, message: discord.Message, reason: str, cfg: dict):
+    async def _handle_violation(self, message: discord.Message, reason: str, cfg: dict, queue_for_review: bool = False):
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound):
             pass
+
+        if queue_for_review:
+            # Hold off on the escalation ladder until a moderator confirms
+            # this one - the message is still gone either way (deleted
+            # above), only the punishment step waits. content_snapshot
+            # preserves what was said since the message itself is gone by
+            # the time anyone reviews this.
+            self.bot.db.queue_automod_review(
+                message.guild.id, message.channel.id, message.author.id, reason, message.content[:1500]
+            )
+            await self._log_violation(message, reason, queued=True)
+            return
+
+        await self._log_violation(message, reason, queued=False)
 
         now = int(time.time())
         self.bot.db.add_automod_violation(message.guild.id, message.author.id, reason, now)
@@ -358,10 +558,40 @@ class AutoMod(commands.Cog):
             pass  # DMs closed - message deletion already happened, nothing more to do
 
     async def _apply_escalation_tier(self, message: discord.Message, tier: dict, violation_reason: str):
-        guild, member = message.guild, message.author
+        await self._apply_tier_action(message.guild, message.author, tier, violation_reason, source="Automod")
+
+    async def apply_warn_escalation(self, guild: discord.Guild, member: discord.Member, latest_reason: str) -> None:
+        """Checks a manually-issued warning (from /warn or the WebUI's "Add
+        warning") against the same escalation ladder configured on the
+        Automod tab, and applies the matching tier if the member's warning
+        count within the configured window lands exactly on one.
+
+        Manual warns and AutoMod violations are tracked separately (the
+        `warns` table vs `automod_violations`), but both climb the *same*
+        tier list, since a mod hand-issuing 3 warnings is just as much a
+        signal as AutoMod catching 3 violations - the ladder shouldn't care
+        which one did the counting.
+
+        Deliberately only fires on an *exact* threshold match, unlike
+        AutoMod's own violation handling - AutoMod clears its violation
+        count after a resolving action so "past every tier" is a rare edge
+        case (tiers edited mid-cycle). Manual warns are a permanent record
+        that's never auto-cleared, so without the exact-match restriction
+        every later warning past the last tier would re-trigger the
+        harshest punishment forever.
+        """
+        cfg = self.bot.db.get_automod_config(guild.id)
+        recent = self.bot.db.count_recent_warns(guild.id, member.id, int(time.time()) - cfg["violation_window_seconds"])
+        tiers = self.bot.db.list_automod_escalation_tiers(guild.id)
+        tier = next((t for t in tiers if t["threshold"] == recent), None)
+        if tier is None:
+            return
+        await self._apply_tier_action(guild, member, tier, latest_reason, source="Warnings")
+
+    async def _apply_tier_action(self, guild: discord.Guild, member: discord.Member, tier: dict, violation_reason: str, source: str):
         action = tier["action"]
         duration = tier["duration_seconds"]
-        reason = f"Automod: {tier['threshold']} warnings (latest: {violation_reason})"
+        reason = f"{source}: {tier['threshold']} warnings (latest: {violation_reason})"
 
         try:
             if action == "warn":
@@ -396,9 +626,12 @@ class AutoMod(commands.Cog):
 
         # Every other action either removes the member (kick/ban/tempban)
         # or otherwise restricts them (mute/timeout) - either way that
-        # "cycle" of warnings is resolved, so reset the count. A "warn"
-        # tier is deliberately excluded (see RESOLVING_ACTIONS above) so
-        # the member keeps climbing toward whatever tier comes next.
+        # "cycle" of warnings is resolved, so reset the automod count. A
+        # "warn" tier is deliberately excluded (see RESOLVING_ACTIONS
+        # above) so the member keeps climbing toward whatever tier comes
+        # next. This only ever clears AutoMod's own violation count - the
+        # `warns` table (manual mod warnings) is a permanent record and is
+        # never cleared automatically, from either source.
         if action in RESOLVING_ACTIONS:
             self.bot.db.clear_automod_violations(guild.id, member.id)
         self.bot.db.record_member_history(
@@ -409,26 +642,54 @@ class AutoMod(commands.Cog):
         outcome = ACTION_LABELS[action] + (f" for {format_duration(duration)}" if duration else "")
         try:
             await member.send(
-                f"You've been {outcome} in **{guild.name}** after reaching {tier['threshold']} automod warnings."
+                f"You've been {outcome} in **{guild.name}** after reaching {tier['threshold']} warnings."
             )
         except discord.Forbidden:
             pass
 
-        await self._log_action(guild, tier, member, violation_reason)
+        await self._log_action(guild, tier, member, violation_reason, source)
 
-    async def _log_action(self, guild: discord.Guild, tier: dict, member: discord.Member, violation_reason: str):
+    async def _log_violation(self, message: discord.Message, reason: str, queued: bool) -> None:
+        """Every AutoMod catch, not just the ones that cross an escalation
+        threshold - previously only escalations (a small fraction of actual
+        catches) showed up in any log channel, so routine filter activity
+        was invisible unless someone happened to also cross a punishment
+        tier. Separate "automod" category from "moderation" - this is the
+        filter doing its job automatically, not a staff-initiated action."""
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is None:
+            return
+        title = "Held for review" if queued else "Message removed"
+        embed = discord.Embed(
+            description=f"**AutoMod: {title}** - {message.author.mention} ({message.author}) in {message.channel.mention}",
+            color=discord.Color.gold() if queued else discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Reason", value=reason, inline=True)
+        if message.content:
+            embed.add_field(name="Content", value=message.content[:1000], inline=False)
+        embed.set_footer(text=f"User ID: {message.author.id}")
+        await logging_cog.log_event(message.guild, "automod", embed)
+
+    async def _log_action(self, guild: discord.Guild, tier: dict, member: discord.Member, violation_reason: str, source: str = "Automod"):
         logging_cog = self.bot.get_cog("Logging")
         if logging_cog is None:
             return
         embed = discord.Embed(
-            description=f"**Automod: {_describe_tier(tier)}** - {member.mention} ({member})",
+            description=f"**{source}: {_describe_tier(tier)}** - {member.mention} ({member})",
             color=discord.Color.red(),
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Warnings reached", value=str(tier["threshold"]), inline=True)
-        embed.add_field(name="Latest violation", value=violation_reason, inline=True)
+        embed.add_field(name="Latest reason", value=violation_reason, inline=True)
         embed.set_footer(text=f"User ID: {member.id}")
-        await logging_cog.log_event(guild, "moderation", embed)
+        # AutoMod-triggered escalations (including a queued match a
+        # moderator later confirmed, source="Automod (reviewed)") are the
+        # filter's own pipeline ("automod"); a manual /warn crossing the
+        # same ladder is a staff-initiated chain of events ("moderation")
+        # even though it runs through this same tier-application code.
+        category = "automod" if source.startswith("Automod") else "moderation"
+        await logging_cog.log_event(guild, category, embed)
 
 
 def _describe_tier(tier: dict) -> str:

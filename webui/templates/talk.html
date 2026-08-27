@@ -28,6 +28,13 @@
 
 <section class="card">
     <h2>Recent Talk messages</h2>
+    <p class="hint">
+        {% if show_deleted %}
+        Showing deleted messages too. <a href="/guild/{{ guild_id }}/talk">Hide deleted</a>
+        {% else %}
+        Deleted messages are hidden. <a href="/guild/{{ guild_id }}/talk?show_deleted=1">Show deleted</a>
+        {% endif %}
+    </p>
     {% if recent_messages %}
     <table>
         <thead><tr><th>ID</th><th>Channel</th><th>Message</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
@@ -54,7 +61,7 @@
         </tbody>
     </table>
     {% else %}
-    <p class="muted">No Talk messages have been queued yet.</p>
+    <p class="muted">{% if show_deleted %}No Talk messages have been queued yet.{% else %}No messages to show (deleted ones are hidden - {% endif %}{% if not show_deleted %}<a href="/guild/{{ guild_id }}/talk?show_deleted=1">show deleted</a>).{% endif %}</p>
     {% endif %}
 </section>
 

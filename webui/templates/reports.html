@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Reports - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Member Reports</h1>
+{% if request.query_params.get("error") == "channel" %}<p class="error">Choose a valid text channel.</p>{% endif %}
+<section class="card">
+    <h2>Notification channel</h2>
+    <p class="hint">Post a plain notification here whenever a new report comes in via /report. Triage still happens on this page - the notification is just so staff don't have to remember to check it.</p>
+    <form method="post" action="/guild/{{ guild_id }}/reports/channel" class="inline">
+        <select name="channel_id">
+            <option value="">Off</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}" {{ "selected" if cid == report_channel_id }}>#{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Save</button>
+    </form>
+</section>
+<section class="card">
+    <h2>Reports</h2>
+    <div class="tabs">
+        {% for value, label in status_choices %}<a class="tab {{ 'active' if status_filter == value else '' }}" href="/guild/{{ guild_id }}/reports?status={{ value }}">{{ label }}</a>{% endfor %}
+        <a class="tab {{ 'active' if status_filter == 'all' else '' }}" href="/guild/{{ guild_id }}/reports?status=all">All</a>
+    </div>
+    {% if reports %}
+    <table><thead><tr><th>Reported</th><th>Reporter</th><th>Reason</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody>
+    {% for r in reports %}
+    <tr>
+        <td>{{ r.target_name }}</td>
+        <td>{{ r.reporter_name }}</td>
+        <td>{{ r.reason }}{% if r.resolution_note %}<br><span class="muted">{{ r.resolution_note }}</span>{% endif %}{% if r.linked_warn_id %}<br><span class="muted">→ warn #{{ r.linked_warn_id }}</span>{% endif %}</td>
+        <td>{{ r.status_label }}{% if r.resolved_by_name %} <span class="muted">by {{ r.resolved_by_name }}</span>{% endif %}</td>
+        <td>{{ r.created_at }}</td>
+        <td>
+        {% if r.status in ("open", "reviewing") %}
+            {% if r.status == "open" %}
+            <form method="post" action="/guild/{{ guild_id }}/reports/status" class="inline">
+                <input type="hidden" name="report_id" value="{{ r.id }}">
+                <input type="hidden" name="status" value="reviewing">
+                <button type="submit">Mark reviewing</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/guild/{{ guild_id }}/reports/resolve" class="inline">
+                <input type="hidden" name="report_id" value="{{ r.id }}">
+                <input type="text" name="note" placeholder="Resolution note / warn reason" style="width:12em">
+                <label class="checkbox-inline"><input type="checkbox" name="issue_warning"> also warn {{ r.target_name }}</label>
+                <button type="submit">Resolve</button>
+            </form>
+            <form method="post" action="/guild/{{ guild_id }}/reports/dismiss" class="inline">
+                <input type="hidden" name="report_id" value="{{ r.id }}">
+                <button type="submit" class="danger">Dismiss</button>
+            </form>
+        {% endif %}
+        </td>
+    </tr>
+    {% endfor %}</tbody></table>
+    {% else %}<p class="muted">No reports{% if status_filter != "all" %} with this status{% endif %}.</p>{% endif %}
+</section>
+{% endblock %}

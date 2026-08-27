@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}#{{ channel_name }} - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1><a href="/guild/{{ guild_id }}/feed" class="muted" style="text-decoration:none;">Channel Feed</a> / #{{ channel_name }}</h1>
+{% if not enabled %}
+<section class="card">
+    <p class="error">The Channel Feed is currently off for this server, so no new messages are being mirrored. <a href="/guild/{{ guild_id }}/feed">Turn it on</a> to keep this view live.</p>
+</section>
+{% endif %}
+<section class="card">
+    <div id="feed-messages"
+         class="feed-messages"
+         data-poll-url="/guild/{{ guild_id }}/feed/{{ channel_id }}/poll"
+         data-last-id="{{ last_id }}">
+        {% for m in messages %}
+        <div class="feed-message" data-id="{{ m.id }}">
+            <img class="feed-avatar" src="{{ m.author_avatar or '' }}" alt="">
+            <div class="feed-message-body">
+                <div class="feed-message-head"><strong>{{ m.author_name }}</strong> <span class="muted feed-ts" data-ts="{{ m.created_at }}">{{ m.created_at }}</span></div>
+                <div class="feed-message-content">{{ m.content }}</div>
+                {% for url in m.attachments %}<div class="feed-attachment"><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></div>{% endfor %}
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">No messages mirrored yet in this channel.</p>
+        {% endfor %}
+    </div>
+</section>
+<script src="/static/feed.js"></script>
+{% endblock %}

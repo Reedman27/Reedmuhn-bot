@@ -542,6 +542,25 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
+/* "custom" has no fixed palette - its 8 base colors are picked by the user
+   in the theme editor and applied at runtime via theme.js (setProperty
+   calls, not CSS - see the comment atop theme.js for why). This block is
+   just a safe fallback so the page still looks coherent for the brief
+   window before that JS runs, or in the unlikely case it fails to load. */
+[data-theme="custom"] {
+    --bg: #1e1e2e;
+    --card: #313244;
+    --sidebar: #181825;
+    --text: #cdd6f4;
+    --muted: #a6adc8;
+    --accent: #89b4fa;
+    --accent-dim: #45475a;
+    --accent-contrast: #1e1e2e;
+    --danger: #f38ba8;
+    --border: #45475a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -717,6 +736,7 @@ button {
 button:hover { opacity: 0.9; }
 button.danger { background: var(--danger); margin-top: 0; padding: 0.35rem 0.8rem; font-size: 0.85rem; }
 button.link-btn { background: none; color: var(--accent); padding: 0; margin: 0; font-weight: 400; text-decoration: underline; cursor: pointer; font-size: inherit; }
+button.secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
 
 .button {
     display: inline-block;
@@ -1203,3 +1223,112 @@ select option {
 .toggle-row span { display: flex; flex-direction: column; gap: .2rem; }
 .toggle-row small { opacity: .65; }
 .toggle-row input[type="checkbox"] { width: 1.2rem; height: 1.2rem; accent-color: var(--blue, #89b4fa); }
+
+/* Channel Feed */
+.feed-messages { display: flex; flex-direction: column; gap: 0.9rem; max-height: 70vh; overflow-y: auto; }
+.feed-message { display: flex; gap: 0.75rem; align-items: flex-start; }
+.feed-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--border); flex-shrink: 0; object-fit: cover; }
+.feed-message-body { min-width: 0; flex: 1; }
+.feed-message-head { display: flex; gap: 0.4rem; align-items: baseline; font-size: 0.85rem; }
+.feed-message-content { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.92rem; margin-top: 0.1rem; }
+.feed-attachment { font-size: 0.8rem; margin-top: 0.2rem; }
+.feed-attachment a { color: var(--accent); word-break: break-all; }
+
+/* ---- theme editor (custom theme) ---- */
+
+.theme-menu-create {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border);
+    color: var(--accent);
+    padding: 0.55rem 0.5rem 0.35rem;
+    margin: 0.3rem 0 0;
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+.theme-menu-create:hover { opacity: 0.85; }
+
+.theme-editor-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 1rem;
+}
+
+.theme-editor {
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.theme-editor-title { margin-bottom: 0.2rem; }
+
+.theme-editor-startfrom {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0.8rem 0 1rem;
+}
+.theme-editor-startfrom select {
+    display: block;
+    width: 100%;
+    margin-top: 0.35rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+    font-size: 0.9rem;
+}
+
+.theme-editor-fields { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.theme-editor-field {
+    display: grid;
+    grid-template-columns: 1fr auto 5.5rem;
+    align-items: center;
+    gap: 0.6rem;
+}
+.theme-editor-field label {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+.theme-editor-field input[type="color"] {
+    width: 2.4rem;
+    height: 2.4rem;
+    padding: 0.15rem;
+    cursor: pointer;
+}
+.theme-editor-hex {
+    width: 5.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    text-transform: lowercase;
+}
+
+.theme-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 1.4rem;
+}
+.theme-editor-spacer { flex-grow: 1; }
+.theme-editor-actions button { margin-top: 0; }
+
+.checkbox-inline { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); margin: 0 0.4rem; }
+.checkbox-inline input { width: auto; }

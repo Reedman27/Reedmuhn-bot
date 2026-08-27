@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Channel Feed - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Channel Feed</h1>
+<section class="card">
+    <p class="hint">Mirrors this server's channel messages into the dashboard so you can read them here instead of opening Discord. Off by default - turning it on stores message content (not just metadata) for every channel the bot can see, going forward. Only the most recent 300 messages per channel are kept.</p>
+    <form method="post" action="/guild/{{ guild_id }}/feed/toggle">
+        <label class="toggle-row">
+            <span><strong>Enable Channel Feed</strong><small>Start mirroring new messages from this server</small></span>
+            <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %} data-autosubmit="1">
+        </label>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Channels</h2>
+    {% if channels %}
+    <table>
+        <thead><tr><th>Channel</th><th>Last message</th><th>From</th><th>When</th></tr></thead>
+        <tbody>
+        {% for ch in channels %}
+        <tr>
+            <td><a href="/guild/{{ guild_id }}/feed/{{ ch.channel_id }}">#{{ ch.channel_name }}</a></td>
+            <td><div style="white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere;">{{ ch.preview or "*(attachment only)*" }}</div></td>
+            <td>{{ ch.author_name }}</td>
+            <td class="muted" data-ts="{{ ch.created_at }}">{{ ch.created_at }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">{% if enabled %}No messages mirrored yet - they'll show up here as people chat.{% else %}Nothing here yet. Enable the feed above to start mirroring messages.{% endif %}</p>
+    {% endif %}
+</section>
+<script src="/static/autosubmit.js"></script>
+<script src="/static/feed.js"></script>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Dashboard Log · Reedmuhn Bot{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🗒️ Dashboard Log</h1>
+        <p class="muted">This dashboard uses one shared password, not per-admin logins - these are the closest thing to an audit trail: every login attempt and every action taken through the WebUI, by IP.</p>
+    </div>
+</div>
+
+<section class="card">
+    <h2>Login attempts</h2>
+    {% if logins %}
+    <div class="table-wrap">
+    <table><thead><tr><th>When</th><th>IP</th><th>Result</th></tr></thead><tbody>
+    {% for l in logins %}
+    <tr>
+        <td>{{ l.created_at }}</td>
+        <td>{{ l.ip }}</td>
+        <td>{% if l.success %}<span class="badge">Success</span>{% else %}<span class="error">Failed</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table>
+    </div>
+    {% else %}<p class="muted">No login attempts recorded yet.</p>{% endif %}
+</section>
+
+<section class="card">
+    <h2>Dashboard actions</h2>
+    <p class="muted">Every mutating (POST) request made through the dashboard while logged in.</p>
+    {% if actions %}
+    <div class="table-wrap">
+    <table><thead><tr><th>When</th><th>IP</th><th>Server</th><th>Action</th><th>Result</th></tr></thead><tbody>
+    {% for a in actions %}
+    <tr>
+        <td>{{ a.created_at }}</td>
+        <td>{{ a.ip }}</td>
+        <td>{{ a.guild_name or "—" }}</td>
+        <td><code>{{ a.path }}</code></td>
+        <td>{% if a.status_code < 400 %}<span class="badge">{{ a.status_code }}</span>{% else %}<span class="error">{{ a.status_code }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table>
+    </div>
+    {% else %}<p class="muted">No dashboard actions recorded yet.</p>{% endif %}
+</section>
+{% endblock %}
