@@ -99,7 +99,11 @@ class Db:
         if "sticky_roles_enabled" not in cols:
             self.conn.execute("ALTER TABLE guild_config ADD COLUMN sticky_roles_enabled INTEGER NOT NULL DEFAULT 0")
         if "muted_strip_roles" not in cols:
-            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_strip_roles INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_strip_roles INTEGER NOT NULL DEFAULT 1")
+            cols.add("muted_strip_roles")
+        if "muted_strip_roles_migration_v2" not in cols:
+            self.conn.execute("ALTER TABLE guild_config ADD COLUMN muted_strip_roles_migration_v2 INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("UPDATE guild_config SET muted_strip_roles = 1, muted_strip_roles_migration_v2 = 1")
         if "message_feed_enabled" not in cols:
             # Opt-in per server: mirrors channel messages into the dashboard's
             # Channel Feed page so it can be read without opening Discord.
@@ -377,6 +381,10 @@ class Db:
                 "ALTER TABLE ticket_config ADD COLUMN panel_description TEXT NOT NULL DEFAULT "
                 "'Click the button below to open a private ticket with the support team.'"
             )
+        if "delete_on_close" not in ticket_cfg_cols:
+            self.conn.execute("ALTER TABLE ticket_config ADD COLUMN delete_on_close INTEGER NOT NULL DEFAULT 0")
+        if "delete_delay_seconds" not in ticket_cfg_cols:
+            self.conn.execute("ALTER TABLE ticket_config ADD COLUMN delete_delay_seconds INTEGER NOT NULL DEFAULT 10")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,6 +401,42 @@ class Db:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tickets_guild ON tickets(guild_id, status, id)"
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS modmail_config (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                category_id INTEGER,
+                log_channel_id INTEGER,
+                anonymous_staff INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS modmail_threads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL,
+                closed_at INTEGER,
+                closed_by INTEGER
+            )"""
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modmail_threads_user ON modmail_threads(user_id, status)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modmail_threads_channel ON modmail_threads(channel_id)"
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS modmail_blocks (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                blocked_by INTEGER,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )"""
         )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS dashboard_ticket_close_requests (
@@ -527,6 +571,69 @@ class Db:
             )"""
         )
         self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_escalation_state (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                reset_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_gif_allowlist (
+                guild_id INTEGER NOT NULL,
+                identifier TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, identifier)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_gif_blocklist (
+                guild_id INTEGER NOT NULL,
+                identifier TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, identifier)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS votekick_config (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                required_votes INTEGER NOT NULL DEFAULT 5,
+                duration_seconds INTEGER NOT NULL DEFAULT 600
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS votekicks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER,
+                initiator_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                result TEXT,
+                resolved_at INTEGER
+            )"""
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_votekicks_guild_status ON votekicks (guild_id, status, expires_at)"
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS votekick_votes (
+                votekick_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                vote TEXT NOT NULL CHECK (vote IN ('yes','no')),
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (votekick_id, user_id)
+            )"""
+        )
+
+        self.conn.execute(
             """CREATE TABLE IF NOT EXISTS bot_channels (
                 guild_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
@@ -545,6 +652,10 @@ class Db:
                 PRIMARY KEY (guild_id, role_id)
             )"""
         )
+        bot_roles_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_roles)")}
+        for column, definition in (("permissions", "INTEGER NOT NULL DEFAULT 0"), ("managed", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in bot_roles_cols:
+                self.conn.execute(f"ALTER TABLE bot_roles ADD COLUMN {column} {definition}")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS bot_members (
                 guild_id INTEGER NOT NULL,
@@ -564,6 +675,9 @@ class Db:
                 name TEXT NOT NULL
             )"""
         )
+        bot_guilds_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_guilds)")}
+        if "everyone_permissions" not in bot_guilds_cols:
+            self.conn.execute("ALTER TABLE bot_guilds ADD COLUMN everyone_permissions INTEGER NOT NULL DEFAULT 0")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS log_channels (
                 guild_id INTEGER NOT NULL,
@@ -643,6 +757,40 @@ class Db:
         self.conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_member_history_user
                ON member_history (guild_id, user_id, created_at DESC)"""
+        )
+        member_history_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(member_history)")}
+        for column, definition in (("case_number", "INTEGER"), ("voided", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in member_history_cols:
+                self.conn.execute(f"ALTER TABLE member_history ADD COLUMN {column} {definition}")
+        self.conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_member_history_case_number
+               ON member_history (guild_id, case_number) WHERE case_number IS NOT NULL"""
+        )
+        # Hands out sequential per-guild case numbers for the moderation
+        # events worth numbering (warn/kick/mute/tempban/timeout/ban) -
+        # kept separate from member_history's own id, which is a single
+        # counter shared across every guild and every event type
+        # (automod_violation, verify, etc.) that has no business being
+        # part of a case sequence.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS case_counters (
+                guild_id INTEGER PRIMARY KEY,
+                next_case INTEGER NOT NULL DEFAULT 1
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS mod_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                note TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_mod_notes_user
+               ON mod_notes (guild_id, user_id, created_at DESC)"""
         )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS analytics_settings (
@@ -841,6 +989,123 @@ class Db:
             self.conn.execute(
                 "ALTER TABLE automod_config ADD COLUMN block_gifs INTEGER NOT NULL DEFAULT 0"
             )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS antinuke_config (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                auto_recovery INTEGER NOT NULL DEFAULT 1,
+                default_punishment TEXT NOT NULL DEFAULT 'BAN',
+                log_channel_id INTEGER,
+                threshold INTEGER NOT NULL DEFAULT 3,
+                window_seconds INTEGER NOT NULL DEFAULT 10,
+                watched_actions TEXT NOT NULL DEFAULT 'channel_delete,role_delete,ban,kick,webhook_create,bot_add'
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS antinuke_whitelist (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                added_by INTEGER,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS antinuke_incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                trigger_action TEXT NOT NULL,
+                punishment TEXT NOT NULL,
+                hit_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS raid_config (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                join_threshold INTEGER NOT NULL DEFAULT 10,
+                window_seconds INTEGER NOT NULL DEFAULT 60,
+                action TEXT NOT NULL DEFAULT 'alert',
+                new_account_hours INTEGER NOT NULL DEFAULT 168,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+                log_channel_id INTEGER
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS raid_incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                join_count INTEGER NOT NULL,
+                window_seconds INTEGER NOT NULL,
+                action_taken TEXT NOT NULL,
+                kicked_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS invite_joins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                inviter_id INTEGER,
+                invite_code TEXT,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_invite_joins_inviter
+               ON invite_joins (guild_id, inviter_id)"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS invite_milestones (
+                guild_id INTEGER NOT NULL,
+                invite_count INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, invite_count)
+            )"""
+        )
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS ai_config (
+            guild_id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            provider TEXT NOT NULL DEFAULT 'openai_compatible',
+            base_url TEXT NOT NULL DEFAULT 'https://api.openai.com/v1',
+            api_key TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+            system_prompt TEXT NOT NULL DEFAULT 'You are ReedMuhn, a helpful Discord assistant. Be concise and follow the server context when provided.',
+            max_tokens INTEGER NOT NULL DEFAULT 800,
+            temperature REAL NOT NULL DEFAULT 0.7
+        )""")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_config_enabled ON ai_config(enabled)")
+        ai_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(ai_config)")}
+        if "use_channel_context" not in ai_cols:
+            self.conn.execute("ALTER TABLE ai_config ADD COLUMN use_channel_context INTEGER NOT NULL DEFAULT 0")
+        if "context_message_limit" not in ai_cols:
+            self.conn.execute("ALTER TABLE ai_config ADD COLUMN context_message_limit INTEGER NOT NULL DEFAULT 10")
+        if "index_channels" not in ai_cols:
+            self.conn.execute("ALTER TABLE ai_config ADD COLUMN index_channels INTEGER NOT NULL DEFAULT 0")
+        if "index_message_limit" not in ai_cols:
+            self.conn.execute("ALTER TABLE ai_config ADD COLUMN index_message_limit INTEGER NOT NULL DEFAULT 500")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS ai_channel_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            author_name TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(guild_id, message_id)
+        )""")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_channel_messages_guild_channel ON ai_channel_messages(guild_id, channel_id, created_at DESC)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_channel_messages_guild_time ON ai_channel_messages(guild_id, created_at DESC)")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS command_toggles (guild_id INTEGER NOT NULL, command_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (guild_id, command_name))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS starboard_config (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, threshold INTEGER NOT NULL DEFAULT 5, enabled INTEGER NOT NULL DEFAULT 0)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS starboard_messages (guild_id INTEGER NOT NULL, source_message_id INTEGER NOT NULL, starboard_message_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, star_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (guild_id, source_message_id))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestion_config (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, enabled INTEGER NOT NULL DEFAULT 0, staff_role_id INTEGER)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, message_id INTEGER NOT NULL, author_id INTEGER NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', staff_id INTEGER, staff_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_suggestions_guild ON suggestions(guild_id, id DESC)")
         self.conn.commit()
 
     # ---- scheduled events (generalized: tempban unbans + reminders both
@@ -851,6 +1116,7 @@ class Db:
             "INSERT INTO scheduled_events (event_name, guild_id, run_at, data) VALUES (?, ?, ?, ?)",
             (event_name, guild_id, run_at, json.dumps(data)),
         )
+
         self.conn.commit()
 
     def due_events(self, now: int) -> list[tuple[int, str, int, str]]:
@@ -884,6 +1150,36 @@ class Db:
             query += " AND event_name = ?"
             params.append(event_name)
         return self.conn.execute(query, params).fetchone()
+
+    def replace_role_unmute_event(self, guild_id: int, user_id: int, role_id: int, run_at: int) -> None:
+        """Keep at most one pending unmute for a member/Muted-role pair.
+
+        Re-muting an already muted member must extend/replace the expiry
+        instead of leaving an older scheduled event that could unmute them
+        early. JSON is decoded in Python rather than depending on SQLite's
+        optional JSON1 extension.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, data FROM scheduled_events WHERE guild_id=? AND event_name='unmute_role'",
+                (guild_id,),
+            ).fetchall()
+            for event_id, raw_data in rows:
+                try:
+                    data = json.loads(raw_data)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if int(data.get("user_id", -1)) == int(user_id) and int(data.get("role_id", -1)) == int(role_id):
+                    self.conn.execute("DELETE FROM scheduled_events WHERE id=?", (event_id,))
+            self.conn.execute(
+                "INSERT INTO scheduled_events (event_name, guild_id, run_at, data) VALUES (?, ?, ?, ?)",
+                ("unmute_role", guild_id, run_at, json.dumps({"user_id": user_id, "role_id": role_id})),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def delete_scheduled_event(self, event_id: int, guild_id: Optional[int] = None) -> bool:
         if guild_id is None:
@@ -1015,7 +1311,7 @@ class Db:
                 "muted_deny_stream": True,
                 "muted_deny_view_channel": False,
                 "sticky_roles_enabled": False,
-                "muted_strip_roles": False,
+                "muted_strip_roles": True,
             }
         return {
             "welcome_channel_id": row[0],
@@ -1045,8 +1341,9 @@ class Db:
 
     def set_muted_strip_roles(self, guild_id: int, enabled: bool) -> None:
         self.conn.execute(
-            """INSERT INTO guild_config (guild_id, muted_strip_roles) VALUES (?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET muted_strip_roles = excluded.muted_strip_roles""",
+            """INSERT INTO guild_config (guild_id, muted_strip_roles, muted_strip_roles_migration_v2) VALUES (?, ?, 1)
+               ON CONFLICT(guild_id) DO UPDATE SET muted_strip_roles = excluded.muted_strip_roles,
+                 muted_strip_roles_migration_v2 = 1""",
             (guild_id, int(enabled)),
         )
         self.conn.commit()
@@ -1061,23 +1358,30 @@ class Db:
         )
         self.conn.commit()
 
-    def pop_stripped_roles(self, guild_id: int, user_id: int) -> list[int]:
-        """Returns and clears the roles stashed for this member by a
-        strip-roles mute, or [] if none are stored. "Pop" (not "get") is
-        deliberate - once restored (or once someone decides not to
-        restore them, e.g. re-muting before the first mute expired), the
-        stash shouldn't be reapplied a second time later."""
+    def get_stripped_roles(self, guild_id: int, user_id: int) -> list[int]:
+        """Read the roles stashed by a strip-roles mute without clearing them."""
         row = self.conn.execute(
             "SELECT role_ids FROM mute_stripped_roles WHERE guild_id = ? AND user_id = ?",
             (guild_id, user_id),
         ).fetchone()
         if row is None:
             return []
+        return [int(rid) for rid in row[0].split(",") if rid.strip()]
+
+    def clear_stripped_roles(self, guild_id: int, user_id: int) -> None:
+        """Delete a successfully restored role stash."""
         self.conn.execute(
-            "DELETE FROM mute_stripped_roles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            "DELETE FROM mute_stripped_roles WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
         )
         self.conn.commit()
-        return [int(rid) for rid in row[0].split(",") if rid.strip()]
+
+    def pop_stripped_roles(self, guild_id: int, user_id: int) -> list[int]:
+        """Legacy helper: read and clear the stashed roles in one operation."""
+        role_ids = self.get_stripped_roles(guild_id, user_id)
+        if role_ids:
+            self.clear_stripped_roles(guild_id, user_id)
+        return role_ids
 
     def set_muted_settings(self, guild_id: int, *, deny_send_messages: bool, deny_reactions: bool,
                            deny_threads: bool, deny_connect: bool, deny_speak: bool, deny_stream: bool,
@@ -1379,7 +1683,7 @@ class Db:
             (guild_id, user_id, moderator_id, reason, created_at, rule_id, notes),
         )
         self.conn.commit()
-        self.record_member_history(guild_id, user_id, "warn", moderator_id, reason, f"warning_id={cur.lastrowid}", created_at)
+        self.record_member_history(guild_id, user_id, "warn", moderator_id, reason, f"warning_id={cur.lastrowid}", created_at, is_case=True)
         return cur.lastrowid
 
     def list_warns(self, guild_id: int, user_id: int) -> list[tuple[int, int, str, int, Optional[int], Optional[str]]]:
@@ -1709,15 +2013,19 @@ class Db:
         return cur.lastrowid
 
     def claim_automod_decisions(self, limit: int = 10) -> list[tuple[int, int, int, str, int]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id, review_id, decision, resolved_by FROM automod_queue_decisions ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
-            self.conn.executemany("DELETE FROM automod_queue_decisions WHERE id = ?", [(row[0],) for row in rows])
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, review_id, decision, resolved_by FROM automod_queue_decisions ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            if rows:
+                self.conn.executemany("DELETE FROM automod_queue_decisions WHERE id = ?", [(row[0],) for row in rows])
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def set_automod_queue_fuzzy(self, guild_id: int, enabled: bool) -> None:
         self.get_automod_config(guild_id)
         self.conn.execute(
@@ -1779,17 +2087,122 @@ class Db:
     def record_member_history(
         self, guild_id: int, user_id: int, event_type: str, actor_id: Optional[int] = None,
         reason: Optional[str] = None, details: Optional[str] = None, created_at: Optional[int] = None,
+        is_case: bool = False,
     ) -> int:
+        """Returns the member_history row id, UNLESS is_case=True, in which
+        case it returns the case number instead - that's what a caller
+        actually wants to show a moderator ("Case #7"), and no caller of
+        the is_case path needs the raw row id."""
         created_at = int(time.time()) if created_at is None else int(created_at)
+        case_number = self._next_case_number(guild_id) if is_case else None
         cur = self.conn.execute(
             """INSERT INTO member_history
-               (guild_id, user_id, event_type, actor_id, reason, details, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (guild_id, user_id, event_type, actor_id, reason, details, created_at),
+               (guild_id, user_id, event_type, actor_id, reason, details, created_at, case_number)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (guild_id, user_id, event_type, actor_id, reason, details, created_at, case_number),
         )
         self.conn.commit()
-        logger.info("member history: guild=%s user=%s event=%s actor=%s reason=%s", guild_id, user_id, event_type, actor_id, reason)
+        logger.info("member history: guild=%s user=%s event=%s actor=%s reason=%s case=%s", guild_id, user_id, event_type, actor_id, reason, case_number)
+        return case_number if is_case else cur.lastrowid
+
+    def _next_case_number(self, guild_id: int) -> int:
+        """Atomically hands out the next case number for a guild. The
+        upsert-then-read happens inside the caller's existing connection,
+        which is fine here since sqlite3 serializes writes on a single
+        connection anyway - no risk of two calls handing out the same
+        number from this process."""
+        self.conn.execute(
+            "INSERT INTO case_counters (guild_id, next_case) VALUES (?, 2) "
+            "ON CONFLICT(guild_id) DO UPDATE SET next_case = next_case + 1",
+            (guild_id,),
+        )
+        row = self.conn.execute(
+            "SELECT next_case FROM case_counters WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        # The row now holds the number handed out *last* time (or 2 if this
+        # was just created, meaning case #1 is the one we're recording now).
+        current = row[0] - 1
+        return current
+
+    def get_case(self, guild_id: int, case_number: int) -> Optional[tuple]:
+        cur = self.conn.execute(
+            """SELECT id, user_id, event_type, actor_id, reason, details, created_at, voided
+               FROM member_history WHERE guild_id = ? AND case_number = ?""",
+            (guild_id, case_number),
+        )
+        return cur.fetchone()
+
+    def list_cases_for_user(self, guild_id: int, user_id: int, limit: int = 50, include_voided: bool = True) -> list[tuple]:
+        query = """SELECT case_number, event_type, actor_id, reason, details, created_at, voided
+                   FROM member_history WHERE guild_id = ? AND user_id = ? AND case_number IS NOT NULL"""
+        params: list = [guild_id, user_id]
+        if not include_voided:
+            query += " AND voided = 0"
+        query += " ORDER BY case_number DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        return self.conn.execute(query, params).fetchall()
+
+    def list_recent_cases(self, guild_id: int, limit: int = 20) -> list[tuple]:
+        cur = self.conn.execute(
+            """SELECT case_number, user_id, event_type, actor_id, reason, created_at, voided
+               FROM member_history WHERE guild_id = ? AND case_number IS NOT NULL
+               ORDER BY case_number DESC LIMIT ?""",
+            (guild_id, max(1, min(int(limit), 200))),
+        )
+        return cur.fetchall()
+
+    def count_active_cases_for_user(self, guild_id: int, user_id: int, event_type: Optional[str] = None) -> int:
+        """Live (non-voided) case count for a user - the number an
+        escalation rule would key off of."""
+        query = "SELECT COUNT(*) FROM member_history WHERE guild_id = ? AND user_id = ? AND case_number IS NOT NULL AND voided = 0"
+        params: list = [guild_id, user_id]
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        return self.conn.execute(query, params).fetchone()[0]
+
+    def edit_case_reason(self, guild_id: int, case_number: int, new_reason: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE member_history SET reason = ? WHERE guild_id = ? AND case_number = ?",
+            (new_reason, guild_id, case_number),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def void_case(self, guild_id: int, case_number: int, voided: bool = True) -> bool:
+        """Soft-delete: voided cases stay in the table (audit trail, case
+        numbers never get reused) but are excluded from active counts and
+        marked accordingly wherever they're displayed."""
+        cur = self.conn.execute(
+            "UPDATE member_history SET voided = ? WHERE guild_id = ? AND case_number = ?",
+            (int(voided), guild_id, case_number),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def add_mod_note(self, guild_id: int, user_id: int, moderator_id: int, note: str, created_at: Optional[int] = None) -> int:
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        cur = self.conn.execute(
+            "INSERT INTO mod_notes (guild_id, user_id, moderator_id, note, created_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, user_id, moderator_id, note, created_at),
+        )
+        self.conn.commit()
         return cur.lastrowid
+
+    def list_mod_notes(self, guild_id: int, user_id: int, limit: int = 50) -> list[tuple]:
+        cur = self.conn.execute(
+            """SELECT id, moderator_id, note, created_at FROM mod_notes
+               WHERE guild_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, user_id, max(1, min(int(limit), 200))),
+        )
+        return cur.fetchall()
+
+    def delete_mod_note(self, guild_id: int, note_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM mod_notes WHERE guild_id = ? AND id = ?", (guild_id, note_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def list_member_history(self, guild_id: int, user_id: int, limit: int = 100):
         limit = max(1, min(int(limit), 500))
@@ -2120,6 +2533,7 @@ class Db:
             (new_number, user_id, new_number, guild_id),
         )
         self.conn.commit()
+        self.record_bot_event("counting.advance", guild_id, user_id, None, f"number={new_number}")
 
     def reset_count(self, guild_id: int) -> None:
         self.conn.execute(
@@ -2128,7 +2542,6 @@ class Db:
         )
         self.conn.commit()
         self.record_bot_event("counting.reset", guild_id, None, None, "current_number=0")
-        self.record_bot_event("counting.advance", guild_id, user_id, None, f"number={new_number}")
 
     # ---- counting saves (earned by personal correct-count milestones) ----
 
@@ -2282,22 +2695,22 @@ class Db:
         self.conn.commit()
 
     def pop_pending_reaction_role_actions(self, limit: int = 20) -> list[tuple[int, int, int, int, str, str]]:
-        """Returns and deletes up to `limit` pending actions in one go, so
-        a slow bot-side handler can't process the same row twice."""
-        cur = self.conn.execute(
-            "SELECT id, guild_id, channel_id, message_id, emoji, action FROM reaction_role_actions ORDER BY id LIMIT ?",
-            (limit,),
-        )
-        rows = cur.fetchall()
-        if rows:
-            ids = [row[0] for row in rows]
-            placeholders = ",".join("?" * len(ids))
-            self.conn.execute(f"DELETE FROM reaction_role_actions WHERE id IN ({placeholders})", ids)
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, channel_id, message_id, emoji, action FROM reaction_role_actions ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            if rows:
+                ids = [row[0] for row in rows]
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(f"DELETE FROM reaction_role_actions WHERE id IN ({placeholders})", ids)
             self.conn.commit()
-        return rows
-
-    # ---- dashboard purge queue ----
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def queue_purge_request(self, guild_id: int, channel_id: int, user_id: int | None, amount: int, reason: str) -> int:
         cur = self.conn.execute(
             """INSERT INTO dashboard_purge_requests
@@ -2309,17 +2722,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_purge_requests(self, limit: int = 10) -> list[tuple[int, int, int, int | None, int, str]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id, channel_id, user_id, amount, reason FROM dashboard_purge_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, channel_id, user_id, amount, reason FROM dashboard_purge_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_purge_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_purge_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_purge_request(self, request_id: int, error: str | None = None,
                                 deleted_count: int | None = None, breakdown: dict | None = None) -> None:
         self.conn.execute(
@@ -2353,18 +2774,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_mod_actions(self, limit: int = 10) -> list[tuple[int, int, int, str, int | None, str]]:
-        rows = self.conn.execute(
-            """SELECT id, guild_id, user_id, action, duration_seconds, reason
-               FROM dashboard_mod_actions WHERE status = 'queued' ORDER BY id LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, user_id, action, duration_seconds, reason FROM dashboard_mod_actions WHERE status = 'queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_mod_actions SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_mod_actions SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_mod_action(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_mod_actions SET status=?, completed_at=?, error=? WHERE id=?",
@@ -2397,18 +2825,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_emergency_requests(self, limit: int = 5) -> list[tuple[int, int, str, str]]:
-        rows = self.conn.execute(
-            """SELECT id, guild_id, action, params FROM dashboard_emergency_requests
-               WHERE status = 'queued' ORDER BY id LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 50))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, action, params FROM dashboard_emergency_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_emergency_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_emergency_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_emergency_request(self, request_id: int, error: str | None = None, result: dict | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_emergency_requests SET status=?, completed_at=?, error=?, result=? WHERE id=?",
@@ -2624,20 +3059,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_mute_role_sync_requests(self, limit: int = 10) -> list[tuple[int, int, str]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id, reason FROM dashboard_mute_role_sync_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, reason FROM dashboard_mute_role_sync_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(
-                f"UPDATE dashboard_mute_role_sync_requests SET status='processing', error=NULL WHERE id IN ({placeholders})",
-                ids,
-            )
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_mute_role_sync_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_mute_role_sync(self, request_id: int, error: str | None = None,
                                  changed: int | None = None, failed: int | None = None) -> None:
         self.conn.execute(
@@ -2700,17 +3140,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_verify_post_requests(self, limit: int = 10) -> list[tuple[int, int]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id FROM dashboard_verify_post_requests WHERE status='queued' ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id FROM dashboard_verify_post_requests WHERE status='queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_verify_post_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_verify_post_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_verify_post(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_verify_post_requests SET status=?, completed_at=?, error=? WHERE id=?",
@@ -2722,17 +3170,20 @@ class Db:
 
     def get_ticket_config(self, guild_id: int) -> dict:
         row = self.conn.execute(
-            "SELECT category_id, support_role_id, panel_channel_id, panel_message_id, panel_title, panel_description "
+            "SELECT category_id, support_role_id, panel_channel_id, panel_message_id, panel_title, panel_description, "
+            "delete_on_close, delete_delay_seconds "
             "FROM ticket_config WHERE guild_id=?", (guild_id,)
         ).fetchone()
         if row is None:
             return {
                 "category_id": None, "support_role_id": None, "panel_channel_id": None, "panel_message_id": None,
                 "panel_title": "Support", "panel_description": "Click the button below to open a private ticket with the support team.",
+                "delete_on_close": False, "delete_delay_seconds": 10,
             }
         return {
             "category_id": row[0], "support_role_id": row[1], "panel_channel_id": row[2], "panel_message_id": row[3],
             "panel_title": row[4], "panel_description": row[5],
+            "delete_on_close": bool(row[6]), "delete_delay_seconds": row[7],
         }
 
     def set_ticket_config(self, guild_id: int, category_id: int | None, support_role_id: int | None) -> None:
@@ -2740,6 +3191,20 @@ class Db:
             """INSERT INTO ticket_config (guild_id, category_id, support_role_id) VALUES (?, ?, ?)
                ON CONFLICT(guild_id) DO UPDATE SET category_id=excluded.category_id, support_role_id=excluded.support_role_id""",
             (guild_id, category_id, support_role_id),
+        )
+        self.conn.commit()
+
+    def set_ticket_delete_on_close(self, guild_id: int, enabled: bool, delay_seconds: int = 10) -> None:
+        """Whether closing a ticket deletes its channel outright (after a
+        short grace period so the closer can see the confirmation) instead
+        of the default lock-and-rename-to-closed- behavior, which keeps the
+        channel around for a transcript/records but leaves the ticket
+        category filling up with closed channels over time."""
+        self.conn.execute(
+            """INSERT INTO ticket_config (guild_id, delete_on_close, delete_delay_seconds) VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET delete_on_close=excluded.delete_on_close,
+                   delete_delay_seconds=excluded.delete_delay_seconds""",
+            (guild_id, int(enabled), delay_seconds),
         )
         self.conn.commit()
 
@@ -2768,17 +3233,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_ticket_panel_requests(self, limit: int = 10) -> list[tuple[int, int]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id FROM dashboard_ticket_panel_requests WHERE status='queued' ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id FROM dashboard_ticket_panel_requests WHERE status='queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_ticket_panel_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_ticket_panel_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_ticket_panel_post(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_ticket_panel_requests SET status=?, completed_at=?, error=? WHERE id=?",
@@ -2844,24 +3317,123 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_ticket_close_requests(self, limit: int = 10) -> list[tuple[int, int, int, str]]:
-        rows = self.conn.execute(
-            """SELECT id, guild_id, ticket_id, reason FROM dashboard_ticket_close_requests
-               WHERE status='queued' ORDER BY id LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, ticket_id, reason FROM dashboard_ticket_close_requests WHERE status='queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_ticket_close_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_ticket_close_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_ticket_close(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_ticket_close_requests SET status=?, completed_at=?, error=? WHERE id=?",
             ('failed' if error else 'completed', int(time.time()), error, request_id),
         )
         self.conn.commit()
+
+    # ---- modmail ----
+
+    def get_modmail_config(self, guild_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT enabled, category_id, log_channel_id, anonymous_staff FROM modmail_config WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+        if row is None:
+            return {"guild_id": guild_id, "enabled": False, "category_id": None, "log_channel_id": None, "anonymous_staff": False}
+        return {
+            "guild_id": guild_id, "enabled": bool(row[0]), "category_id": row[1],
+            "log_channel_id": row[2], "anonymous_staff": bool(row[3]),
+        }
+
+    def set_modmail_config(self, guild_id: int, *, enabled: bool, category_id: Optional[int], log_channel_id: Optional[int], anonymous_staff: bool) -> None:
+        self.conn.execute(
+            """INSERT INTO modmail_config (guild_id, enabled, category_id, log_channel_id, anonymous_staff)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET enabled=excluded.enabled, category_id=excluded.category_id,
+                   log_channel_id=excluded.log_channel_id, anonymous_staff=excluded.anonymous_staff""",
+            (guild_id, int(enabled), category_id, log_channel_id, int(anonymous_staff)),
+        )
+        self.conn.commit()
+
+    def create_modmail_thread(self, guild_id: int, channel_id: int, user_id: int) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO modmail_threads (guild_id, channel_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+            (guild_id, channel_id, user_id, int(time.time())),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_modmail_thread_by_channel(self, channel_id: int) -> Optional[tuple]:
+        return self.conn.execute(
+            "SELECT id, guild_id, channel_id, user_id, status, created_at FROM modmail_threads WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+
+    def get_open_modmail_thread_for_user(self, user_id: int) -> Optional[tuple]:
+        """Return a DM thread only when exactly one open thread exists.
+
+        A user can have open modmail threads in multiple servers; picking an
+        arbitrary row can route a DM to the wrong staff team. Returning None
+        when ambiguous lets the DM handler ask which server the message is
+        about instead.
+        """
+        rows = self.conn.execute(
+            "SELECT id, guild_id, channel_id, user_id, status, created_at FROM modmail_threads "
+            "WHERE user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 2",
+            (user_id,),
+        ).fetchall()
+        return rows[0] if len(rows) == 1 else None
+
+    def close_modmail_thread(self, thread_id: int, closed_by: Optional[int]) -> None:
+        self.conn.execute(
+            "UPDATE modmail_threads SET status='closed', closed_at=?, closed_by=? WHERE id=?",
+            (int(time.time()), closed_by, thread_id),
+        )
+        self.conn.commit()
+
+    def list_modmail_threads(self, guild_id: int, status: Optional[str] = None, limit: int = 50) -> list[tuple]:
+        query = "SELECT id, channel_id, user_id, status, created_at, closed_at, closed_by FROM modmail_threads WHERE guild_id = ?"
+        params: list = [guild_id]
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return self.conn.execute(query, params).fetchall()
+
+    def block_modmail_user(self, guild_id: int, user_id: int, blocked_by: Optional[int]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO modmail_blocks (guild_id, user_id, blocked_by, created_at) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, blocked_by, int(time.time())),
+        )
+        self.conn.commit()
+
+    def unblock_modmail_user(self, guild_id: int, user_id: int) -> None:
+        self.conn.execute("DELETE FROM modmail_blocks WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+        self.conn.commit()
+
+    def is_modmail_blocked(self, guild_id: int, user_id: int) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM modmail_blocks WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone() is not None
+
+    def list_modmail_blocks(self, guild_id: int) -> list[tuple]:
+        return self.conn.execute(
+            "SELECT user_id, blocked_by, created_at FROM modmail_blocks WHERE guild_id = ? ORDER BY created_at DESC",
+            (guild_id,),
+        ).fetchall()
 
     # ---- polls ----
 
@@ -2949,17 +3521,25 @@ class Db:
         return int(cur.lastrowid)
 
     def claim_poll_close_requests(self, limit: int = 10) -> list[tuple[int, int, int]]:
-        rows = self.conn.execute(
-            "SELECT id, guild_id, poll_id FROM dashboard_poll_close_requests WHERE status='queued' ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        if rows:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, poll_id FROM dashboard_poll_close_requests WHERE status='queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
             ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(ids))
-            self.conn.execute(f"UPDATE dashboard_poll_close_requests SET status='processing', error=NULL WHERE id IN ({placeholders})", ids)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_poll_close_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
             self.conn.commit()
-        return rows
-
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
     def complete_poll_close(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_poll_close_requests SET status=?, completed_at=?, error=? WHERE id=?",
@@ -3191,16 +3771,144 @@ class Db:
         )
         self.conn.commit()
 
-    def set_automod_block_gifs(self, guild_id: int, block: bool) -> None:
-        """GIFs are caught by file extension (.gif attachments) and by
-        known GIF-hosting domains in links (Tenor/Giphy/Discord's own GIF
-        picker CDN) - see automod_checks.is_gif_content. Doesn't touch
-        static images, so it doesn't need the caps/spam filters' nuance."""
+    def set_automod_block_gifs(self, guild_id: int, enabled: bool) -> None:
         self.get_automod_config(guild_id)
         self.conn.execute(
-            "UPDATE automod_config SET block_gifs = ? WHERE guild_id = ?", (int(block), guild_id)
+            "UPDATE automod_config SET block_gifs = ? WHERE guild_id = ?", (int(enabled), guild_id)
         )
         self.conn.commit()
+
+
+
+    @staticmethod
+    def normalize_gif_identifier(identifier: str) -> tuple[str, str]:
+        value = (identifier or "").strip().strip("<>).,!?").lower()
+        if not value:
+            raise ValueError("GIF identifier cannot be empty")
+        kind = "url" if value.startswith(("http://", "https://")) else "filename"
+        return value, kind
+
+    def list_automod_gif_allowlist(self, guild_id: int) -> list[tuple[str, str]]:
+        return self.conn.execute(
+            "SELECT identifier, kind FROM automod_gif_allowlist WHERE guild_id=? ORDER BY identifier", (guild_id,)
+        ).fetchall()
+
+    def add_automod_gif_allowlist(self, guild_id: int, identifier: str) -> None:
+        value, kind = self.normalize_gif_identifier(identifier)
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automod_gif_allowlist(guild_id,identifier,kind,created_at) VALUES(?,?,?,?)",
+            (guild_id, value, kind, int(time.time())),
+        )
+        self.conn.commit()
+
+    def remove_automod_gif_allowlist(self, guild_id: int, identifier: str) -> bool:
+        value, _ = self.normalize_gif_identifier(identifier)
+        cur=self.conn.execute("DELETE FROM automod_gif_allowlist WHERE guild_id=? AND identifier=?",(guild_id,value))
+        self.conn.commit(); return cur.rowcount > 0
+
+    def list_automod_gif_blocklist(self, guild_id: int) -> list[tuple[str, str]]:
+        return self.conn.execute(
+            "SELECT identifier, kind FROM automod_gif_blocklist WHERE guild_id=? ORDER BY identifier", (guild_id,)
+        ).fetchall()
+
+    def add_automod_gif_blocklist(self, guild_id: int, identifier: str) -> None:
+        value, kind = self.normalize_gif_identifier(identifier)
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automod_gif_blocklist(guild_id,identifier,kind,created_at) VALUES(?,?,?,?)",
+            (guild_id, value, kind, int(time.time())),
+        )
+        self.conn.commit()
+
+    def remove_automod_gif_blocklist(self, guild_id: int, identifier: str) -> bool:
+        value, _ = self.normalize_gif_identifier(identifier)
+        cur=self.conn.execute("DELETE FROM automod_gif_blocklist WHERE guild_id=? AND identifier=?",(guild_id,value))
+        self.conn.commit(); return cur.rowcount > 0
+
+    def automod_gif_list_matches(self, guild_id: int, identifiers: list[str]) -> tuple[bool, bool]:
+        normalized=[]
+        for ident in identifiers:
+            try: normalized.append(self.normalize_gif_identifier(ident)[0])
+            except ValueError: pass
+        if not normalized: return False, False
+        placeholders=','.join('?' for _ in normalized)
+        params=[guild_id,*normalized]
+        blocked=self.conn.execute(
+            f"SELECT 1 FROM automod_gif_blocklist WHERE guild_id=? AND identifier IN ({placeholders}) LIMIT 1", params
+        ).fetchone() is not None
+        allowed=self.conn.execute(
+            f"SELECT 1 FROM automod_gif_allowlist WHERE guild_id=? AND identifier IN ({placeholders}) LIMIT 1", params
+        ).fetchone() is not None
+        return blocked, allowed
+
+    def get_escalation_reset(self, guild_id: int, user_id: int) -> int:
+        row=self.conn.execute("SELECT reset_at FROM automod_escalation_state WHERE guild_id=? AND user_id=?",(guild_id,user_id)).fetchone()
+        return int(row[0]) if row else 0
+
+    def set_escalation_reset(self, guild_id: int, user_id: int, reset_at: int | None = None) -> None:
+        reset_at=int(time.time()) if reset_at is None else int(reset_at)
+        self.conn.execute(
+            "INSERT INTO automod_escalation_state(guild_id,user_id,reset_at) VALUES(?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET reset_at=excluded.reset_at",
+            (guild_id,user_id,reset_at),
+        ); self.conn.commit()
+
+    def count_recent_escalation_warnings(self, guild_id: int, user_id: int, since: int) -> int:
+        reset=max(int(since), self.get_escalation_reset(guild_id,user_id))
+        a=self.conn.execute("SELECT COUNT(*) FROM warns WHERE guild_id=? AND user_id=? AND created_at>=?",(guild_id,user_id,reset)).fetchone()[0]
+        b=self.conn.execute("SELECT COUNT(*) FROM automod_violations WHERE guild_id=? AND user_id=? AND created_at>=?",(guild_id,user_id,reset)).fetchone()[0]
+        return int(a+b)
+
+    def get_votekick_config(self, guild_id: int) -> dict:
+        row=self.conn.execute("SELECT enabled,required_votes,duration_seconds FROM votekick_config WHERE guild_id=?",(guild_id,)).fetchone()
+        if row is None:
+            self.conn.execute("INSERT INTO votekick_config(guild_id) VALUES(?)",(guild_id,)); self.conn.commit(); row=(0,5,600)
+        return {"enabled":bool(row[0]),"required_votes":int(row[1]),"duration_seconds":int(row[2])}
+
+    def set_votekick_config(self,guild_id:int,enabled:bool,required_votes:int|None=None,duration_seconds:int|None=None)->None:
+        cfg=self.get_votekick_config(guild_id)
+        rv=cfg["required_votes"] if required_votes is None else max(1,min(int(required_votes),100))
+        ds=cfg["duration_seconds"] if duration_seconds is None else max(30,min(int(duration_seconds),86400))
+        self.conn.execute("INSERT INTO votekick_config(guild_id,enabled,required_votes,duration_seconds) VALUES(?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET enabled=excluded.enabled,required_votes=excluded.required_votes,duration_seconds=excluded.duration_seconds",(guild_id,int(enabled),rv,ds)); self.conn.commit()
+
+    def create_votekick(self,guild_id:int,channel_id:int,initiator_id:int,target_id:int,reason:str,created_at:int,expires_at:int)->int|None:
+        active=self.conn.execute("SELECT id FROM votekicks WHERE guild_id=? AND target_id=? AND status='open'",(guild_id,target_id)).fetchone()
+        if active: return None
+        cur=self.conn.execute("INSERT INTO votekicks(guild_id,channel_id,initiator_id,target_id,reason,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",(guild_id,channel_id,initiator_id,target_id,reason,created_at,expires_at)); self.conn.commit(); return int(cur.lastrowid)
+
+    def set_votekick_message_id(self,vote_id:int,message_id:int)->None:
+        self.conn.execute("UPDATE votekicks SET message_id=? WHERE id=?",(message_id,vote_id)); self.conn.commit()
+
+    def get_votekick(self,vote_id:int)->dict|None:
+        row=self.conn.execute("SELECT id,guild_id,channel_id,message_id,initiator_id,target_id,reason,created_at,expires_at,status,result,resolved_at FROM votekicks WHERE id=?",(vote_id,)).fetchone()
+        if not row:return None
+        keys=('id','guild_id','channel_id','message_id','initiator_id','target_id','reason','created_at','expires_at','status','result','resolved_at')
+        return dict(zip(keys,row))
+
+    def list_open_votekicks(self, guild_id:int|None=None):
+        if guild_id is None:
+            rows=self.conn.execute("SELECT id,guild_id,channel_id,message_id,initiator_id,target_id,reason,created_at,expires_at,status,result,resolved_at FROM votekicks WHERE status='open' ORDER BY id").fetchall()
+        else:
+            rows=self.conn.execute("SELECT id,guild_id,channel_id,message_id,initiator_id,target_id,reason,created_at,expires_at,status,result,resolved_at FROM votekicks WHERE guild_id=? AND status='open' ORDER BY id",(guild_id,)).fetchall()
+        keys=('id','guild_id','channel_id','message_id','initiator_id','target_id','reason','created_at','expires_at','status','result','resolved_at')
+        return [dict(zip(keys,r)) for r in rows]
+
+    def cast_votekick_vote(self,vote_id:int,user_id:int,vote:str)->tuple[bool,int,int]:
+        if vote not in ('yes','no'): return False,0,0
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row=self.conn.execute("SELECT status FROM votekicks WHERE id=?",(vote_id,)).fetchone()
+            if not row or row[0] != 'open': self.conn.rollback(); return False,0,0
+            self.conn.execute("INSERT INTO votekick_votes(votekick_id,user_id,vote,created_at) VALUES(?,?,?,?) ON CONFLICT(votekick_id,user_id) DO UPDATE SET vote=excluded.vote,created_at=excluded.created_at",(vote_id,user_id,vote,int(time.time())))
+            yes=self.conn.execute("SELECT COUNT(*) FROM votekick_votes WHERE votekick_id=? AND vote='yes'",(vote_id,)).fetchone()[0]
+            no=self.conn.execute("SELECT COUNT(*) FROM votekick_votes WHERE votekick_id=? AND vote='no'",(vote_id,)).fetchone()[0]
+            self.conn.commit(); return True,int(yes),int(no)
+        except Exception:
+            self.conn.rollback(); raise
+
+    def count_votekick_votes(self, vote_id: int, vote: str) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM votekick_votes WHERE votekick_id=? AND vote=?", (vote_id, vote)).fetchone()[0])
+
+    def close_votekick(self,vote_id:int,result:str)->bool:
+        cur=self.conn.execute("UPDATE votekicks SET status='closed',result=?,resolved_at=? WHERE id=? AND status='open'",(result,int(time.time()),vote_id)); self.conn.commit(); return cur.rowcount>0
 
     def set_automod_fuzzy_words(self, guild_id: int, enabled: bool) -> None:
         """Toggles the 'alike words' fuzzy filter - see
@@ -3621,19 +4329,21 @@ class Db:
         for role in roles:
             if getattr(role, "is_default", lambda: False)():
                 continue
+            perms = getattr(getattr(role, "permissions", None), "value", 0)
             self.conn.execute(
-                "INSERT INTO bot_roles (guild_id, role_id, name, position) VALUES (?, ?, ?, ?)",
-                (guild_id, int(role.id), role.name, int(getattr(role, "position", 0))),
+                "INSERT INTO bot_roles (guild_id, role_id, name, position, permissions, managed) VALUES (?, ?, ?, ?, ?, ?)",
+                (guild_id, int(role.id), role.name, int(getattr(role, "position", 0)), int(perms), int(getattr(role, "managed", False))),
             )
         self.conn.commit()
 
-    def upsert_bot_role(self, guild_id: int, role_id: int, name: str, position: int = 0) -> None:
+    def upsert_bot_role(self, guild_id: int, role_id: int, name: str, position: int = 0, permissions: int = 0, managed: bool = False) -> None:
         if role_id == guild_id:
             return
         self.conn.execute(
-            "INSERT INTO bot_roles (guild_id, role_id, name, position) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(guild_id, role_id) DO UPDATE SET name=excluded.name, position=excluded.position",
-            (guild_id, role_id, name, position),
+            "INSERT INTO bot_roles (guild_id, role_id, name, position, permissions, managed) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, role_id) DO UPDATE SET name=excluded.name, position=excluded.position, "
+            "permissions=excluded.permissions, managed=excluded.managed",
+            (guild_id, role_id, name, position, permissions, int(managed)),
         )
         self.conn.commit()
 
@@ -3643,6 +4353,35 @@ class Db:
 
     def list_bot_roles(self, guild_id: int) -> list[tuple[int, str, int]]:
         return self.conn.execute("SELECT role_id, name, position FROM bot_roles WHERE guild_id = ? ORDER BY position DESC", (guild_id,)).fetchall()
+
+    def list_bot_roles_full(self, guild_id: int) -> list[tuple[int, str, int, int, bool]]:
+        """Same roles as list_bot_roles, but with permissions/managed too -
+        kept as a separate method (rather than changing list_bot_roles'
+        return shape) since that one's 3-tuple is unpacked directly in a
+        dozen+ WebUI templates for role dropdowns; this one exists
+        specifically for the security scanner."""
+        cur = self.conn.execute(
+            "SELECT role_id, name, position, permissions, managed FROM bot_roles WHERE guild_id = ? ORDER BY position DESC",
+            (guild_id,),
+        )
+        return [(rid, name, pos, perms, bool(managed)) for rid, name, pos, perms, managed in cur.fetchall()]
+
+    def set_everyone_permissions(self, guild_id: int, permissions: int) -> None:
+        """@everyone is deliberately excluded from bot_roles (it's not a
+        real assignable/orderable role, and every role dropdown in the
+        WebUI reads from that table) - this stores just its permission
+        bitfield for the security scanner, which does need to know about
+        it."""
+        self.conn.execute(
+            "INSERT INTO bot_guilds (guild_id, name, everyone_permissions) VALUES (?, '', ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET everyone_permissions = excluded.everyone_permissions",
+            (guild_id, permissions),
+        )
+        self.conn.commit()
+
+    def get_everyone_permissions(self, guild_id: int) -> int:
+        row = self.conn.execute("SELECT everyone_permissions FROM bot_guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+        return row[0] if row else 0
 
     def get_role_name(self, guild_id: int, role_id: Optional[int]) -> Optional[str]:
         if role_id is None:
@@ -3803,3 +4542,377 @@ class Db:
     def get_guild_name(self, guild_id: int) -> Optional[str]:
         row = self.conn.execute("SELECT name FROM bot_guilds WHERE guild_id = ?", (guild_id,)).fetchone()
         return row[0] if row else None
+
+    # ---- antinuke ----
+
+    _ANTINUKE_COLUMNS = (
+        "guild_id", "enabled", "auto_recovery", "default_punishment",
+        "log_channel_id", "threshold", "window_seconds", "watched_actions",
+    )
+
+    def get_antinuke_config(self, guild_id: int) -> dict:
+        cols = ", ".join(self._ANTINUKE_COLUMNS)
+        row = self.conn.execute(
+            f"SELECT {cols} FROM antinuke_config WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+
+        if row is None:
+            # insert a default row so future updates have something to
+            # UPDATE against, then re-read it - same pattern as automod_config.
+            self.conn.execute("INSERT INTO antinuke_config (guild_id) VALUES (?)", (guild_id,))
+            self.conn.commit()
+            row = self.conn.execute(
+                f"SELECT {cols} FROM antinuke_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+        result = dict(zip(self._ANTINUKE_COLUMNS, row))
+        result["enabled"] = bool(result["enabled"])
+        result["auto_recovery"] = bool(result["auto_recovery"])
+        result["watched_actions"] = [a for a in result["watched_actions"].split(",") if a.strip()]
+        return result
+
+    def set_antinuke_enabled(self, guild_id: int, enabled: bool) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET enabled = ? WHERE guild_id = ?", (int(enabled), guild_id)
+        )
+        self.conn.commit()
+
+    def set_antinuke_auto_recovery(self, guild_id: int, enabled: bool) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET auto_recovery = ? WHERE guild_id = ?", (int(enabled), guild_id)
+        )
+        self.conn.commit()
+
+    def set_antinuke_punishment(self, guild_id: int, punishment: str) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET default_punishment = ? WHERE guild_id = ?", (punishment, guild_id)
+        )
+        self.conn.commit()
+
+    def set_antinuke_log_channel(self, guild_id: int, channel_id: Optional[int]) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET log_channel_id = ? WHERE guild_id = ?", (channel_id, guild_id)
+        )
+        self.conn.commit()
+
+    def set_antinuke_threshold(self, guild_id: int, threshold: int, window_seconds: int) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET threshold = ?, window_seconds = ? WHERE guild_id = ?",
+            (threshold, window_seconds, guild_id),
+        )
+        self.conn.commit()
+
+    def set_antinuke_watched_actions(self, guild_id: int, actions: list[str]) -> None:
+        self.get_antinuke_config(guild_id)
+        self.conn.execute(
+            "UPDATE antinuke_config SET watched_actions = ? WHERE guild_id = ?",
+            (",".join(a.strip() for a in actions if a.strip()), guild_id),
+        )
+        self.conn.commit()
+
+    def list_antinuke_whitelist(self, guild_id: int) -> list[int]:
+        cur = self.conn.execute(
+            "SELECT user_id FROM antinuke_whitelist WHERE guild_id = ?", (guild_id,)
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def add_antinuke_whitelist(self, guild_id: int, user_id: int, added_by: int) -> None:
+        self.conn.execute(
+            """INSERT OR IGNORE INTO antinuke_whitelist (guild_id, user_id, added_by, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (guild_id, user_id, added_by, int(time.time())),
+        )
+        self.conn.commit()
+
+    def remove_antinuke_whitelist(self, guild_id: int, user_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM antinuke_whitelist WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        )
+        self.conn.commit()
+
+    def record_antinuke_incident(
+        self, guild_id: int, user_id: int, trigger_action: str, punishment: str, hit_count: int
+    ) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO antinuke_incidents (guild_id, user_id, trigger_action, punishment, hit_count, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, user_id, trigger_action, punishment, hit_count, int(time.time())),
+        )
+        self.conn.commit()
+        logger.info(
+            "antinuke incident: guild=%s user=%s action=%s punishment=%s hits=%s",
+            guild_id, user_id, trigger_action, punishment, hit_count,
+        )
+        return cur.lastrowid
+
+    def list_antinuke_incidents(self, guild_id: int, limit: int = 50) -> list:
+        cur = self.conn.execute(
+            """SELECT id, user_id, trigger_action, punishment, hit_count, created_at
+               FROM antinuke_incidents WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    # ---- raid detection ----
+
+    _RAID_COLUMNS = (
+        "guild_id", "enabled", "join_threshold", "window_seconds",
+        "action", "new_account_hours", "cooldown_seconds", "log_channel_id",
+    )
+
+    def get_raid_config(self, guild_id: int) -> dict:
+        cols = ", ".join(self._RAID_COLUMNS)
+        row = self.conn.execute(f"SELECT {cols} FROM raid_config WHERE guild_id = ?", (guild_id,)).fetchone()
+        if row is None:
+            self.conn.execute("INSERT INTO raid_config (guild_id) VALUES (?)", (guild_id,))
+            self.conn.commit()
+            row = self.conn.execute(f"SELECT {cols} FROM raid_config WHERE guild_id = ?", (guild_id,)).fetchone()
+        result = dict(zip(self._RAID_COLUMNS, row))
+        result["enabled"] = bool(result["enabled"])
+        return result
+
+    def set_raid_config(
+        self, guild_id: int, *, enabled: bool, join_threshold: int, window_seconds: int,
+        action: str, new_account_hours: int, cooldown_seconds: int, log_channel_id: Optional[int],
+    ) -> None:
+        self.get_raid_config(guild_id)
+        self.conn.execute(
+            """UPDATE raid_config SET enabled=?, join_threshold=?, window_seconds=?, action=?,
+               new_account_hours=?, cooldown_seconds=?, log_channel_id=? WHERE guild_id=?""",
+            (int(enabled), join_threshold, window_seconds, action, new_account_hours, cooldown_seconds, log_channel_id, guild_id),
+        )
+        self.conn.commit()
+
+    def record_raid_incident(self, guild_id: int, join_count: int, window_seconds: int, action_taken: str, kicked_count: int = 0) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO raid_incidents (guild_id, join_count, window_seconds, action_taken, kicked_count, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, join_count, window_seconds, action_taken, kicked_count, int(time.time())),
+        )
+        self.conn.commit()
+        logger.info("raid incident: guild=%s joins=%s/%ss action=%s kicked=%s", guild_id, join_count, window_seconds, action_taken, kicked_count)
+        return cur.lastrowid
+
+    def list_raid_incidents(self, guild_id: int, limit: int = 50) -> list:
+        cur = self.conn.execute(
+            """SELECT id, join_count, window_seconds, action_taken, kicked_count, created_at
+               FROM raid_incidents WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    # ---- invite tracking ----
+
+    def record_invite_join(self, guild_id: int, user_id: int, inviter_id: Optional[int], invite_code: Optional[str], created_at: Optional[int] = None) -> int:
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        cur = self.conn.execute(
+            "INSERT INTO invite_joins (guild_id, user_id, inviter_id, invite_code, created_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, user_id, inviter_id, invite_code, created_at),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def count_invites_for_user(self, guild_id: int, inviter_id: int) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM invite_joins WHERE guild_id = ? AND inviter_id = ?", (guild_id, inviter_id)
+        ).fetchone()[0]
+
+    def list_invite_leaderboard(self, guild_id: int, limit: int = 10) -> list[tuple[int, int]]:
+        cur = self.conn.execute(
+            """SELECT inviter_id, COUNT(*) as c FROM invite_joins
+               WHERE guild_id = ? AND inviter_id IS NOT NULL
+               GROUP BY inviter_id ORDER BY c DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    def list_recent_invite_joins(self, guild_id: int, limit: int = 50) -> list[tuple[int, Optional[int], Optional[str], int]]:
+        cur = self.conn.execute(
+            """SELECT user_id, inviter_id, invite_code, created_at FROM invite_joins
+               WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    def count_quick_leaves(self, guild_id: int, within_hours: int = 24) -> int:
+        """How many invited members left within `within_hours` of joining -
+        a rough "fake/low-quality invite" signal (someone joining and
+        immediately leaving, common with giveaway-hunting or invite-reward
+        farming)."""
+        return self.conn.execute(
+            """SELECT COUNT(*) FROM invite_joins ij
+               JOIN bot_events be ON be.guild_id = ij.guild_id AND be.target_id = ij.user_id
+                   AND be.event_type = 'member.leave' AND be.created_at BETWEEN ij.created_at AND ij.created_at + ?
+               WHERE ij.guild_id = ?""",
+            (within_hours * 3600, guild_id),
+        ).fetchone()[0]
+
+    def set_invite_milestone(self, guild_id: int, invite_count: int, role_id: int) -> None:
+        self.conn.execute(
+            "INSERT INTO invite_milestones (guild_id, invite_count, role_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(guild_id, invite_count) DO UPDATE SET role_id = excluded.role_id",
+            (guild_id, invite_count, role_id),
+        )
+        self.conn.commit()
+
+    def remove_invite_milestone(self, guild_id: int, invite_count: int) -> None:
+        self.conn.execute(
+            "DELETE FROM invite_milestones WHERE guild_id = ? AND invite_count = ?", (guild_id, invite_count)
+        )
+        self.conn.commit()
+
+    def list_invite_milestones(self, guild_id: int) -> list[tuple[int, int]]:
+        cur = self.conn.execute(
+            "SELECT invite_count, role_id FROM invite_milestones WHERE guild_id = ? ORDER BY invite_count ASC",
+            (guild_id,),
+        )
+        return cur.fetchall()
+
+
+    # ---- AI integrations ----
+    def get_ai_config(self, guild_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT enabled, provider, base_url, api_key, model, system_prompt, max_tokens, temperature, "
+            "use_channel_context, context_message_limit, index_channels, index_message_limit FROM ai_config WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+        if row is None:
+            return {
+                "enabled": False,
+                "provider": "openai_compatible",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "",
+                "model": "gpt-4o-mini",
+                "system_prompt": "You are ReedMuhn, a helpful Discord assistant. Be concise and follow the server context when provided.",
+                "max_tokens": 800,
+                "temperature": 0.7,
+                "use_channel_context": False,
+                "context_message_limit": 10,
+                "index_channels": False,
+                "index_message_limit": 500,
+            }
+        return {
+            "enabled": bool(row[0]), "provider": row[1], "base_url": row[2],
+            "api_key": row[3], "model": row[4], "system_prompt": row[5],
+            "max_tokens": int(row[6]), "temperature": float(row[7]),
+            "use_channel_context": bool(row[8]), "context_message_limit": int(row[9]),
+            "index_channels": bool(row[10]), "index_message_limit": int(row[11]),
+        }
+
+    def set_ai_config(self, guild_id: int, *, enabled: bool, provider: str, base_url: str,
+                      api_key: str, model: str, system_prompt: str, max_tokens: int,
+                      temperature: float, use_channel_context: bool = False,
+                      context_message_limit: int = 10, index_channels: bool = False,
+                      index_message_limit: int = 500) -> None:
+        self.conn.execute(
+            """INSERT INTO ai_config (guild_id, enabled, provider, base_url, api_key, model, system_prompt, max_tokens, temperature, use_channel_context, context_message_limit, index_channels, index_message_limit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET enabled=excluded.enabled, provider=excluded.provider,
+                 base_url=excluded.base_url, api_key=excluded.api_key, model=excluded.model,
+                 system_prompt=excluded.system_prompt, max_tokens=excluded.max_tokens, temperature=excluded.temperature,
+                 use_channel_context=excluded.use_channel_context, context_message_limit=excluded.context_message_limit,
+                 index_channels=excluded.index_channels, index_message_limit=excluded.index_message_limit""",
+            (guild_id, int(enabled), provider, base_url, api_key, model, system_prompt, max_tokens, temperature,
+             int(use_channel_context), context_message_limit, int(index_channels), index_message_limit),
+        )
+        self.conn.commit()
+
+    def ai_index_message(self, guild_id: int, channel_id: int, message_id: int, author_id: int, author_name: str, content: str, created_at: int, keep_per_channel: int = 500) -> None:
+        content = (content or "").strip()[:2000]
+        if not content:
+            return
+        self.conn.execute(
+            """INSERT INTO ai_channel_messages(guild_id,channel_id,message_id,author_id,author_name,content,created_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(guild_id,message_id) DO UPDATE SET content=excluded.content, author_name=excluded.author_name, created_at=excluded.created_at""",
+            (guild_id, channel_id, message_id, author_id, author_name[:100], content, int(created_at)),
+        )
+        self.conn.execute(
+            """DELETE FROM ai_channel_messages WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY guild_id, channel_id ORDER BY created_at DESC, id DESC) rn
+                    FROM ai_channel_messages WHERE guild_id=? AND channel_id=?
+                ) WHERE rn > ?
+            )""", (guild_id, channel_id, max(50, min(int(keep_per_channel), 5000)))
+        )
+        self.conn.commit()
+
+    def ai_search_messages(self, guild_id: int, query: str, limit: int = 12) -> list[dict]:
+        terms = [t.lower() for t in __import__('re').findall(r"[\w'-]{3,}", query or "")][:8]
+        if not terms:
+            rows = self.conn.execute(
+                "SELECT channel_id, author_name, content, created_at FROM ai_channel_messages WHERE guild_id=? ORDER BY created_at DESC LIMIT ?",
+                (guild_id, max(1, min(int(limit), 30))),
+            ).fetchall()
+        else:
+            clauses=[]; params=[guild_id]
+            for term in terms:
+                clauses.append("LOWER(content) LIKE ?")
+                params.append(f"%{term}%")
+            rows = self.conn.execute(
+                "SELECT channel_id, author_name, content, created_at FROM ai_channel_messages WHERE guild_id=? AND (" + " OR ".join(clauses) + ") ORDER BY created_at DESC LIMIT ?",
+                (*params, max(1, min(int(limit), 30))),
+            ).fetchall()
+        return [{"channel_id": r[0], "author_name": r[1], "content": r[2], "created_at": r[3]} for r in rows]
+
+    def ai_indexed_count(self, guild_id: int) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM ai_channel_messages WHERE guild_id=?", (guild_id,)).fetchone()[0])
+
+    def clear_ai_index(self, guild_id: int) -> int:
+        cur = self.conn.execute("DELETE FROM ai_channel_messages WHERE guild_id=?", (guild_id,))
+        self.conn.commit()
+        return int(cur.rowcount)
+
+    # ---- per-command toggles ----
+    def is_command_enabled(self, guild_id: int, command_name: str) -> bool:
+        row = self.conn.execute("SELECT enabled FROM command_toggles WHERE guild_id=? AND command_name=?", (guild_id, command_name)).fetchone()
+        return True if row is None else bool(row[0])
+
+    def set_command_enabled(self, guild_id: int, command_name: str, enabled: bool) -> None:
+        self.conn.execute("INSERT INTO command_toggles(guild_id, command_name, enabled) VALUES(?,?,?) ON CONFLICT(guild_id, command_name) DO UPDATE SET enabled=excluded.enabled", (guild_id, command_name, int(enabled)))
+        self.conn.commit()
+
+    def get_disabled_commands(self, guild_id: int) -> set[str]:
+        cur=self.conn.execute("SELECT command_name FROM command_toggles WHERE guild_id=? AND enabled=0", (guild_id,))
+        return {r[0] for r in cur.fetchall()}
+
+    # ---- starboard ----
+    def get_starboard_config(self, guild_id: int) -> tuple:
+        row=self.conn.execute("SELECT channel_id, threshold, enabled FROM starboard_config WHERE guild_id=?", (guild_id,)).fetchone()
+        return row if row else (None,5,0)
+
+    def set_starboard_config(self, guild_id:int, channel_id, threshold:int, enabled:bool):
+        self.conn.execute("INSERT INTO starboard_config(guild_id,channel_id,threshold,enabled) VALUES(?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, threshold=excluded.threshold, enabled=excluded.enabled", (guild_id,channel_id,threshold,int(enabled))); self.conn.commit()
+
+    def get_starboard_message(self,guild_id:int,source_message_id:int):
+        return self.conn.execute("SELECT starboard_message_id, channel_id, star_count FROM starboard_messages WHERE guild_id=? AND source_message_id=?",(guild_id,source_message_id)).fetchone()
+
+    def upsert_starboard_message(self,guild_id:int,source_message_id:int,starboard_message_id:int,channel_id:int,star_count:int):
+        self.conn.execute("INSERT INTO starboard_messages(guild_id,source_message_id,starboard_message_id,channel_id,star_count) VALUES(?,?,?,?,?) ON CONFLICT(guild_id,source_message_id) DO UPDATE SET starboard_message_id=excluded.starboard_message_id,channel_id=excluded.channel_id,star_count=excluded.star_count",(guild_id,source_message_id,starboard_message_id,channel_id,star_count)); self.conn.commit()
+
+    def delete_starboard_message(self,guild_id:int,source_message_id:int):
+        self.conn.execute("DELETE FROM starboard_messages WHERE guild_id=? AND source_message_id=?",(guild_id,source_message_id)); self.conn.commit()
+
+    # ---- suggestions ----
+    def get_suggestion_config(self,guild_id:int)->tuple:
+        row=self.conn.execute("SELECT channel_id,enabled,staff_role_id FROM suggestion_config WHERE guild_id=?",(guild_id,)).fetchone(); return row if row else (None,0,None)
+
+    def set_suggestion_config(self,guild_id:int,channel_id,enabled:bool,staff_role_id):
+        self.conn.execute("INSERT INTO suggestion_config(guild_id,channel_id,enabled,staff_role_id) VALUES(?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,enabled=excluded.enabled,staff_role_id=excluded.staff_role_id",(guild_id,channel_id,int(enabled),staff_role_id)); self.conn.commit()
+
+    def create_suggestion(self,guild_id:int,message_id:int,author_id:int,content:str)->int:
+        now=int(time.time()); cur=self.conn.execute("INSERT INTO suggestions(guild_id,message_id,author_id,content,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(guild_id,message_id,author_id,content,'pending',now,now)); self.conn.commit(); return cur.lastrowid
+
+    def get_suggestion(self,suggestion_id:int):
+        return self.conn.execute("SELECT id,guild_id,message_id,author_id,content,status,staff_id,staff_reason,created_at,updated_at FROM suggestions WHERE id=?",(suggestion_id,)).fetchone()
+
+    def list_suggestions(self,guild_id:int,limit:int=50):
+        return self.conn.execute("SELECT id,message_id,author_id,content,status,staff_id,staff_reason,created_at,updated_at FROM suggestions WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit)).fetchall()
+
+    def set_suggestion_status(self,suggestion_id:int,status:str,staff_id:int,reason:str=''):
+        self.conn.execute("UPDATE suggestions SET status=?,staff_id=?,staff_reason=?,updated_at=? WHERE id=?",(status,staff_id,reason,int(time.time()),suggestion_id)); self.conn.commit()

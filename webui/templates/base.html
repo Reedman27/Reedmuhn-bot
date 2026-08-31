@@ -6,40 +6,32 @@
     <title>{% block title %}Reedmuhn Bot{% endblock %}</title>
     <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css">
+    <script defer src="/static/sidebar.js"></script>
 </head>
 <body class="app">
     <aside class="sidebar">
         <div class="brand">🤖 Reedmuhn Bot</div>
         {% if guild_id %}
         <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
-        <nav>
-            <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a>
-            <a href="/guild/{{ guild_id }}/search" class="{{ 'active' if active == 'search' else '' }}">🔎 Search</a>
-            <a href="/guild/{{ guild_id }}/analytics" class="{{ 'active' if active == 'analytics' else '' }}">📈 Analytics</a>
-            <a href="/guild/{{ guild_id }}/moderation" class="{{ 'active' if active == 'moderation' else '' }}">🛡️ Moderation</a>
-            <a href="/guild/{{ guild_id }}/rules" class="{{ 'active' if active == 'rules' else '' }}">📜 Rules</a>
-            <a href="/guild/{{ guild_id }}/reports" class="{{ 'active' if active == 'reports' else '' }}">🚩 Reports</a>
-            <a href="/guild/{{ guild_id }}/staffstats" class="{{ 'active' if active == 'staffstats' else '' }}">📋 Staff Activity</a>
-            <a href="/guild/{{ guild_id }}/welcome" class="{{ 'active' if active == 'welcome' else '' }}">👋 Welcome & Roles</a>
-            <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a>
-            <a href="/guild/{{ guild_id }}/birthdays" class="{{ 'active' if active == 'birthdays' else '' }}">🎂 Birthdays</a>
-            <a href="/guild/{{ guild_id }}/counting" class="{{ 'active' if active == 'counting' else '' }}">🔢 Counting</a>
-            <a href="/guild/{{ guild_id }}/youtube" class="{{ 'active' if active == 'youtube' else '' }}">📺 YouTube</a>
-            <a href="/guild/{{ guild_id }}/automod" class="{{ 'active' if active == 'automod' else '' }}">🚨 Automod</a>
-            <a href="/guild/{{ guild_id }}/moderationqueue" class="{{ 'active' if active == 'moderationqueue' else '' }}">⏳ Moderation Queue</a>
-            <a href="/guild/{{ guild_id }}/logging" class="{{ 'active' if active == 'logging' else '' }}">📋 Logging</a>
-            <a href="/guild/{{ guild_id }}/feed" class="{{ 'active' if active == 'feed' else '' }}">👀 Channel Feed</a>
-            <a href="/guild/{{ guild_id }}/tempvoice" class="{{ 'active' if active == 'tempvoice' else '' }}">🎙️ Temp Voice</a>
-            <a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a>
-            <a href="/guild/{{ guild_id }}/reactionroles" class="{{ 'active' if active == 'reactionroles' else '' }}">🎭 Reaction Roles</a>
-            <a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a>
-            <a href="/guild/{{ guild_id }}/stickyroles" class="{{ 'active' if active == 'stickyroles' else '' }}">🧷 Sticky Roles</a>
-            <a href="/guild/{{ guild_id }}/verification" class="{{ 'active' if active == 'verification' else '' }}">✅ Verification</a>
-            <a href="/guild/{{ guild_id }}/tickets" class="{{ 'active' if active == 'tickets' else '' }}">🎫 Tickets</a>
-            <a href="/guild/{{ guild_id }}/polls" class="{{ 'active' if active == 'polls' else '' }}">📊 Polls</a>
-            <a href="/guild/{{ guild_id }}/permissions" class="{{ 'active' if active == 'permissions' else '' }}">🔐 Permissions</a>
-            <a href="/guild/{{ guild_id }}/emergency" class="{{ 'active' if active == 'emergency' else '' }}">🆘 Emergency</a>
-            <a href="/guild/{{ guild_id }}/snapshots" class="{{ 'active' if active == 'snapshots' else '' }}">📸 Snapshots</a>
+        <nav class="sidebar-nav" id="sidebar-nav">
+            <section class="nav-group" data-group="general"><button class="nav-group-title" type="button" aria-expanded="true">General <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a><a href="/guild/{{ guild_id }}/search" class="{{ 'active' if active == 'search' else '' }}">🔎 Search</a>
+            </div></section>
+            <section class="nav-group" data-group="statistics"><button class="nav-group-title" type="button" aria-expanded="true">Statistics <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/analytics" class="{{ 'active' if active == 'analytics' else '' }}">📈 Analytics</a><a href="/guild/{{ guild_id }}/staffstats" class="{{ 'active' if active == 'staffstats' else '' }}">📋 Staff Activity</a><a href="/guild/{{ guild_id }}/invites" class="{{ 'active' if active == 'invites' else '' }}">🔗 Invites</a><a href="/guild/{{ guild_id }}/snapshots" class="{{ 'active' if active == 'snapshots' else '' }}">📸 Snapshots</a>
+            </div></section>
+            <section class="nav-group" data-group="moderation"><button class="nav-group-title" type="button" aria-expanded="true">Moderation <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/moderation" class="{{ 'active' if active == 'moderation' else '' }}">🛡️ Moderation</a><a href="/guild/{{ guild_id }}/automod" class="{{ 'active' if active == 'automod' else '' }}">🚨 AutoMod</a><a href="/guild/{{ guild_id }}/moderationqueue" class="{{ 'active' if active == 'moderationqueue' else '' }}">⏳ Moderation Queue</a><a href="/guild/{{ guild_id }}/reports" class="{{ 'active' if active == 'reports' else '' }}">🚩 Reports</a><a href="/guild/{{ guild_id }}/rules" class="{{ 'active' if active == 'rules' else '' }}">📜 Rules</a><a href="/guild/{{ guild_id }}/verification" class="{{ 'active' if active == 'verification' else '' }}">✅ Verification</a><a href="/guild/{{ guild_id }}/emergency" class="{{ 'active' if active == 'emergency' else '' }}">🆘 Emergency</a><a href="/guild/{{ guild_id }}/antinuke" class="{{ 'active' if active == 'antinuke' else '' }}">🧨 Anti-Nuke</a><a href="/guild/{{ guild_id }}/raid" class="{{ 'active' if active == 'raid' else '' }}">🚨 Raid Detection</a>
+            </div></section>
+            <section class="nav-group" data-group="community"><button class="nav-group-title" type="button" aria-expanded="true">Fun & Community <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/fun-commands" class="{{ 'active' if active == 'funcommands' else '' }}">🎮 Fun Commands</a><a href="/guild/{{ guild_id }}/starboard" class="{{ 'active' if active == 'starboard' else '' }}">⭐ Starboard</a><a href="/guild/{{ guild_id }}/suggestions" class="{{ 'active' if active == 'suggestions' else '' }}">💡 Suggestions</a><a href="/guild/{{ guild_id }}/welcome" class="{{ 'active' if active == 'welcome' else '' }}">👋 Welcome & Roles</a><a href="/guild/{{ guild_id }}/birthdays" class="{{ 'active' if active == 'birthdays' else '' }}">🎂 Birthdays</a><a href="/guild/{{ guild_id }}/counting" class="{{ 'active' if active == 'counting' else '' }}">🔢 Counting</a><a href="/guild/{{ guild_id }}/reactionroles" class="{{ 'active' if active == 'reactionroles' else '' }}">🎭 Reaction Roles</a><a href="/guild/{{ guild_id }}/stickyroles" class="{{ 'active' if active == 'stickyroles' else '' }}">🧷 Sticky Roles</a><a href="/guild/{{ guild_id }}/polls" class="{{ 'active' if active == 'polls' else '' }}">📊 Polls</a>
+            </div></section>
+            <section class="nav-group" data-group="utility"><button class="nav-group-title" type="button" aria-expanded="true">Utility <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a><a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a><a href="/guild/{{ guild_id }}/tickets" class="{{ 'active' if active == 'tickets' else '' }}">🎫 Tickets</a><a href="/guild/{{ guild_id }}/modmail" class="{{ 'active' if active == 'modmail' else '' }}">📬 Modmail</a><a href="/guild/{{ guild_id }}/tempvoice" class="{{ 'active' if active == 'tempvoice' else '' }}">🎙️ Temp Voice</a><a href="/guild/{{ guild_id }}/youtube" class="{{ 'active' if active == 'youtube' else '' }}">📺 YouTube</a><a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a><a href="/guild/{{ guild_id }}/ai" class="{{ 'active' if active == 'ai' else '' }}">🤖 AI</a>
+            </div></section>
+            <section class="nav-group" data-group="logs"><button class="nav-group-title" type="button" aria-expanded="true">Logs & Data <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/logging" class="{{ 'active' if active == 'logging' else '' }}">📋 Logging</a><a href="/guild/{{ guild_id }}/feed" class="{{ 'active' if active == 'feed' else '' }}">👀 Channel Feed</a><a href="/guild/{{ guild_id }}/permissions" class="{{ 'active' if active == 'permissions' else '' }}">🔐 Permissions</a>
+            </div></section>
         </nav>
         {% else %}
         <nav class="nav-spacer"></nav>

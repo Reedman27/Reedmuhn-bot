@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Modmail · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>📬 Modmail</h1>
+<p class="muted">Members DM the bot directly instead of using the Tickets panel - the bot opens a private channel here for staff, relays their message in, and forwards staff replies back as DMs.</p>
+
+<section class="card">
+    <h2>Settings</h2>
+    {% if request.query_params.get("saved") %}<p class="success">Saved.</p>{% endif %}
+    <form method="post" action="/guild/{{ guild_id }}/modmail/config" class="stack-form">
+        <label><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}> Enable modmail</label>
+        <label>Thread category<select name="category_id"><option value="">Not set</option>{% for id,name,ctype,pos in categories %}<option value="{{ id }}" {% if id==cfg.category_id %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+        <p class="hint">New modmail channels inherit whatever permissions are set on this category - make sure it's staff-only in Discord's own channel settings, the same way the Tickets category should be.</p>
+        <label>Log channel (optional)<select name="log_channel_id"><option value="">Off</option>{% for id,name,ctype,pos in channels %}<option value="{{ id }}" {% if id==cfg.log_channel_id %}selected{% endif %}>#{{ name }}</option>{% endfor %}</select></label>
+        <label><input type="checkbox" name="anonymous_staff" {% if cfg.anonymous_staff %}checked{% endif %}> Anonymous staff replies (member sees "Staff" instead of who replied)</label>
+        <button type="submit">Save</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Threads</h2>
+    {% if threads %}
+    <table><thead><tr><th>Channel</th><th>Member</th><th>Status</th><th>Opened</th><th>Closed</th></tr></thead><tbody>
+        {% for t in threads %}
+        <tr><td>{{ t.channel_label }}</td><td>{{ t.user_name }}</td><td>{{ t.status }}</td><td>{{ t.created_at }}</td><td>{{ t.closed_at or '-' }}{% if t.closed_by %} by {{ t.closed_by }}{% endif %}</td></tr>
+        {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No modmail threads yet.</p>{% endif %}
+</section>
+
+<section class="card">
+    <h2>Blocked members</h2>
+    <p class="hint">Blocked with <code>/modmail block</code> in Discord - manage the list here.</p>
+    {% if blocked %}
+    <table><thead><tr><th>Member</th><th>Blocked by</th><th>When</th><th></th></tr></thead><tbody>
+        {% for b in blocked %}
+        <tr>
+            <td>{{ b.user_name }}</td><td>{{ b.blocked_by }}</td><td>{{ b.date_str }}</td>
+            <td><form method="post" action="/guild/{{ guild_id }}/modmail/unblock" class="inline"><input type="hidden" name="user_id" value="{{ b.user_id }}"><button type="submit">Unblock</button></form></td>
+        </tr>
+        {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">Nobody's blocked.</p>{% endif %}
+</section>
+{% endblock %}

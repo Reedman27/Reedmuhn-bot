@@ -4,7 +4,7 @@
 <h1>Server Rules</h1>
 {% if request.query_params.get("error") == "invalid" %}<p class="error">Enter a rule under 500 characters.</p>{% endif %}
 <section class="card">
-    <p class="hint">Numbered rules a warning can cite (via /warn's optional rule number). Deleting a rule shifts later rules' numbers down by one.</p>
+    <p class="hint">Numbered rules a warning can cite (via /moderation warn's optional rule number). Deleting a rule shifts later rules' numbers down by one.</p>
     {% if rules %}
     <table><thead><tr><th>#</th><th>Rule</th><th></th></tr></thead><tbody>
     {% for rule in rules %}

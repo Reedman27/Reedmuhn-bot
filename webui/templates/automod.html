@@ -35,6 +35,21 @@
         </label>
         <button type="submit">Save</button>
     </form>
+    <hr>
+    <h3>GIF exceptions and blocklist</h3>
+    <p class="hint">The <strong>allowlist</strong> only matters when blanket GIF blocking is enabled. The <strong>blocklist</strong> always wins and blocks a specific GIF even when blanket GIF blocking is off.</p>
+    <form method="post" action="/guild/{{ guild_id }}/automod/gif-allowlist/add" class="add-form">
+        <label for="gif_allow_identifier">Allow exact GIF URL or uploaded filename</label>
+        <input id="gif_allow_identifier" name="identifier" maxlength="500" required placeholder="https://tenor.com/... or reaction.gif">
+        <button type="submit">Allow GIF</button>
+    </form>
+    {% if gif_allowlist %}<table><thead><tr><th>Allowlisted GIF</th><th></th></tr></thead><tbody>{% for identifier, kind in gif_allowlist %}<tr><td><code>{{ identifier }}</code></td><td><form method="post" action="/guild/{{ guild_id }}/automod/gif-allowlist/delete" class="inline"><input type="hidden" name="identifier" value="{{ identifier }}"><button type="submit">Remove</button></form></td></tr>{% endfor %}</tbody></table>{% endif %}
+    <form method="post" action="/guild/{{ guild_id }}/automod/gif-blocklist/add" class="add-form">
+        <label for="gif_block_identifier">Always block exact GIF URL or uploaded filename</label>
+        <input id="gif_block_identifier" name="identifier" maxlength="500" required placeholder="https://tenor.com/... or bad.gif">
+        <button type="submit" class="danger">Block GIF</button>
+    </form>
+    {% if gif_blocklist %}<table><thead><tr><th>Blocked GIF</th><th></th></tr></thead><tbody>{% for identifier, kind in gif_blocklist %}<tr><td><code>{{ identifier }}</code></td><td><form method="post" action="/guild/{{ guild_id }}/automod/gif-blocklist/delete" class="inline"><input type="hidden" name="identifier" value="{{ identifier }}"><button type="submit">Remove</button></form></td></tr>{% endfor %}</tbody></table>{% endif %}
 </section>
 
 <section class="card">
@@ -118,7 +133,7 @@
 
 <section class="card">
     <h2>Escalation tiers</h2>
-    <p class="hint">Pick what happens once a member racks up a given number of warnings within the window above. Add as many tiers as you like - e.g. 3 warnings → warn, 5 → mute, 8 → kick, 12 → ban. Reaching a mute/timeout/kick/ban/temp-ban tier resets the member's warning count back to zero; a "Warn" tier logs a formal warning (visible on the Moderation tab) but leaves the count running, so it doesn't delay the tiers above it.</p>
+    <p class="hint">Pick what happens once a member reaches a warning threshold within the window above. The warning that reaches the threshold is already recorded, so <strong>Warn is not offered as a punishment</strong> anymore; use Mute, Timeout, Kick, Ban, or Temporary ban. Reaching a resolving punishment resets the active escalation cycle without deleting the member's permanent warning history.</p>
     {% if tiers %}
     <table><thead><tr><th>Warnings</th><th>Punishment</th><th></th></tr></thead><tbody>
     {% for tier in tiers %}

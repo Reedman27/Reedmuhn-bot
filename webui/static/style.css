@@ -587,6 +587,9 @@ body.app {
 
 .sidebar {
     width: 220px;
+    height: 100vh;
+    position: sticky;
+    top: 0;
     flex-shrink: 0;
     background: var(--sidebar);
     border-right: 1px solid var(--border);
@@ -608,6 +611,14 @@ body.app {
     gap: 0.15rem;
     flex-grow: 1;
 }
+
+.sidebar-nav { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: .2rem; scrollbar-width: thin; }
+.nav-group { margin-bottom: .25rem; }
+.nav-group-title { width:100%; display:flex; justify-content:space-between; align-items:center; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:.55rem .6rem .35rem; cursor:pointer; }
+.nav-group-title span { transition: transform .15s; }
+.nav-group.collapsed .nav-group-title span { transform:rotate(-90deg); }
+.nav-group.collapsed .nav-group-items { display:none; }
+.nav-group-items { display:flex; flex-direction:column; gap:.15rem; }
 
 .sidebar nav a {
     color: var(--muted);
@@ -645,10 +656,19 @@ main {
 
 @media (max-width: 700px) {
     body.app { flex-direction: column; }
-    .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
+    .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
     .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }
     .sidebar .server-name { display: none; }
-    .sidebar nav { flex-direction: row; flex-grow: 1; overflow-x: auto; }
+    .sidebar nav { flex-direction: row; flex-grow: 1; overflow-x: auto; overflow-y: hidden; }
+    .sidebar-nav .nav-group { display:flex; flex-direction:row; margin:0; }
+    .sidebar-nav .nav-group-title { display:none; }
+    .sidebar-nav .nav-group-items { flex-direction:row; }
+    /* Collapsing is a desktop-only affordance - the toggle button above is
+       hidden on mobile, so a group collapsed while on desktop (its
+       .collapsed class persists via localStorage, same as sidebar.js sets
+       on click) must not stay hidden here too, or there'd be no way left
+       to reach those links on a phone. */
+    .sidebar-nav .nav-group.collapsed .nav-group-items { display: flex; }
     .sidebar .nav-spacer { flex-grow: 1; }
     /* Was "display: none" - the theme menu / account controls were
        invisible on mobile entirely. Now it wraps onto its own row below
@@ -1332,3 +1352,13 @@ select option {
 
 .checkbox-inline { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); margin: 0 0.4rem; }
 .checkbox-inline input { width: auto; }
+
+/* Additional presets */
+[data-theme="catppuccin-green"] { --bg:#142018; --card:#1b2b20; --sidebar:#101a14; --text:#e8f3e9; --muted:#9fb3a2; --accent:#a6d189; --border:#314337; --danger:#e78284; --accent-dim:#314337; --accent-contrast:#101a14; --shadow:0 6px 16px rgba(0,0,0,.25); }
+[data-theme-preview="catppuccin-green"] { --bg:#142018; --card:#1b2b20; --sidebar:#101a14; --text:#e8f3e9; --muted:#9fb3a2; --accent:#a6d189; --border:#314337; --danger:#e78284; }
+[data-theme="lavender"] { --bg:#191525; --card:#241d35; --sidebar:#12101b; --text:#f2ecff; --muted:#b8abc9; --accent:#c4a7e7; --border:#3b3150; --danger:#eb6f92; }
+[data-theme-preview="lavender"] { --bg:#191525; --card:#241d35; --sidebar:#12101b; --text:#f2ecff; --muted:#b8abc9; --accent:#c4a7e7; --border:#3b3150; --danger:#eb6f92; }
+[data-theme="forest"] { --bg:#101813; --card:#18241b; --sidebar:#0b110d; --text:#e4f0e4; --muted:#9caf9d; --accent:#7dbb88; --border:#2e4633; --danger:#db7575; --accent-dim:#2e4633; --accent-contrast:#101813; --shadow:0 6px 16px rgba(0,0,0,.25); }
+[data-theme-preview="forest"] { --bg:#101813; --card:#18241b; --sidebar:#0b110d; --text:#e4f0e4; --muted:#9caf9d; --accent:#7dbb88; --border:#2e4633; --danger:#db7575; }
+[data-theme="paper"] { --bg:#f3efe6; --card:#fffdf8; --sidebar:#e6dfd1; --text:#28251f; --muted:#756f63; --accent:#8b6f47; --border:#d3c8b7; --danger:#b84f4f; --accent-dim:#d3c8b7; --accent-contrast:#fffdf8; --shadow:0 6px 16px rgba(40,37,31,.12); }
+[data-theme-preview="paper"] { --bg:#f3efe6; --card:#fffdf8; --sidebar:#e6dfd1; --text:#28251f; --muted:#756f63; --accent:#8b6f47; --border:#d3c8b7; --danger:#b84f4f; }

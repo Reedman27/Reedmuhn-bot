@@ -95,6 +95,12 @@
         { group: "Royal", items: [
             { id: "royal", label: "Royal" },
         ] },
+        { group: "Nature & soft", items: [
+            { id: "catppuccin-green", label: "Catppuccin Green" },
+            { id: "forest", label: "Forest" },
+            { id: "lavender", label: "Lavender" },
+            { id: "paper", label: "Paper" },
+        ] },
         { group: "Monochrome", items: [
             { id: "midnight", label: "Midnight" },
             { id: "oled", label: "OLED" },

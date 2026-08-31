@@ -18,6 +18,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
@@ -72,10 +73,15 @@ async def security_headers_and_origin_check(request: Request, call_next):
     if request.method == "POST" and request.url.path != "/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer")
-        expected = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
-        supplied = origin or (referer.rsplit("/", 3)[0] if referer else None)
-        if supplied and not supplied.startswith(expected):
-            return RedirectResponse("/login", status_code=303)
+        expected = urlsplit(str(request.base_url))
+        supplied = origin or referer
+        if supplied:
+            supplied_parts = urlsplit(supplied)
+            # Compare scheme + network location exactly. A simple startswith()
+            # check is unsafe because an attacker-controlled origin such as
+            # https://dashboard.example.evil can share the dashboard's prefix.
+            if (supplied_parts.scheme, supplied_parts.netloc) != (expected.scheme, expected.netloc):
+                return RedirectResponse("/login", status_code=303)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -749,15 +755,19 @@ async def revert_nick_now(request: Request, guild_id: int, event_id: int = Form(
 # ---- permissions (tempnick access rule) ----
 
 @app.get("/guild/{guild_id}/permissions")
-async def permissions_page(request: Request, guild_id: int):
+async def permissions_page(request: Request, guild_id: int, tab: str = "access"):
     if (r := await require_auth(request)):
         return r
+    if tab not in {"access", "scanner"}:
+        tab = "access"
     return render(
         request, "permissions.html", guild_id, "permissions",
+        tab=tab,
         mode=db.get_tempnick_mode(guild_id),
         roles=[(rid, role_label(guild_id, rid)) for rid in db.list_tempnick_roles(guild_id)],
         role_choices=db.list_bot_roles(guild_id),
         bot_manager_roles=[(rid, role_label(guild_id, rid)) for rid in db.list_bot_manager_roles(guild_id)],
+        scan_findings=scan_guild_permissions(guild_id) if tab == "scanner" else [],
     )
 
 
@@ -806,6 +816,14 @@ async def delete_tempnick_role(request: Request, guild_id: int, role_id: int = F
     return RedirectResponse(f"/guild/{guild_id}/permissions", status_code=303)
 
 
+@app.post("/guild/{guild_id}/moderation/votekick")
+async def save_votekick_config(request: Request, guild_id: int, enabled: str = Form(None), required_votes: int = Form(5), duration_minutes: int = Form(10)):
+    if (r := await require_auth(request)): return r
+    if not 1 <= required_votes <= 100 or not 1 <= duration_minutes <= 1440:
+        return RedirectResponse(f"/guild/{guild_id}/moderation?error=votekick", status_code=303)
+    db.set_votekick_config(guild_id, enabled == "on", required_votes, duration_minutes * 60)
+    return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
+
 # ---- moderation (warn lookup) ----
 
 MOD_ACTION_LABELS = {
@@ -821,6 +839,70 @@ MOD_ACTION_LABELS = {
 MOD_TIMED_ACTIONS = {"tempban", "mute_role", "timeout"}
 MOD_ACTION_TIMEOUT_MAX_SECONDS = 28 * 86400
 
+CASE_ACTION_LABELS = {
+    "warn": "Warn",
+    "kick": "Kick",
+    "mute": "Mute",
+    "tempban": "Temporary Ban",
+    "timeout": "Timeout",
+}
+
+# ---- permission security scanner ----
+# Discord permission bitfield values (from the API's permission flags -
+# hardcoded here rather than importing discord.py, since this process is
+# deliberately kept discord.py-free and only reads what the bot process
+# already cached).
+PERM_ADMINISTRATOR = 0x8
+PERM_RISKY = {
+    "ban members": 0x4,
+    "kick members": 0x2,
+    "manage the server": 0x20,
+    "manage roles": 0x10000000,
+    "manage channels": 0x10,
+    "manage webhooks": 0x20000000,
+    "mention @everyone/@here": 0x20000,
+    "timeout/moderate members": 0x10000000000,
+}
+
+
+def scan_guild_permissions(guild_id: int) -> list[dict]:
+    """Flags roles (and @everyone) with Administrator or other permissions
+    that are easy to hand out by accident and hard to notice once granted.
+    Read-only, computed entirely from the roles the bot already has
+    cached - no live Discord call."""
+    findings = []
+    for role_id, name, _position, perms, managed in db.list_bot_roles_full(guild_id):
+        if perms & PERM_ADMINISTRATOR:
+            findings.append({
+                "severity": "critical",
+                "subject": f"@{name}",
+                "message": "has Administrator" + (" - this is a bot/integration role" if managed else ""),
+            })
+            continue
+        risky = [label for label, bit in PERM_RISKY.items() if perms & bit]
+        if risky:
+            findings.append({"severity": "warning", "subject": f"@{name}", "message": f"can {', '.join(risky)}"})
+
+    everyone_perms = db.get_everyone_permissions(guild_id)
+    if everyone_perms & PERM_ADMINISTRATOR:
+        findings.append({"severity": "critical", "subject": "@everyone", "message": "has Administrator"})
+    else:
+        risky = [label for label, bit in PERM_RISKY.items() if everyone_perms & bit]
+        if risky:
+            # Anything beyond a bare "can mention everyone" on the default
+            # role (every member) is a much bigger deal than the same
+            # permission on a normal role, since it applies to the whole
+            # server with no way to un-assign it from anyone.
+            only_mention_everyone = risky == ["mention @everyone/@here"]
+            findings.append({
+                "severity": "warning" if only_mention_everyone else "critical",
+                "subject": "@everyone", "message": f"can {', '.join(risky)}",
+            })
+
+    order = {"critical": 0, "warning": 1}
+    findings.sort(key=lambda f: order.get(f["severity"], 2))
+    return findings
+
 
 def queue_warn_escalation_if_due(guild_id: int, user_id: int, latest_reason: str) -> None:
     """Mirrors AutoMod.apply_warn_escalation on the bot side, run from the
@@ -834,7 +916,7 @@ def queue_warn_escalation_if_due(guild_id: int, user_id: int, latest_reason: str
     """
     cfg = db.get_automod_config(guild_id)
     since = int(time.time()) - cfg["violation_window_seconds"]
-    recent = db.count_recent_warns(guild_id, user_id, since)
+    recent = db.count_recent_escalation_warnings(guild_id, user_id, since)
     tiers = db.list_automod_escalation_tiers(guild_id)
     # Exact match only (not "past every tier") - manual warns are a
     # permanent record that's never auto-cleared, so falling back to "past
@@ -845,7 +927,9 @@ def queue_warn_escalation_if_due(guild_id: int, user_id: int, latest_reason: str
         return
     reason = f"Warnings: {tier['threshold']} warnings (latest: {latest_reason})"
     if tier["action"] == "warn":
-        db.add_warn(guild_id, user_id, 0, reason, int(time.time()))
+        # A punishment tier is not itself another warning. Recording a warn here
+        # would inflate the threshold that just triggered and create a loop.
+        db.record_member_history(guild_id, user_id, "automod_warn_tier", 0, reason)
         return
     if tier["action"] not in MOD_ACTION_LABELS:
         return
@@ -857,7 +941,7 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
     if (r := await require_auth(request)):
         return r
 
-    if tab not in {"overview", "warnings", "tempbans", "tempnicks"}:
+    if tab not in {"overview", "warnings", "cases", "tempbans", "tempnicks"}:
         tab = "overview"
 
     warns = []
@@ -885,6 +969,30 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
         (uid, member_label(guild_id, uid), count, datetime.fromtimestamp(last_at).strftime("%Y-%m-%d %H:%M"))
         for uid, count, last_at in db.list_warned_users(guild_id)
     ]
+
+    def _format_case(row, with_member=False):
+        if with_member:
+            case_number, uid, event_type, actor_id, reason, created_at, voided = row
+        else:
+            case_number, event_type, actor_id, reason, details, created_at, voided = row
+        item = {
+            "case_number": case_number,
+            "action": event_type,
+            "action_label": CASE_ACTION_LABELS.get(event_type, event_type.replace("_", " ").title()),
+            "moderator_name": "System" if not actor_id else member_label(guild_id, actor_id),
+            "reason": reason,
+            "date_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+            "voided": bool(voided),
+        }
+        if with_member:
+            item["user_id"] = uid
+            item["user_name"] = member_label(guild_id, uid)
+        return item
+
+    recent_cases = [_format_case(row, with_member=True) for row in db.list_recent_cases(guild_id, 20)]
+    user_cases = []
+    if user_id and tab == "cases":
+        user_cases = [_format_case(row) for row in db.list_cases_for_user(guild_id, user_id)]
 
     tempbans = []
     for event_id, _, run_at, data in db.list_scheduled_events(guild_id, "unban"):
@@ -954,6 +1062,8 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
         muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
         mod_action_requests=mod_actions, mod_action_choices=list(MOD_ACTION_LABELS.items()),
         mod_timed_actions=list(MOD_TIMED_ACTIONS), mute_sync=mute_sync,
+        votekick_cfg=db.get_votekick_config(guild_id),
+        recent_cases=recent_cases, user_cases=user_cases,
     )
 
 
@@ -1014,6 +1124,22 @@ async def set_warn_notes_route(request: Request, guild_id: int, warn_id: int = F
     notes = notes.strip()[:1000]
     db.set_warn_notes(guild_id, warn_id, notes or None)
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/case-edit")
+async def edit_case_route(request: Request, guild_id: int, case_number: int = Form(...), user_id: int = Form(...), reason: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.edit_case_reason(guild_id, case_number, reason.strip()[:500])
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=cases&user_id={user_id}", status_code=303)
+
+
+@app.post("/guild/{guild_id}/moderation/case-void")
+async def void_case_route(request: Request, guild_id: int, case_number: int = Form(...), user_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.void_case(guild_id, case_number, True)
+    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=cases&user_id={user_id}", status_code=303)
 
 
 @app.post("/guild/{guild_id}/moderation/muted-role")
@@ -1158,6 +1284,137 @@ async def queue_dashboard_mod_action(
     return RedirectResponse(f"/guild/{guild_id}/moderation?action=queued", status_code=303)
 
 
+# ---- fun command toggles ----
+
+FUN_COMMANDS = [
+    ("Social", [("hug", "Hug someone"), ("insult", "Playfully roast someone"), ("compliment", "Give someone a compliment"), ("pat", "Pat someone"), ("slap", "Playful slap"), ("highfive", "High-five someone"), ("ship", "Compatibility score")]),
+    ("Games & Randomness", [("8ball", "Magic 8-ball"), ("coinflip", "Flip a coin"), ("roll", "Roll dice"), ("rps", "Rock-paper-scissors"), ("choose", "Pick between options"), ("wouldyourather", "Would-you-rather question")]),
+    ("Text Toys", [("dadjoke", "Random dad joke"), ("mock", "MoCk TeXt"), ("reverse", "Reverse text")]),
+]
+
+@app.get("/guild/{guild_id}/fun-commands")
+async def fun_commands_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)): return r
+    disabled=db.get_disabled_commands(guild_id)
+    return render(request,"funcommands.html",guild_id,"funcommands",groups=[(name,[(cmd,desc,cmd not in disabled) for cmd,desc in items]) for name,items in FUN_COMMANDS])
+
+@app.post("/guild/{guild_id}/fun-commands/toggle")
+async def toggle_fun_command(request: Request, guild_id: int, command_name: str = Form(...), enabled: str = Form("")):
+    if (r := await require_auth(request)): return r
+    allowed={cmd for _,items in FUN_COMMANDS for cmd,_ in items}
+    if command_name in allowed: db.set_command_enabled(guild_id,command_name,enabled=="on")
+    return RedirectResponse(f"/guild/{guild_id}/fun-commands",status_code=303)
+
+# ---- starboard ----
+
+@app.get("/guild/{guild_id}/starboard")
+async def starboard_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)): return r
+    channel_id,threshold,enabled=db.get_starboard_config(guild_id)
+    return render(request,"starboard.html",guild_id,"starboard",channel_id=channel_id,threshold=threshold,enabled=bool(enabled),channels=db.list_bot_channels(guild_id,"text")+db.list_bot_channels(guild_id,"news"))
+
+@app.post("/guild/{guild_id}/starboard/save")
+async def starboard_save(request: Request,guild_id:int,channel_id:str=Form(""),threshold:int=Form(5),enabled:str=Form("")):
+    if (r := await require_auth(request)): return r
+    cid=int(channel_id) if channel_id else None
+    if cid and not validate_channel(guild_id,cid,("text","news")): cid=None
+    threshold=max(1,min(50,threshold))
+    db.set_starboard_config(guild_id,cid,threshold,enabled=="on")
+    return RedirectResponse(f"/guild/{guild_id}/starboard",status_code=303)
+
+# ---- suggestions ----
+
+@app.get("/guild/{guild_id}/suggestions")
+async def suggestions_page(request: Request,guild_id:int):
+    if (r := await require_auth(request)): return r
+    channel_id,enabled,staff_role_id=db.get_suggestion_config(guild_id)
+    rows=db.list_suggestions(guild_id,50)
+    suggestions=[{"id":r[0],"author_id":r[2],"content":r[3],"status":r[4],"staff_id":r[5],"reason":r[6],"created_at":datetime.fromtimestamp(r[7]).strftime("%Y-%m-%d %H:%M")} for r in rows]
+    return render(request,"suggestions.html",guild_id,"suggestions",channel_id=channel_id,enabled=bool(enabled),staff_role_id=staff_role_id,channels=db.list_bot_channels(guild_id,"text")+db.list_bot_channels(guild_id,"news"),roles=db.list_bot_roles(guild_id),suggestions=suggestions)
+
+@app.post("/guild/{guild_id}/suggestions/config")
+async def suggestions_config(request: Request,guild_id:int,channel_id:str=Form(""),staff_role_id:str=Form(""),enabled:str=Form("")):
+    if (r := await require_auth(request)): return r
+    cid=int(channel_id) if channel_id else None; rid=int(staff_role_id) if staff_role_id else None
+    if cid and not validate_channel(guild_id,cid,("text","news")): cid=None
+    db.set_suggestion_config(guild_id,cid,enabled=="on",rid)
+    return RedirectResponse(f"/guild/{guild_id}/suggestions",status_code=303)
+
+@app.post("/guild/{guild_id}/suggestions/status")
+async def suggestions_status(request: Request,guild_id:int,suggestion_id:int=Form(...),status:str=Form(...),reason:str=Form("")):
+    if (r := await require_auth(request)): return r
+    if status not in {"pending","approved","denied"}: return RedirectResponse(f"/guild/{guild_id}/suggestions",status_code=303)
+    row=db.get_suggestion(suggestion_id)
+    if row and row[1]==guild_id: db.set_suggestion_status(suggestion_id,status,0,reason[:1024])
+    return RedirectResponse(f"/guild/{guild_id}/suggestions",status_code=303)
+
+# ---- anti-nuke ----
+
+@app.get("/guild/{guild_id}/antinuke")
+async def antinuke_page(request: Request,guild_id:int):
+    if (r := await require_auth(request)): return r
+    cfg=db.get_antinuke_config(guild_id)
+    return render(request,"antinuke.html",guild_id,"antinuke",cfg=cfg,channels=db.list_bot_channels(guild_id,"text")+db.list_bot_channels(guild_id,"news"),incidents=db.list_antinuke_incidents(guild_id,20))
+
+@app.post("/guild/{guild_id}/antinuke/save")
+async def antinuke_save(request: Request,guild_id:int,enabled:str=Form(""),auto_recovery:str=Form(""),punishment:str=Form("BAN"),threshold:int=Form(3),window_seconds:int=Form(10),log_channel_id:str=Form("")):
+    if (r := await require_auth(request)): return r
+    punishment=punishment.upper() if punishment.upper() in {"BAN","KICK"} else "BAN"
+    db.set_antinuke_enabled(guild_id,enabled=="on"); db.set_antinuke_auto_recovery(guild_id,auto_recovery=="on"); db.set_antinuke_punishment(guild_id,punishment)
+    db.set_antinuke_threshold(guild_id,max(1,min(50,threshold)),max(1,min(300,window_seconds)))
+    cid=int(log_channel_id) if log_channel_id else None
+    if cid and not validate_channel(guild_id,cid,("text","news")): cid=None
+    db.set_antinuke_log_channel(guild_id,cid)
+    return RedirectResponse(f"/guild/{guild_id}/antinuke",status_code=303)
+
+# ---- raid detection ----
+
+RAID_ACTIONS = {"alert": "Alert only", "kick_new": "Auto-kick new accounts", "lockdown": "Lock all channels"}
+
+
+@app.get("/guild/{guild_id}/raid")
+async def raid_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_raid_config(guild_id)
+    incidents = [
+        {
+            "join_count": row[1], "window_seconds": row[2],
+            "action_label": RAID_ACTIONS.get(row[3], row[3]),
+            "kicked_count": row[4],
+            "date_str": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M"),
+        }
+        for row in db.list_raid_incidents(guild_id, 20)
+    ]
+    return render(
+        request, "raid.html", guild_id, "raid",
+        cfg=cfg, action_choices=list(RAID_ACTIONS.items()),
+        channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+        incidents=incidents,
+    )
+
+
+@app.post("/guild/{guild_id}/raid/save")
+async def raid_save(
+    request: Request, guild_id: int, enabled: str = Form(""), join_threshold: int = Form(10),
+    window_seconds: int = Form(60), action: str = Form("alert"), new_account_hours: int = Form(168),
+    cooldown_seconds: int = Form(300), log_channel_id: str = Form(""),
+):
+    if (r := await require_auth(request)):
+        return r
+    if action not in RAID_ACTIONS:
+        action = "alert"
+    cid = int(log_channel_id) if log_channel_id else None
+    if cid and not validate_channel(guild_id, cid, ("text", "news")):
+        cid = None
+    db.set_raid_config(
+        guild_id, enabled=enabled == "on", join_threshold=max(2, min(200, join_threshold)),
+        window_seconds=max(5, min(600, window_seconds)), action=action,
+        new_account_hours=max(1, min(8760, new_account_hours)),
+        cooldown_seconds=max(30, min(3600, cooldown_seconds)), log_channel_id=cid,
+    )
+    return RedirectResponse(f"/guild/{guild_id}/raid?saved=1", status_code=303)
+
 # ---- logging ----
 
 LOG_CATEGORIES = [
@@ -1271,6 +1528,62 @@ async def feed_channel_poll(request: Request, guild_id: int, channel_id: int, af
     return {"messages": db.get_feed_messages_after(guild_id, channel_id, after)}
 
 
+# ---- AI ----
+
+@app.get("/guild/{guild_id}/ai")
+async def ai_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_ai_config(guild_id)
+    # Never put the real credential into a template. The form uses a masked
+    # placeholder and only replaces the stored key when the admin supplies a
+    # new one.
+    view = dict(cfg)
+    view["api_key_set"] = bool(cfg["api_key"])
+    view["api_key"] = ""
+    return render(request, "ai.html", guild_id, "ai", cfg=view)
+
+
+@app.post("/guild/{guild_id}/ai/save")
+async def ai_save(
+    request: Request, guild_id: int,
+    enabled: str = Form(""), provider: str = Form("openai_compatible"),
+    base_url: str = Form("https://api.openai.com/v1"), api_key: str = Form(""),
+    model: str = Form("gpt-4o-mini"), system_prompt: str = Form(""),
+    max_tokens: int = Form(800), temperature: float = Form(0.7),
+    use_channel_context: str = Form(""), context_message_limit: int = Form(10),
+    index_channels: str = Form(""), index_message_limit: int = Form(500),
+):
+    if (r := await require_auth(request)):
+        return r
+    provider = provider.strip() or "openai_compatible"
+    allowed_providers = {"openai_compatible", "openai", "groq", "ollama", "custom"}
+    if provider not in allowed_providers:
+        provider = "openai_compatible"
+    base_url = base_url.strip().rstrip("/") or "https://api.openai.com/v1"
+    model = model.strip()[:200] or "gpt-4o-mini"
+    system_prompt = system_prompt.strip()[:2000] or "You are ReedMuhn, a helpful Discord assistant. Be concise and follow the server context when provided."
+    old = db.get_ai_config(guild_id)
+    if not api_key.strip():
+        api_key = old["api_key"]
+    db.set_ai_config(
+        guild_id,
+        enabled=enabled == "on",
+        provider=provider,
+        base_url=base_url,
+        api_key=api_key.strip()[:500],
+        model=model,
+        system_prompt=system_prompt,
+        max_tokens=max(64, min(4000, max_tokens)),
+        temperature=max(0.0, min(2.0, temperature)),
+        use_channel_context=use_channel_context == "on",
+        context_message_limit=max(1, min(30, context_message_limit)),
+        index_channels=index_channels == "on",
+        index_message_limit=max(50, min(5000, index_message_limit)),
+    )
+    return RedirectResponse(f"/guild/{guild_id}/ai?saved=1", status_code=303)
+
+
 # ---- youtube ----
 
 @app.get("/guild/{guild_id}/youtube")
@@ -1375,7 +1688,6 @@ def format_duration(seconds: int) -> str:
 
 
 AUTOMOD_ACTION_LABELS = {
-    "warn": "Warn",
     "mute_role": "Mute (role)",
     "timeout": "Timeout",
     "kick": "Kick",
@@ -1402,6 +1714,8 @@ async def automod_page(request: Request, guild_id: int):
         action_choices=list(AUTOMOD_ACTION_LABELS.items()),
         exempt_roles=[(rid, role_label(guild_id, rid)) for rid in db.list_automod_exempt_roles(guild_id)],
         role_choices=db.list_bot_roles(guild_id),
+        gif_allowlist=db.list_automod_gif_allowlist(guild_id),
+        gif_blocklist=db.list_automod_gif_blocklist(guild_id),
     )
 
 
@@ -1428,6 +1742,35 @@ async def save_automod_gifs(request: Request, guild_id: int, block_gifs: str = F
     db.set_automod_block_gifs(guild_id, block_gifs == "on")
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
+
+@app.post("/guild/{guild_id}/automod/gif-allowlist/add")
+async def add_automod_gif_allowlist(request: Request, guild_id: int, identifier: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    try: db.add_automod_gif_allowlist(guild_id, identifier)
+    except ValueError: return RedirectResponse(f"/guild/{guild_id}/automod?error=gif", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+@app.post("/guild/{guild_id}/automod/gif-allowlist/delete")
+async def delete_automod_gif_allowlist(request: Request, guild_id: int, identifier: str = Form(...)):
+    if (r := await require_auth(request)): return r
+    try: db.remove_automod_gif_allowlist(guild_id, identifier)
+    except ValueError: pass
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+@app.post("/guild/{guild_id}/automod/gif-blocklist/add")
+async def add_automod_gif_blocklist(request: Request, guild_id: int, identifier: str = Form(...)):
+    if (r := await require_auth(request)): return r
+    try: db.add_automod_gif_blocklist(guild_id, identifier)
+    except ValueError: return RedirectResponse(f"/guild/{guild_id}/automod?error=gif", status_code=303)
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+@app.post("/guild/{guild_id}/automod/gif-blocklist/delete")
+async def delete_automod_gif_blocklist(request: Request, guild_id: int, identifier: str = Form(...)):
+    if (r := await require_auth(request)): return r
+    try: db.remove_automod_gif_blocklist(guild_id, identifier)
+    except ValueError: pass
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
 @app.post("/guild/{guild_id}/automod/words")
 async def save_automod_words(request: Request, guild_id: int, words: str = Form("")):
@@ -1582,6 +1925,42 @@ async def reactionroles_page(request: Request, guild_id: int):
         text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
         roles=db.list_bot_roles(guild_id),
     )
+
+
+@app.post("/guild/{guild_id}/reactionroles/menu")
+async def queue_create_reaction_role_menu(
+    request: Request, guild_id: int, pairs: str = Form(...),
+    title: str = Form("Reaction Roles"), description: str = Form("React below to add/remove a role."),
+    channel_id: int = Form(...),
+):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=channel", status_code=303)
+    parsed = []
+    for item in re.split(r"[;\n]+", pairs or ""):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        emoji, role_ref = item.split("=", 1)
+        emoji = emoji.strip()
+        role_ref = role_ref.strip()
+        role_match = re.fullmatch(r"(?:<@&(\d+)>|(\d+))", role_ref)
+        if not emoji or not role_match:
+            return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=menu", status_code=303)
+        role_id = int(role_match.group(1) or role_match.group(2))
+        # Basic validation here; the bot performs the authoritative emoji and
+        # role hierarchy checks when it executes the queued request.
+        parsed.append((emoji, role_id))
+        if len(parsed) >= 10:
+            break
+    if not parsed or any(not validate_role(guild_id, role_id) for _emoji, role_id in parsed):
+        return RedirectResponse(f"/guild/{guild_id}/reactionroles?error=menu", status_code=303)
+    db.insert_scheduled_event(
+        "create_reaction_role_menu", guild_id, int(time.time()),
+        {"channel_id": channel_id, "pairs": pairs, "title": title.strip(), "description": description.strip()},
+    )
+    return RedirectResponse(f"/guild/{guild_id}/reactionroles?queued_menu=1", status_code=303)
 
 
 @app.post("/guild/{guild_id}/reactionroles/add")
@@ -1917,6 +2296,17 @@ async def save_ticket_config(request: Request, guild_id: int, category_id: int =
     return RedirectResponse(f"/guild/{guild_id}/tickets?saved=1", status_code=303)
 
 
+@app.post("/guild/{guild_id}/tickets/delete-on-close")
+async def save_ticket_delete_on_close(
+    request: Request, guild_id: int, delete_on_close: str = Form(None), delete_delay_seconds: int = Form(10)
+):
+    if (r := await require_auth(request)):
+        return r
+    delay = max(3, min(300, delete_delay_seconds))
+    db.set_ticket_delete_on_close(guild_id, delete_on_close is not None, delay)
+    return RedirectResponse(f"/guild/{guild_id}/tickets?deletesaved=1", status_code=303)
+
+
 @app.post("/guild/{guild_id}/tickets/panel")
 async def save_ticket_panel_route(
     request: Request, guild_id: int, panel_channel_id: int = Form(...),
@@ -1944,6 +2334,64 @@ async def close_ticket_route(request: Request, guild_id: int, ticket_id: int = F
         return RedirectResponse(f"/guild/{guild_id}/tickets?error=alreadyclosed", status_code=303)
     db.queue_ticket_close(guild_id, ticket_id, reason.strip()[:500] or "Closed from the dashboard")
     return RedirectResponse(f"/guild/{guild_id}/tickets?closequeued={ticket_id}", status_code=303)
+
+
+# ---- modmail ----
+
+@app.get("/guild/{guild_id}/modmail")
+async def modmail_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    cfg = db.get_modmail_config(guild_id)
+    threads = [
+        {
+            "id": row[0], "channel_label": channel_label(guild_id, row[1]),
+            "user_name": member_label(guild_id, row[2]), "status": row[3],
+            "created_at": datetime.fromtimestamp(row[4]).strftime("%Y-%m-%d %H:%M"),
+            "closed_at": datetime.fromtimestamp(row[5]).strftime("%Y-%m-%d %H:%M") if row[5] else None,
+            "closed_by": member_label(guild_id, row[6]) if row[6] else None,
+        }
+        for row in db.list_modmail_threads(guild_id, limit=50)
+    ]
+    blocked = [
+        {
+            "user_id": user_id, "user_name": member_label(guild_id, user_id),
+            "blocked_by": member_label(guild_id, blocked_by) if blocked_by else "Dashboard",
+            "date_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+        }
+        for user_id, blocked_by, created_at in db.list_modmail_blocks(guild_id)
+    ]
+    return render(
+        request, "modmail.html", guild_id, "modmail",
+        cfg=cfg, threads=threads, blocked=blocked,
+        categories=db.list_bot_channels(guild_id, "category"),
+        channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+    )
+
+
+@app.post("/guild/{guild_id}/modmail/config")
+async def modmail_config_route(
+    request: Request, guild_id: int, enabled: str = Form(""), category_id: str = Form(""),
+    log_channel_id: str = Form(""), anonymous_staff: str = Form(""),
+):
+    if (r := await require_auth(request)):
+        return r
+    cat_id = int(category_id) if category_id else None
+    if cat_id and not validate_channel(guild_id, cat_id, ("category",)):
+        cat_id = None
+    log_id = int(log_channel_id) if log_channel_id else None
+    if log_id and not validate_channel(guild_id, log_id, ("text", "news")):
+        log_id = None
+    db.set_modmail_config(guild_id, enabled=enabled == "on", category_id=cat_id, log_channel_id=log_id, anonymous_staff=anonymous_staff == "on")
+    return RedirectResponse(f"/guild/{guild_id}/modmail?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/modmail/unblock")
+async def modmail_unblock_route(request: Request, guild_id: int, user_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.unblock_modmail_user(guild_id, user_id)
+    return RedirectResponse(f"/guild/{guild_id}/modmail", status_code=303)
 
 
 # ---- polls ----
@@ -2144,6 +2592,55 @@ async def staffstats_page(request: Request, guild_id: int, window: str = "30"):
     return render(request, "staffstats.html", guild_id, "staffstats", staff=staff, window=window)
 
 
+# ---- invite tracking ----
+
+@app.get("/guild/{guild_id}/invites")
+async def invites_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    leaderboard = [
+        {"inviter_id": inviter_id, "inviter_name": member_label(guild_id, inviter_id), "count": count}
+        for inviter_id, count in db.list_invite_leaderboard(guild_id, 25)
+    ]
+    recent = [
+        {
+            "user_name": member_label(guild_id, user_id),
+            "inviter_name": member_label(guild_id, inviter_id) if inviter_id else "Unknown (vanity URL, deleted invite, or no permission to list invites)",
+            "invite_code": invite_code or "-",
+            "date_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+        }
+        for user_id, inviter_id, invite_code, created_at in db.list_recent_invite_joins(guild_id, 30)
+    ]
+    milestones = [
+        {"invite_count": count, "role_id": role_id, "role_name": role_label(guild_id, role_id)}
+        for count, role_id in db.list_invite_milestones(guild_id)
+    ]
+    return render(
+        request, "invites.html", guild_id, "invites",
+        leaderboard=leaderboard, recent=recent, milestones=milestones,
+        role_choices=db.list_bot_roles(guild_id),
+        quick_leaves=db.count_quick_leaves(guild_id, 24),
+    )
+
+
+@app.post("/guild/{guild_id}/invites/milestones/add")
+async def add_invite_milestone(request: Request, guild_id: int, invite_count: int = Form(...), role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if invite_count < 1 or not validate_role(guild_id, role_id):
+        return RedirectResponse(f"/guild/{guild_id}/invites?error=milestone", status_code=303)
+    db.set_invite_milestone(guild_id, invite_count, role_id)
+    return RedirectResponse(f"/guild/{guild_id}/invites", status_code=303)
+
+
+@app.post("/guild/{guild_id}/invites/milestones/delete")
+async def delete_invite_milestone(request: Request, guild_id: int, invite_count: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_invite_milestone(guild_id, invite_count)
+    return RedirectResponse(f"/guild/{guild_id}/invites", status_code=303)
+
+
 # ---- automod moderation queue ----
 
 @app.get("/guild/{guild_id}/moderationqueue")
@@ -2329,6 +2826,51 @@ async def emergency_mass_timeout_route(
 # Scoped to ReedMuhn's own settings tables, not live Discord role/channel
 # permissions - see capture_config_snapshot_data's docstring in db.py.
 
+def _flatten_snapshot(data: dict, prefix: str = "") -> dict:
+    """Flattens a snapshot's nested dict into {dotted.path: value} - lists
+    are kept as single leaf values (diffed as a set below) rather than
+    recursed into by index, since most of the lists in here (tempnick
+    roles, ignored log channels, voice hubs) are unordered ID collections
+    where "index 2 changed" means nothing to a human reading a diff."""
+    flat = {}
+    for key, value in data.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            flat.update(_flatten_snapshot(value, path))
+        else:
+            flat[path] = value
+    return flat
+
+
+def diff_snapshot_data(old: dict, new: dict) -> list[dict]:
+    """Compares two capture_config_snapshot_data() dicts (or one of those
+    against another) and returns a flat list of human-readable changes.
+    Scoped to the same bot-settings-only data the snapshots themselves
+    capture - this is not a diff of real Discord server structure."""
+    old_flat, new_flat = _flatten_snapshot(old), _flatten_snapshot(new)
+    changes = []
+    for path in sorted(set(old_flat) | set(new_flat)):
+        missing = object()
+        ov = old_flat.get(path, missing)
+        nv = new_flat.get(path, missing)
+        if ov == nv:
+            continue
+        if isinstance(ov, list) and isinstance(nv, list):
+            added = [x for x in nv if x not in ov]
+            removed = [x for x in ov if x not in nv]
+            if not added and not removed:
+                continue
+            summary = ", ".join(filter(None, [f"+{len(added)} added" if added else "", f"-{len(removed)} removed" if removed else ""]))
+            changes.append({"path": path, "kind": "list", "summary": summary})
+        else:
+            changes.append({
+                "path": path, "kind": "value",
+                "old": "(not set)" if ov is missing else ov,
+                "new": "(not set)" if nv is missing else nv,
+            })
+    return changes
+
+
 @app.get("/guild/{guild_id}/snapshots")
 async def snapshots_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
@@ -2340,7 +2882,29 @@ async def snapshots_page(request: Request, guild_id: int):
         }
         for s in db.list_config_snapshots(guild_id, 50)
     ]
-    return render(request, "snapshots.html", guild_id, "snapshots", snapshots=snapshots)
+
+    compare_a = request.query_params.get("a")
+    compare_b = request.query_params.get("b")
+    compare_result = None
+    if compare_a and compare_b:
+        def _resolve(ref: str):
+            if ref == "current":
+                return "Current live settings", db.capture_config_snapshot_data(guild_id)
+            snap = db.get_config_snapshot(guild_id, int(ref))
+            return (snap["name"], snap["data"]) if snap else (None, None)
+
+        name_a, data_a = _resolve(compare_a)
+        name_b, data_b = _resolve(compare_b)
+        if data_a is not None and data_b is not None:
+            compare_result = {
+                "name_a": name_a, "name_b": name_b,
+                "changes": diff_snapshot_data(data_a, data_b),
+            }
+
+    return render(
+        request, "snapshots.html", guild_id, "snapshots", snapshots=snapshots,
+        compare_result=compare_result, compare_a=compare_a, compare_b=compare_b,
+    )
 
 
 @app.post("/guild/{guild_id}/snapshots/create")

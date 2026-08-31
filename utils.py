@@ -3,6 +3,8 @@ import ast
 import operator
 import re
 
+from discord import app_commands as _app_commands
+
 
 def manager_or_permission(permission: str):
     """Allow a Discord administrator, a configured Bot Manager role, or the
@@ -24,6 +26,49 @@ def manager_or_permission(permission: str):
         return bool(configured.intersection(getattr(member, "_roles", []))) or any(
             role.id in configured for role in getattr(member, "roles", [])
         )
+
+    return predicate
+
+
+def owner_or_administrator():
+    """Tighter than manager_or_permission: only the server owner or a
+    Discord Administrator - deliberately excludes the configurable Bot
+    Manager role tier. Meant for commands whose blast radius is bigger
+    than a typical utility/config command (e.g. /say, which lets whoever
+    can run it make the bot post arbitrary text in any channel)."""
+    from discord import app_commands
+
+    @app_commands.check
+    async def predicate(interaction):
+        member = interaction.user
+        if interaction.guild is None or member is None:
+            return False
+        if interaction.guild.owner_id == member.id:
+            return True
+        return getattr(member.guild_permissions, "administrator", False)
+
+    return predicate
+
+
+
+class CommandDisabledError(_app_commands.CheckFailure):
+    """Raised when a server administrator disabled an individual command."""
+
+
+def toggleable(command_name: str | None = None):
+    """App-command check for per-guild command toggles. Commands default to enabled."""
+    from discord import app_commands
+
+    @app_commands.check
+    async def predicate(interaction):
+        if interaction.guild is None:
+            return True
+        name = command_name
+        if name is None and interaction.command is not None:
+            name = interaction.command.qualified_name
+        if name and not interaction.client.db.is_command_enabled(interaction.guild.id, name):
+            raise CommandDisabledError(f"/{name} is disabled in this server")
+        return True
 
     return predicate
 
@@ -77,17 +122,23 @@ async def restore_stripped_roles(db, guild, member, reason: str) -> None:
     """
     import discord
 
-    role_ids = db.pop_stripped_roles(guild.id, member.id)
+    role_ids = db.get_stripped_roles(guild.id, member.id)
     if not role_ids:
         return
     roles = [guild.get_role(rid) for rid in role_ids]
     roles = [r for r in roles if r is not None and r not in member.roles]
+    # Roles can legitimately disappear while somebody is muted. Treat those
+    # as already-restored, but keep any still-existing roles until Discord
+    # confirms the add succeeded. This prevents a transient 403/5xx from
+    # permanently losing the member's saved roles.
     if not roles:
+        db.clear_stripped_roles(guild.id, member.id)
         return
     try:
         await member.add_roles(*roles, reason=reason)
-    except discord.Forbidden:
-        pass
+    except (discord.Forbidden, discord.HTTPException):
+        return
+    db.clear_stripped_roles(guild.id, member.id)
 
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}

@@ -5,7 +5,6 @@ objects involved, mirroring the approach in utils.py's tempnick_self_allowed
 Discord API calls or event wiring.
 """
 import re
-import time
 import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
@@ -40,6 +39,28 @@ def is_gif_url(url: str) -> bool:
     if lowered.endswith(".gif"):
         return True
     return any(domain in lowered for domain in GIF_DOMAINS)
+
+
+
+
+GIF_LINK_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def gif_identifiers(content: str = "", attachment_filenames: list[str] = (), attachment_content_types: list[str] = ()) -> list[str]:
+    """Return normalized identifiers for GIF content in a message.
+
+    Identifiers are exact URLs for pasted GIF links and exact filenames for
+    uploaded GIFs.  The caller can use these to implement precise allow/block
+    lists without weakening the blanket GIF detector.
+    """
+    found = []
+    for url in GIF_LINK_RE.findall(content or ""):
+        if is_gif_url(url):
+            found.append(url.rstrip("),.!?\"'"))
+    for filename, content_type in zip(attachment_filenames, attachment_content_types or [None] * len(attachment_filenames)):
+        if filename and (filename.lower().endswith(".gif") or (content_type or "").lower() == "image/gif"):
+            found.append(filename)
+    return found
 
 
 def contains_gif(content: str, attachment_filenames: list[str] = (), attachment_content_types: list[str] = ()) -> bool:

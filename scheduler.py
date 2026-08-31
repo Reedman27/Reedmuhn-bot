@@ -11,7 +11,7 @@ import time
 import aiohttp
 import discord
 
-from cogs.reactionroles import resolve_emoji_key
+from cogs.reactionroles import parse_menu_pairs, resolve_emoji_key
 from cogs.youtube import resolve_youtube_channel
 from utils import restore_stripped_roles
 
@@ -39,7 +39,9 @@ def schedule_nick_revert(db, guild_id: int, run_at: int, user_id: int, original_
 
 
 def schedule_role_unmute(db, guild_id: int, run_at: int, user_id: int, role_id: int) -> None:
-    db.insert_scheduled_event("unmute_role", guild_id, run_at, {"user_id": user_id, "role_id": role_id})
+    # Replacing an existing expiry prevents a second mute from being undone
+    # by the first mute's older timer.
+    db.replace_role_unmute_event(guild_id, user_id, role_id, run_at)
 
 
 def schedule_poll_close(db, guild_id: int, run_at: int, poll_id: int) -> None:
@@ -58,20 +60,32 @@ async def run_loop(bot: discord.Client, db) -> None:
             continue
 
         for event_id, event_name, guild_id, data_json in due:
+            retry_at = None
             try:
-                await _process_event(bot, db, event_name, guild_id, json.loads(data_json))
-            except Exception:
+                await _process_event(bot, db, event_id, event_name, guild_id, json.loads(data_json))
+            except Exception as exc:
                 logger.exception("scheduled event %s (%s) failed", event_id, event_name)
+                status = getattr(exc, "status", None)
+                # Don't silently lose work on transient Discord/API failures.
+                # Permanent 4xx errors (bad permissions, deleted resources,
+                # invalid configuration) still get removed so they don't loop.
+                if isinstance(exc, aiohttp.ClientError) or (
+                    isinstance(exc, discord.HTTPException)
+                    and (status == 429 or (status is not None and status >= 500))
+                ):
+                    retry_at = int(time.time()) + 60
             finally:
-                # Delete even on failure - a bad/stale event (e.g. user
-                # already unbanned manually) shouldn't retry forever.
                 try:
                     db.delete_scheduled_event(event_id)
+                    if retry_at is not None:
+                        db.insert_scheduled_event(
+                            event_name, guild_id, retry_at, json.loads(data_json)
+                        )
                 except Exception:
-                    logger.exception("failed to delete completed scheduled event %s", event_id)
+                    logger.exception("failed to finalize scheduled event %s", event_id)
 
 
-async def _process_event(bot: discord.Client, db, event_name: str, guild_id: int, data: dict) -> None:
+async def _process_event(bot: discord.Client, db, event_id: int, event_name: str, guild_id: int, data: dict) -> None:
     if event_name == "unban":
         await _handle_unban(bot, guild_id, data)
     elif event_name == "reminder":
@@ -79,9 +93,11 @@ async def _process_event(bot: discord.Client, db, event_name: str, guild_id: int
     elif event_name == "revert_nick":
         await _handle_revert_nick(bot, guild_id, data)
     elif event_name == "unmute_role":
-        await _handle_unmute_role(bot, db, guild_id, data)
+        await _handle_unmute_role(bot, db, event_id, guild_id, data)
     elif event_name == "add_reaction_role":
         await _handle_add_reaction_role(bot, db, guild_id, data)
+    elif event_name == "create_reaction_role_menu":
+        await _handle_create_reaction_role_menu(bot, db, guild_id, data)
     elif event_name == "add_youtube_watch":
         await _handle_add_youtube_watch(bot, db, guild_id, data)
     elif event_name == "close_poll":
@@ -97,7 +113,10 @@ async def _handle_unban(bot: discord.Client, guild_id: int, data: dict) -> None:
 
 async def _handle_reminder(bot: discord.Client, data: dict) -> None:
     channel = bot.get_channel(data["channel_id"]) or await bot.fetch_channel(data["channel_id"])
-    await channel.send(f"<@{data['user_id']}> reminder: {data['message']}")
+    await channel.send(
+        f"<@{data['user_id']}> reminder: {data['message']}",
+        allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(data["user_id"]))]),
+    )
 
 
 async def _handle_revert_nick(bot: discord.Client, guild_id: int, data: dict) -> None:
@@ -109,7 +128,12 @@ async def _handle_revert_nick(bot: discord.Client, guild_id: int, data: dict) ->
     await member.edit(nick=data["original_nick"], reason="Tempnick expired - reverting nickname")
 
 
-async def _handle_unmute_role(bot: discord.Client, db, guild_id: int, data: dict) -> None:
+async def _handle_unmute_role(bot: discord.Client, db, event_id: int, guild_id: int, data: dict) -> None:
+    # A re-mute can replace an older expiry after the scheduler has already
+    # fetched its due rows. Verify this exact event still exists before acting;
+    # otherwise the stale timer could unmute someone early.
+    if db.get_scheduled_event(event_id, guild_id, "unmute_role") is None:
+        return
     guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
     try:
         member = guild.get_member(data["user_id"]) or await guild.fetch_member(data["user_id"])
@@ -165,6 +189,37 @@ async def _handle_add_reaction_role(bot: discord.Client, db, guild_id: int, data
         return
 
     db.add_reaction_role(guild_id, message.id, channel.id, emoji_key, role.id)
+
+
+async def _handle_create_reaction_role_menu(bot: discord.Client, db, guild_id: int, data: dict) -> None:
+    guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+    channel = guild.get_channel(data["channel_id"]) or await bot.fetch_channel(data["channel_id"])
+    if not isinstance(channel, discord.TextChannel):
+        logger.warning("dashboard reaction-role menu: channel %s is not text in guild %s", data["channel_id"], guild_id)
+        return
+    try:
+        parsed = parse_menu_pairs(data["pairs"])
+    except ValueError as exc:
+        logger.warning("dashboard reaction-role menu: invalid pairs in guild %s: %s", guild_id, exc)
+        return
+    valid = []
+    for emoji_key, role_id in parsed:
+        role = guild.get_role(role_id)
+        if role is None or role.is_default() or role.managed or role.position >= guild.me.top_role.position:
+            logger.warning("dashboard reaction-role menu: role %s isn't assignable in guild %s", role_id, guild_id)
+            return
+        valid.append((emoji_key, role))
+    embed = discord.Embed(
+        title=(data.get("title") or "Reaction Roles")[:256],
+        description=(data.get("description") or "React below to add/remove a role.")[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Roles", value="\n".join(f"{emoji}  <@&{role.id}>" for emoji, role in valid), inline=False)
+    message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    for emoji_key, role in valid:
+        await message.add_reaction(emoji_key)
+        db.add_reaction_role(guild_id, message.id, channel.id, emoji_key, role.id)
+
 
 
 async def _handle_add_youtube_watch(bot: discord.Client, db, guild_id: int, data: dict) -> None:
