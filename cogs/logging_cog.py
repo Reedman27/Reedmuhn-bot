@@ -10,7 +10,6 @@ resolved against the audit log so the log shows WHO did it and WHY (not
 just "member left"), gracefully falling back to a plain event if the bot
 lacks View Audit Log permission - never crashes for missing permissions.
 """
-import datetime
 import io
 import logging
 
@@ -28,6 +27,8 @@ CATEGORY_CHOICES = [
     app_commands.Choice(name="Moderation (ban/unban/kick/timeout)", value="moderation"),
     app_commands.Choice(name="Server (channels/roles/emoji/settings)", value="server"),
     app_commands.Choice(name="Voice (join/leave/move)", value="voice"),
+    app_commands.Choice(name="Automod (filter actions)", value="automod"),
+    app_commands.Choice(name="Tickets (opened/closed)", value="tickets"),
 ]
 
 # How recent an audit log entry has to be to count as "this is what caused
@@ -120,6 +121,79 @@ class LoggingCog(commands.Cog, name="Logging"):
         removed = self.bot.db.remove_ignored_log_channel(interaction.guild.id, channel.id)
         msg = f"{channel.mention} is no longer ignored." if removed else f"{channel.mention} wasn't ignored."
         await interaction.response.send_message(msg)
+
+    @logging_group.command(name="setup", description="Auto-create any missing log channels and wire them up")
+    @app_commands.describe(
+        under="Optional category to create the new channels under",
+        overwrite="Also recreate channels for categories that already point at a channel that still exists",
+    )
+    @manager_or_permission("manage_guild")
+    async def logging_setup(
+        self,
+        interaction: discord.Interaction,
+        under: discord.CategoryChannel = None,
+        overwrite: bool = False,
+    ):
+        """One-shot setup for people who don't want to hand-create seven
+        channels and run /logging channel seven times: creates a private
+        #<category>-logs channel for anything not already configured (or
+        whose configured channel got deleted), and points that category at
+        it automatically."""
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        guild = interaction.guild
+        me = guild.me
+        if me is not None and not guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message("I need Manage Channels to create log channels.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        existing = self.bot.db.get_all_log_channels(guild.id)
+        manager_role_ids = self.bot.db.list_bot_manager_roles(guild.id)
+
+        # Private by default - deny @everyone, explicitly allow whatever
+        # roles are configured as bot managers plus the bot itself. Server
+        # admins can already see it regardless (Administrator bypasses
+        # channel overwrites), so they don't need an explicit entry.
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+        for role_id in manager_role_ids:
+            role = guild.get_role(role_id)
+            if role is not None:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False)
+        if me is not None:
+            overwrites[me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        created, skipped, failed = [], [], []
+        for choice in CATEGORY_CHOICES:
+            key = choice.value
+            current_id = existing.get(key)
+            if current_id and guild.get_channel(current_id) is not None and not overwrite:
+                skipped.append(choice.name)
+                continue
+            try:
+                channel = await guild.create_text_channel(
+                    name=f"{key}-logs", category=under, overwrites=overwrites,
+                    reason=f"Automatic log channel setup by {interaction.user} (/logging setup)",
+                )
+            except discord.Forbidden:
+                failed.append(f"{choice.name} - missing permission")
+                continue
+            except discord.HTTPException as exc:
+                failed.append(f"{choice.name} - {exc}")
+                continue
+            self.bot.db.set_log_channel(guild.id, key, channel.id)
+            created.append(f"**{choice.name}** → {channel.mention}")
+
+        lines = []
+        if created:
+            lines.append("Created and wired up:\n" + "\n".join(created))
+        if skipped:
+            lines.append("Already configured (left alone): " + ", ".join(skipped))
+        if failed:
+            lines.append("Failed:\n" + "\n".join(failed))
+        await interaction.followup.send("\n\n".join(lines) or "Nothing to do.", ephemeral=True)
 
     # ---- dispatch helper ----
 
@@ -250,9 +324,58 @@ class LoggingCog(commands.Cog, name="Logging"):
         await self._log(before.guild, "messages", embed)
 
     @commands.Cog.listener()
-    async def on_message_delete(self, message: discord.Message):
-        if message.guild is None or message.author.bot:
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        """Handles every message delete, not just ones discord.py happened
+        to have cached. on_message_delete (the non-raw event) silently
+        never fires for anything evicted from the bot's local message
+        cache - which, on a bot process shared across every channel in
+        every guild, is most messages more than a few minutes old. This is
+        the actual fix for deletions going unlogged: the raw event always
+        fires, we just get less detail (no content/author) when the
+        message wasn't cached.
+        """
+        if payload.guild_id is None:
             return
+        guild = self.bot.get_guild(payload.guild_id)
+        if guild is None:
+            return
+        if self.bot.db.is_log_channel_ignored(guild.id, payload.channel_id):
+            return
+
+        message = payload.cached_message
+        if message is not None:
+            # Was cached - full detail path, same as before.
+            if message.author.bot:
+                return
+            await self._log_deleted_message(message)
+            return
+
+        # Not cached: we only know the channel + message ID, not who wrote
+        # it or what it said. Still worth a log entry - "something was
+        # deleted here" beats total silence - just without the content.
+        self.bot.db.record_bot_event(
+            "message.deleted",
+            guild.id,
+            None,
+            payload.message_id,
+            {"channel_id": payload.channel_id},
+            source="discord_event",
+            status="success",
+        )
+        channel = guild.get_channel(payload.channel_id)
+        channel_mention = channel.mention if channel is not None else f"<#{payload.channel_id}>"
+        embed = discord.Embed(
+            description=(
+                f"**Message deleted in {channel_mention}**\n"
+                "*(content unavailable - message wasn't in the bot's cache)*"
+            ),
+            color=_COLOR_REMOVE,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text=f"Message ID: {payload.message_id}")
+        await self._log(guild, "messages", embed)
+
+    async def _log_deleted_message(self, message: discord.Message) -> None:
         self.bot.db.record_bot_event(
             "message.deleted",
             message.guild.id,
@@ -262,8 +385,6 @@ class LoggingCog(commands.Cog, name="Logging"):
             source="discord_event",
             status="success",
         )
-        if self.bot.db.is_log_channel_ignored(message.guild.id, message.channel.id):
-            return
         embed = discord.Embed(
             description=f"**Message deleted in {message.channel.mention}**",
             color=_COLOR_REMOVE,
@@ -293,7 +414,38 @@ class LoggingCog(commands.Cog, name="Logging"):
         await self._log(message.guild, "messages", embed)
 
     @commands.Cog.listener()
-    async def on_bulk_message_delete(self, messages: list[discord.Message]):
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        """Raw counterpart to on_bulk_message_delete for the same reason as
+        on_raw_message_delete above - a purge of older messages (all
+        evicted from cache) would otherwise log nothing at all."""
+        if payload.guild_id is None:
+            return
+        guild = self.bot.get_guild(payload.guild_id)
+        if guild is None:
+            return
+        if self.bot.db.is_log_channel_ignored(guild.id, payload.channel_id):
+            return
+
+        if payload.cached_messages:
+            # Full detail path - reuse the existing transcript builder.
+            await self._log_bulk_deleted_messages(guild, payload.channel_id, payload.cached_messages)
+            return
+
+        channel = guild.get_channel(payload.channel_id)
+        channel_mention = channel.mention if channel is not None else f"<#{payload.channel_id}>"
+        embed = discord.Embed(
+            description=(
+                f"**{len(payload.message_ids)} messages purged in {channel_mention}**\n"
+                "*(content unavailable - none of these were in the bot's cache)*"
+            ),
+            color=_COLOR_REMOVE,
+            timestamp=discord.utils.utcnow(),
+        )
+        await self._log(guild, "messages", embed)
+
+    async def _log_bulk_deleted_messages(
+        self, guild: discord.Guild, channel_id: int, messages: list[discord.Message]
+    ) -> None:
         """Purges are noisy - dumping every message inline would blow past
         embed limits fast. Instead we render a transcript: raw content plus
         attachment URLs (a pasted gif/tenor link is already part of
@@ -302,12 +454,8 @@ class LoggingCog(commands.Cog, name="Logging"):
         as a .txt so nothing purged is actually lost, and show only the most
         recent lines inline for a quick skim.
         """
-        if not messages or messages[0].guild is None:
-            return
-        guild = messages[0].guild
-        channel = messages[0].channel
-        if self.bot.db.is_log_channel_ignored(guild.id, channel.id):
-            return
+        channel = guild.get_channel(channel_id)
+        channel_mention = channel.mention if channel is not None else f"<#{channel_id}>"
 
         # oldest first - matches the order the messages were actually posted in
         ordered = sorted(messages, key=lambda m: m.created_at)
@@ -332,7 +480,7 @@ class LoggingCog(commands.Cog, name="Logging"):
             preview_lines.pop(0)
             preview = "\n".join(preview_lines)
 
-        description = f"**{len(messages)} messages purged in {channel.mention}**\n{preview}"
+        description = f"**{len(messages)} messages purged in {channel_mention}**\n{preview}"
         if len(preview_lines) < len(lines):
             description += f"\n\n*{len(preview_lines)} latest shown*"
 
@@ -347,12 +495,12 @@ class LoggingCog(commands.Cog, name="Logging"):
         # native "select and delete" in the Discord client, or the bot
         # itself when it was /purge or a dashboard-queued purge.
         entry = await self._find_audit_actor(
-            guild, discord.AuditLogAction.message_bulk_delete, channel.id,
+            guild, discord.AuditLogAction.message_bulk_delete, channel_id,
         )
         if entry is not None and entry.user is not None:
             embed.add_field(name="Deleted by", value=str(entry.user), inline=True)
 
-        filename = f"purged-{channel.id}-{int(discord.utils.utcnow().timestamp())}.txt"
+        filename = f"purged-{channel_id}-{int(discord.utils.utcnow().timestamp())}.txt"
         file = discord.File(io.BytesIO(full_transcript.encode("utf-8")), filename=filename)
         await self._log(guild, "messages", embed, file=file)
 

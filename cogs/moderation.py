@@ -1,4 +1,3 @@
-import datetime
 import json
 import time
 
@@ -16,7 +15,13 @@ class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="purge", description="Delete recent messages, optionally only from one user")
+    # Moderation commands live under a single /moderation group (with
+    # /moderation muterole as a nested subgroup) instead of 11 separate
+    # top-level slash commands, to stay well under Discord's 100-top-level
+    # command cap.
+    moderation = app_commands.Group(name="moderation", description="Moderation commands: warnings, mutes, kicks, and bans")
+
+    @moderation.command(name="purge", description="Delete recent messages, optionally only from one user")
     @app_commands.describe(
         amount="Number of messages to delete (1-1000)",
         user="Only delete messages sent by this member",
@@ -140,7 +145,7 @@ class Moderation(commands.Cog):
                 embed.add_field(name="Deleted by", value=breakdown_value, inline=False)
             await logging_cog.log_event(interaction.guild, "moderation", embed)
 
-    @app_commands.command(name="tempban", description="Temporarily ban a user")
+    @moderation.command(name="tempban", description="Temporarily ban a user")
     @app_commands.describe(user="Who to ban", duration="e.g. 10m, 2h, 3d", reason="Reason for the ban")
     @manager_or_permission("ban_members")
     async def tempban(
@@ -186,14 +191,14 @@ class Moderation(commands.Cog):
         # later even if the bot restarts before then.
         run_at = int(time.time()) + seconds
         scheduler.schedule_unban(self.bot.db, interaction.guild.id, user.id, run_at)
-        self.bot.db.record_member_history(interaction.guild.id, user.id, "tempban", interaction.user.id, reason, f"duration_seconds={seconds}")
+        case_number = self.bot.db.record_member_history(interaction.guild.id, user.id, "tempban", interaction.user.id, reason, f"duration_seconds={seconds}", is_case=True)
 
         await interaction.response.send_message(
-            f"Banned {user.mention} for {format_duration(seconds)}. Reason: {reason}"
+            f"Banned {user.mention} (Case #{case_number}) for {format_duration(seconds)}. Reason: {reason}"
         )
 
 
-    @app_commands.command(name="tempnick", description="Temporarily change your nickname (or someone else's, with permission)")
+    @moderation.command(name="tempnick", description="Temporarily change your nickname (or someone else's, with permission)")
     @app_commands.describe(
         nickname="The temporary nickname",
         duration="e.g. 30m, 1h, 2d (defaults to 30m)",
@@ -274,7 +279,7 @@ class Moderation(commands.Cog):
             f"Changed {target.mention}'s nickname to \"{nickname}\" for {format_duration(seconds)}."
         )
 
-    @app_commands.command(name="removetempnick", description="End a member's temporary nickname early and restore their original one")
+    @moderation.command(name="removetempnick", description="End a member's temporary nickname early and restore their original one")
     @app_commands.describe(user="Whose temp nickname to end early")
     @manager_or_permission("manage_nicknames")
     async def remove_tempnick(self, interaction: discord.Interaction, user: discord.Member):
@@ -335,7 +340,7 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"User ID: {target.id}")
         await logging_cog.log_event(guild, "moderation", embed)
 
-    @app_commands.command(name="warn", description="Warn a member")
+    @moderation.command(name="warn", description="Warn a member")
     @app_commands.describe(user="Who to warn", reason="Why they're being warned", rule="Rule number they broke (see /rules) - optional")
     @manager_or_permission("moderate_members")
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str, rule: int | None = None):
@@ -359,10 +364,12 @@ class Moderation(commands.Cog):
 
         self.bot.db.add_warn(interaction.guild.id, user.id, interaction.user.id, reason, int(time.time()), rule_id=rule_id)
         total = self.bot.db.count_warns(interaction.guild.id, user.id)
+        recent_case = self.bot.db.list_cases_for_user(interaction.guild.id, user.id, limit=1)
+        case_note = f" (Case #{recent_case[0][0]})" if recent_case else ""
 
         rule_note = f" (Rule #{rule})" if rule is not None else ""
         await interaction.response.send_message(
-            f"Warned {user.mention}. Reason: {reason}{rule_note}\nThey now have {total} warning{'s' if total != 1 else ''}."
+            f"Warned {user.mention}{case_note}. Reason: {reason}{rule_note}\nThey now have {total} warning{'s' if total != 1 else ''}."
         )
         await self._log_action(interaction.guild, "Warned", user, interaction.user, reason)
 
@@ -375,7 +382,7 @@ class Moderation(commands.Cog):
         if automod_cog is not None:
             await automod_cog.apply_warn_escalation(interaction.guild, user, reason)
 
-    @app_commands.command(name="warnings", description="List a member's warnings")
+    @moderation.command(name="warnings", description="List a member's warnings")
     @app_commands.describe(user="Whose warnings to list")
     @manager_or_permission("moderate_members")
     async def warnings(self, interaction: discord.Interaction, user: discord.Member):
@@ -406,7 +413,7 @@ class Moderation(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="clearwarns", description="Clear all warnings for a member")
+    @moderation.command(name="clearwarns", description="Clear all warnings for a member")
     @app_commands.describe(user="Whose warnings to clear")
     @manager_or_permission("moderate_members")
     async def clearwarns(self, interaction: discord.Interaction, user: discord.Member):
@@ -424,7 +431,7 @@ class Moderation(commands.Cog):
     # Role-based mute with a server-configurable role and permission profile.
     # The same configuration is available from the WebUI and Discord.
 
-    muterole = app_commands.Group(name="muterole", description="Configure the server's muted role")
+    muterole = app_commands.Group(name="muterole", description="Configure the server's muted role", parent=moderation)
 
     async def get_or_create_muted_role(self, guild: discord.Guild) -> discord.Role | None:
         """Return the guild's configured Muted role.
@@ -565,7 +572,7 @@ class Moderation(commands.Cog):
         await interaction.response.defer()
         role = await self.get_or_create_muted_role(interaction.guild)
         if role is None:
-            await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/muterole create` after granting Manage Roles.", ephemeral=True)
+            await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/moderation muterole create` after granting Manage Roles.", ephemeral=True)
             return
         changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
@@ -608,7 +615,7 @@ class Moderation(commands.Cog):
         await interaction.response.defer()
         role = await self.get_or_create_muted_role(interaction.guild)
         if role is None:
-            await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/muterole create` after granting Manage Roles.", ephemeral=True)
+            await interaction.followup.send("Settings saved, but I couldn't find/create the Muted role. Use `/moderation muterole create` after granting Manage Roles.", ephemeral=True)
             return
         changed, failed = await self.apply_muted_role_overwrites(interaction.guild, role)
         await interaction.followup.send(
@@ -660,7 +667,7 @@ class Moderation(commands.Cog):
         scheduler.schedule_role_unmute(self.bot.db, guild.id, run_at, member.id, role.id)
         return True, ""
 
-    @app_commands.command(name="mute", description="Temporarily mute a member with the server's configured Muted role")
+    @moderation.command(name="mute", description="Temporarily mute a member with the server's configured Muted role")
     @app_commands.describe(user="Member to mute", duration="How long, e.g. 10m, 1h, 1d", reason="Why the member is being muted")
     @manager_or_permission("moderate_members")
     async def mute(self, interaction: discord.Interaction, user: discord.Member, duration: str, reason: str = "No reason given"):
@@ -702,16 +709,16 @@ class Moderation(commands.Cog):
             )
             return
 
-        self.bot.db.record_member_history(interaction.guild.id, user.id, "mute", interaction.user.id, reason, f"duration_seconds={seconds}")
+        case_number = self.bot.db.record_member_history(interaction.guild.id, user.id, "mute", interaction.user.id, reason, f"duration_seconds={seconds}", is_case=True)
 
         cfg = self.bot.db.get_guild_config(interaction.guild.id)
         strip_note = " and stripped their other roles for the duration" if cfg["muted_strip_roles"] else ""
         await interaction.followup.send(
-            f"Muted {user.mention} for {format_duration(seconds)}{strip_note}. Reason: {reason}"
+            f"Muted {user.mention} (Case #{case_number}) for {format_duration(seconds)}{strip_note}. Reason: {reason}"
         )
         await self._log_action(interaction.guild, f"Muted ({format_duration(seconds)})", user, interaction.user, reason)
 
-    @app_commands.command(name="unmute", description="Remove a member's Muted role")
+    @moderation.command(name="unmute", description="Remove a member's Muted role")
     @app_commands.describe(user="Who to unmute")
     @manager_or_permission("moderate_members")
     async def unmute(self, interaction: discord.Interaction, user: discord.Member):
@@ -742,7 +749,7 @@ class Moderation(commands.Cog):
 
     # ---- kick ----
 
-    @app_commands.command(name="kick", description="Kick a member")
+    @moderation.command(name="kick", description="Kick a member")
     @app_commands.describe(user="Who to kick", reason="Reason for the kick")
     @manager_or_permission("kick_members")
     async def kick(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason given"):
@@ -764,8 +771,8 @@ class Moderation(commands.Cog):
             )
             return
 
-        self.bot.db.record_member_history(interaction.guild.id, user.id, "kick", interaction.user.id, reason)
-        await interaction.response.send_message(f"Kicked {user.mention}. Reason: {reason}")
+        case_number = self.bot.db.record_member_history(interaction.guild.id, user.id, "kick", interaction.user.id, reason, is_case=True)
+        await interaction.response.send_message(f"Kicked {user.mention} (Case #{case_number}). Reason: {reason}")
 
 
 async def setup(bot: commands.Bot):

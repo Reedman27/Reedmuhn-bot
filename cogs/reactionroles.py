@@ -56,6 +56,36 @@ def resolve_emoji_key(raw: str) -> str | None:
     return str(partial)
 
 
+
+ROLE_REF_RE = re.compile(r"^(?:<@&(\d+)>|(\d+))$")
+
+
+def parse_menu_pairs(raw: str) -> list[tuple[str, int]]:
+    """Parse `emoji=role_id` pairs separated by semicolons/newlines."""
+    pairs: list[tuple[str, int]] = []
+    for item in re.split(r"[;\n]+", raw or ""):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        if len(pairs) >= 10:
+            raise ValueError("Use 10 or fewer emoji=role pairs.")
+        emoji, role_ref = item.split("=", 1)
+        emoji_key = resolve_emoji_key(emoji.strip())
+        if not emoji_key:
+            raise ValueError(f"Invalid emoji: {emoji.strip()}")
+        match = ROLE_REF_RE.fullmatch(role_ref.strip())
+        if not match:
+            raise ValueError(f"Invalid role ID/mention: {role_ref.strip()}")
+        role_id = int(match.group(1) or match.group(2))
+        if any(existing_emoji == emoji_key for existing_emoji, _ in pairs):
+            raise ValueError(f"Duplicate emoji: {emoji_key}")
+        pairs.append((emoji_key, role_id))
+        if len(pairs) > 10:
+            raise ValueError("Use 10 or fewer emoji=role pairs.")
+    if not pairs:
+        raise ValueError("Add at least one emoji=role pair.")
+    return pairs
+
 from utils import manager_or_permission
 
 class ReactionRoles(commands.Cog):
@@ -87,6 +117,72 @@ class ReactionRoles(commands.Cog):
                 ephemeral=True,
             )
             return None
+
+    @app_commands.command(name="reactionrolemenu", description="Create a reaction-role menu message in this channel")
+    @app_commands.describe(
+        pairs="Pairs separated by ; or newlines, e.g. 😀=123456789;🎮=<@&987654321>. Up to 10.",
+        title="Embed title",
+        description="Optional text shown above the reaction roles",
+        channel="Channel where the menu should be posted (defaults to this channel)",
+    )
+    @manager_or_permission("manage_roles")
+    async def reactionrolemenu(
+        self,
+        interaction: discord.Interaction,
+        pairs: str,
+        title: str = "Reaction Roles",
+        description: str = "React below to add/remove a role.",
+        channel: discord.TextChannel | None = None,
+    ):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        target = channel or interaction.channel
+        if not isinstance(target, discord.TextChannel):
+            await interaction.response.send_message("Pick a regular text channel.", ephemeral=True)
+            return
+        try:
+            parsed = parse_menu_pairs(pairs)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        valid: list[tuple[str, discord.Role]] = []
+        for emoji_key, role_id in parsed:
+            role = interaction.guild.get_role(role_id)
+            if role is None:
+                await interaction.response.send_message(f"I can't find role `{role_id}`.", ephemeral=True)
+                return
+            if role.is_default() or role.managed or role.position >= interaction.guild.me.top_role.position:
+                await interaction.response.send_message(
+                    f"I can't assign {role.mention}. Move the role below my highest role.", ephemeral=True
+                )
+                return
+            valid.append((emoji_key, role))
+
+        embed = discord.Embed(
+            title=(title.strip() or "Reaction Roles")[:256],
+            description=(description.strip() or "React below to add/remove a role.")[:4096],
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Roles",
+            value="\n".join(f"{emoji}  <@&{role.id}>" for emoji, role in valid),
+            inline=False,
+        )
+        try:
+            message = await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            for emoji_key, role in valid:
+                await message.add_reaction(emoji_key)
+                self.bot.db.add_reaction_role(interaction.guild.id, message.id, target.id, emoji_key, role.id)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to send messages or add reactions there.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message("Discord rejected the reaction-role menu. Check the emojis and channel permissions.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"Created the reaction-role menu: {message.jump_url}")
 
     @app_commands.command(name="addreactionrole", description="React to a message with an emoji to give/remove a role")
     @app_commands.describe(

@@ -62,7 +62,7 @@ class Reports(commands.Cog):
                 embed.add_field(name="Reported by", value=interaction.user.mention, inline=True)
                 embed.set_footer(text="Review this on the dashboard's Reports page")
                 try:
-                    await channel.send(embed=embed)
+                    await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 except discord.Forbidden:
                     logger.warning("missing permission to post report notification in guild %s", interaction.guild.id)
 
@@ -85,7 +85,9 @@ class Reports(commands.Cog):
             color=discord.Color.gold(),
         )
         embed.set_footer(text="Review and resolve these on the dashboard's Reports page")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
 
     @app_commands.command(name="setreportschannel", description="Set where new report notifications get posted")
     @app_commands.describe(channel="Channel for report notifications - omit to turn notifications off")

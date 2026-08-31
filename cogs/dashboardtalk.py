@@ -6,7 +6,6 @@ and then marked sent only after Discord confirms delivery. Transient failures
 are retried; permanent failures remain visible in the dashboard.
 """
 import logging
-import time
 
 import discord
 from discord.ext import commands, tasks
@@ -103,13 +102,13 @@ class DashboardTalk(commands.Cog):
                     content,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-            except discord.Forbidden as exc:
+            except discord.Forbidden:
                 error = "Discord denied sending in that channel (check Send Messages permission)."
                 self.bot.db.mark_outbound_message_failed(message_id, error, retry=False)
                 logger.warning("dashboard talk: message %s forbidden in channel %s", message_id, channel_id)
                 self._record_event("dashboard.talk.failed", guild_id, channel_id,
                                    f"message_id={message_id} error={error}", status="failed")
-            except discord.NotFound as exc:
+            except discord.NotFound:
                 error = "The Discord channel or destination no longer exists."
                 self.bot.db.mark_outbound_message_failed(message_id, error, retry=False)
                 logger.warning("dashboard talk: message %s destination disappeared", message_id)

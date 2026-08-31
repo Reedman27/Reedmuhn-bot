@@ -239,6 +239,9 @@ class DashboardModeration(commands.Cog):
         for request_id, guild_id, user_id, action, duration_seconds, reason in requests:
             try:
                 error = await self._apply_mod_action(guild_id, user_id, action, duration_seconds, reason)
+                if not error and action in {"kick", "ban", "tempban", "mute_role", "timeout"} and reason.startswith("Warnings:"):
+                    self.bot.db.clear_automod_violations(guild_id, user_id)
+                    self.bot.db.set_escalation_reset(guild_id, user_id)
                 self.bot.db.complete_mod_action(request_id, error)
                 if error:
                     logger.warning("WebUI mod action %s (%s on %s in %s) failed: %s", request_id, action, user_id, guild_id, error)

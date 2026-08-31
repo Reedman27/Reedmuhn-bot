@@ -150,7 +150,13 @@ class Verification(commands.Cog):
         self, interaction: discord.Interaction, channel: discord.TextChannel, role: discord.Role,
         message: str = "Click the button below to verify and unlock the rest of the server.",
     ):
-        if role >= interaction.guild.me.top_role:
+        me = interaction.guild.me
+        if role.is_default() or role.managed:
+            await interaction.response.send_message(
+                "That role can't be used for verification. Choose a normal, non-managed role.", ephemeral=True
+            )
+            return
+        if me is not None and role >= me.top_role:
             await interaction.response.send_message(
                 "I can't assign that role - my role needs to be above it in the role list.", ephemeral=True
             )

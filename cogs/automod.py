@@ -5,7 +5,7 @@ violations, and escalating through a configurable ladder of punishments
 (warn, mute role, timeout, kick, ban, temp ban) once someone racks up
 enough warnings in a rolling window. The ladder itself - how many warnings
 and what happens at each step - is fully configurable per guild from the
-WebUI (or /automodescalation), not hardcoded here.
+WebUI (or /automod escalation), not hardcoded here.
 """
 import datetime
 import logging
@@ -21,7 +21,7 @@ from automod_checks import (
     UserMessageTracker,
     caps_violation,
     contains_banned_word,
-    contains_gif,
+    gif_identifiers,
     count_consecutive_duplicates,
     find_invite_codes,
     sliding_window_count,
@@ -44,7 +44,9 @@ ACTION_LABELS = {
 # Actions that take a duration (seconds). Kick/ban/warn are permanent/instant.
 TIMED_ACTIONS = {"mute_role", "timeout", "tempban"}
 # Actions that resolve the current "cycle" of warnings, so the automod
-# violation count resets afterwards. "warn" deliberately isn't one of
+# violation count resets afterwards. Legacy "warn" tiers are not offered for new
+# configuration because the threshold warning is already an actual warning; if an
+# old database still contains one, it is treated as a log-only legacy tier.
 # these - it's meant as an early, non-restrictive rung on the ladder (e.g.
 # 3 warnings -> formal warn, 5 -> mute, 8 -> ban) and shouldn't erase the
 # progress that's building toward the harsher tiers above it.
@@ -130,7 +132,13 @@ class AutoMod(commands.Cog):
 
     # ---- configuration commands ----
 
-    @app_commands.command(name="automod", description="Turn automod on or off")
+    # All automod commands live under a single /automod group (with the
+    # four sub-lists below nested one level further, e.g. /automod word
+    # add) instead of 14 separate top-level slash commands, to stay well
+    # under Discord's 100-top-level-command cap.
+    automod = app_commands.Group(name="automod", description="Configure the message-filtering automod system")
+
+    @automod.command(name="toggle", description="Turn automod on or off")
     @app_commands.describe(enabled="Whether automod should be active")
     @manager_or_permission("manage_guild")
     async def automod_toggle(self, interaction: discord.Interaction, enabled: bool):
@@ -141,7 +149,7 @@ class AutoMod(commands.Cog):
         await interaction.response.send_message(f"Automod is now {'on' if enabled else 'off'}.")
 
     automodword = app_commands.Group(
-        name="automodword", description="Manage the server's banned-word filter"
+        name="word", description="Manage the server's banned-word filter", parent=automod
     )
 
     @automodword.command(name="add", description="Add a word/phrase to the banned-word filter")
@@ -196,7 +204,7 @@ class AutoMod(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="automodwords", description="Set the banned word list (replaces the current list)")
+    @automod.command(name="words", description="Set the banned word list (replaces the current list)")
     @app_commands.describe(words="Comma-separated list of words, e.g. word1, word2, word3")
     @manager_or_permission("manage_guild")
     async def automod_words(self, interaction: discord.Interaction, words: str):
@@ -207,7 +215,7 @@ class AutoMod(commands.Cog):
         self.bot.db.set_automod_words(interaction.guild.id, word_list)
         await interaction.response.send_message(f"Banned word list updated ({len(word_list)} words).")
 
-    @app_commands.command(name="automodalikewords", description="Toggle catching look-alike spellings of banned words")
+    @automod.command(name="alikewords", description="Toggle catching look-alike spellings of banned words")
     @app_commands.describe(enabled="Whether to also catch spaced-out/leetspeak/stretched-out evasions of banned words")
     @manager_or_permission("manage_guild")
     async def automod_alike_words(self, interaction: discord.Interaction, enabled: bool):
@@ -221,7 +229,7 @@ class AutoMod(commands.Cog):
             "punctuated, and stretched-out versions of the words, not just exact matches."
         )
 
-    @app_commands.command(name="automodinvites", description="Toggle blocking Discord invite links")
+    @automod.command(name="invites", description="Toggle blocking Discord invite links")
     @manager_or_permission("manage_guild")
     async def automod_invites(self, interaction: discord.Interaction, block: bool):
         if interaction.guild is None:
@@ -230,7 +238,7 @@ class AutoMod(commands.Cog):
         self.bot.db.set_automod_invites(interaction.guild.id, block)
         await interaction.response.send_message(f"Invite link blocking is now {'on' if block else 'off'}.")
 
-    @app_commands.command(name="automodgifs", description="Toggle blocking GIFs (uploaded, or linked from Tenor/Giphy)")
+    @automod.command(name="gifs", description="Toggle blocking GIFs (uploaded, or linked from Tenor/Giphy)")
     @manager_or_permission("manage_guild")
     async def automod_gifs(self, interaction: discord.Interaction, block: bool):
         if interaction.guild is None:
@@ -239,7 +247,63 @@ class AutoMod(commands.Cog):
         self.bot.db.set_automod_block_gifs(interaction.guild.id, block)
         await interaction.response.send_message(f"GIF blocking is now {'on' if block else 'off'}.")
 
-    @app_commands.command(name="automodstatus", description="Show current automod settings")
+    automodgifallow = app_commands.Group(name="gifallow", description="Manage GIFs exempt from blanket GIF blocking", parent=automod)
+
+    @automodgifallow.command(name="add", description="Allow one GIF link or uploaded filename")
+    @app_commands.describe(identifier="Exact Tenor/Giphy GIF URL or uploaded .gif filename")
+    @manager_or_permission("manage_guild")
+    async def automodgifallow_add(self, interaction: discord.Interaction, identifier: str):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True); return
+        try: self.bot.db.add_automod_gif_allowlist(interaction.guild.id, identifier)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True); return
+        await interaction.response.send_message(f"Added `{identifier.strip()}` to the GIF allowlist.")
+
+    @automodgifallow.command(name="remove", description="Remove one GIF from the allowlist")
+    @app_commands.describe(identifier="Exact URL or uploaded filename")
+    @manager_or_permission("manage_guild")
+    async def automodgifallow_remove(self, interaction: discord.Interaction, identifier: str):
+        try: ok=self.bot.db.remove_automod_gif_allowlist(interaction.guild.id,identifier)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc),ephemeral=True); return
+        await interaction.response.send_message("Removed from the GIF allowlist." if ok else "That GIF is not on the allowlist.",ephemeral=True)
+
+    @automodgifallow.command(name="list", description="List GIFs exempt from blanket GIF blocking")
+    @manager_or_permission("manage_guild")
+    async def automodgifallow_list(self, interaction: discord.Interaction):
+        rows=self.bot.db.list_automod_gif_allowlist(interaction.guild.id)
+        await interaction.response.send_message("GIF allowlist is empty." if not rows else "\n".join(f"• `{x}`" for x,_ in rows))
+
+    automodgifblock = app_commands.Group(name="gifblock", description="Manage GIFs that are always blocked", parent=automod)
+
+    @automodgifblock.command(name="add", description="Always block one GIF link or uploaded filename")
+    @app_commands.describe(identifier="Exact Tenor/Giphy GIF URL or uploaded .gif filename")
+    @manager_or_permission("manage_guild")
+    async def automodgifblock_add(self, interaction: discord.Interaction, identifier: str):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True); return
+        try: self.bot.db.add_automod_gif_blocklist(interaction.guild.id, identifier)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True); return
+        await interaction.response.send_message(f"Added `{identifier.strip()}` to the GIF blocklist. It will be blocked even when blanket GIF blocking is off.")
+
+    @automodgifblock.command(name="remove", description="Remove one GIF from the blocklist")
+    @app_commands.describe(identifier="Exact URL or uploaded filename")
+    @manager_or_permission("manage_guild")
+    async def automodgifblock_remove(self, interaction: discord.Interaction, identifier: str):
+        try: ok=self.bot.db.remove_automod_gif_blocklist(interaction.guild.id,identifier)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc),ephemeral=True); return
+        await interaction.response.send_message("Removed from the GIF blocklist." if ok else "That GIF is not on the blocklist.",ephemeral=True)
+
+    @automodgifblock.command(name="list", description="List always-blocked GIFs")
+    @manager_or_permission("manage_guild")
+    async def automodgifblock_list(self, interaction: discord.Interaction):
+        rows=self.bot.db.list_automod_gif_blocklist(interaction.guild.id)
+        await interaction.response.send_message("GIF blocklist is empty." if not rows else "\n".join(f"• `{x}`" for x,_ in rows))
+
+    @automod.command(name="status", description="Show current automod settings")
     async def automod_status(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
@@ -262,11 +326,11 @@ class AutoMod(commands.Cog):
             for tier in tiers:
                 lines.append(f"  {tier['threshold']} warnings -> {_describe_tier(tier)}")
         else:
-            lines.append("Escalation tiers: none configured (use the WebUI or /automodescalation to add some)")
+            lines.append("Escalation tiers: none configured (use the WebUI or /automod escalation to add some)")
         await interaction.response.send_message("\n".join(lines))
 
     automodescalation = app_commands.Group(
-        name="automodescalation", description="Configure automod's escalating punishments"
+        name="escalation", description="Configure automod's escalating punishments", parent=automod
     )
 
     @automodescalation.command(name="add", description="Add or replace the punishment for a given warning count")
@@ -276,7 +340,6 @@ class AutoMod(commands.Cog):
         duration="Required for mute/timeout/tempban, e.g. 10m, 1h, 1d. Ignored for kick/ban.",
     )
     @app_commands.choices(action=[
-        app_commands.Choice(name="Warn", value="warn"),
         app_commands.Choice(name="Mute (role)", value="mute_role"),
         app_commands.Choice(name="Timeout", value="timeout"),
         app_commands.Choice(name="Kick", value="kick"),
@@ -293,6 +356,13 @@ class AutoMod(commands.Cog):
             return
 
         from utils import parse_duration
+
+        if action.value == "warn":
+            await interaction.response.send_message(
+                "Warn is no longer a valid escalation punishment. The warning that reaches the threshold is already recorded; use Mute, Timeout, Kick, Ban, or Temporary ban instead.",
+                ephemeral=True,
+            )
+            return
 
         duration_seconds = None
         if action.value in TIMED_ACTIONS:
@@ -337,7 +407,7 @@ class AutoMod(commands.Cog):
         self.bot.db.remove_automod_escalation_tier(interaction.guild.id, match["id"])
         await interaction.response.send_message(f"Removed the {warnings}-warning tier.")
 
-    @app_commands.command(name="automodqueue", description="List messages held for review (fuzzy word-filter matches)")
+    @automod.command(name="queue", description="List messages held for review (fuzzy word-filter matches)")
     @manager_or_permission("moderate_members")
     async def automodqueue(self, interaction: discord.Interaction):
         if interaction.guild is None:
@@ -356,11 +426,11 @@ class AutoMod(commands.Cog):
             description="\n".join(lines),
             color=discord.Color.orange(),
         )
-        embed.set_footer(text="/automodqueueconfirm <id> or /automodqueuedismiss <id> to resolve one")
+        embed.set_footer(text="/automod queueconfirm <id> or /automod queuedismiss <id> to resolve one")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="automodqueueconfirm", description="Confirm a queued match and apply the escalation ladder")
-    @app_commands.describe(review_id="The queue entry's number, from /automodqueue")
+    @automod.command(name="queueconfirm", description="Confirm a queued match and apply the escalation ladder")
+    @app_commands.describe(review_id="The queue entry's number, from /automod queue")
     @manager_or_permission("moderate_members")
     async def automodqueueconfirm(self, interaction: discord.Interaction, review_id: int):
         if interaction.guild is None:
@@ -383,8 +453,8 @@ class AutoMod(commands.Cog):
         await self._finalize_queued_violation(interaction.guild, member, review["rule_label"])
         await interaction.response.send_message(f"Confirmed #{review_id} - escalation ladder applied if they hit a tier.", ephemeral=True)
 
-    @app_commands.command(name="automodqueuedismiss", description="Dismiss a queued match with no further action")
-    @app_commands.describe(review_id="The queue entry's number, from /automodqueue")
+    @automod.command(name="queuedismiss", description="Dismiss a queued match with no further action")
+    @app_commands.describe(review_id="The queue entry's number, from /automod queue")
     @manager_or_permission("moderate_members")
     async def automodqueuedismiss(self, interaction: discord.Interaction, review_id: int):
         if interaction.guild is None:
@@ -406,7 +476,7 @@ class AutoMod(commands.Cog):
             embed.add_field(name="Reason", value=review["rule_label"], inline=True)
             await logging_cog.log_event(interaction.guild, "automod", embed)
 
-    @app_commands.command(name="automodqueuefuzzy", description="Toggle whether fuzzy word-filter matches get queued for review instead of acted on immediately")
+    @automod.command(name="queuefuzzy", description="Toggle whether fuzzy word-filter matches get queued for review instead of acted on immediately")
     @app_commands.describe(enabled="On to hold fuzzy matches for review; off to act on them immediately like other violations")
     @manager_or_permission("manage_guild")
     async def automodqueuefuzzy(self, interaction: discord.Interaction, enabled: bool):
@@ -468,12 +538,17 @@ class AutoMod(commands.Cog):
         if cfg["block_invites"] and find_invite_codes(content):
             return ("posting a Discord invite link", False)
 
-        if cfg["block_gifs"] and contains_gif(
+        gif_identifiers_found = gif_identifiers(
             content,
             attachment_filenames=[a.filename for a in message.attachments],
             attachment_content_types=[a.content_type for a in message.attachments],
-        ):
-            return ("posting a GIF", False)
+        )
+        if gif_identifiers_found:
+            blocked, allowed = self.bot.db.automod_gif_list_matches(message.guild.id, gif_identifiers_found)
+            if blocked:
+                return ("posting a GIF on the server's GIF blocklist", False)
+            if cfg["block_gifs"] and not allowed:
+                return ("posting a GIF", False)
 
         banned = contains_banned_word(content, cfg["banned_words"], fuzzy=cfg["fuzzy_words"])
         if banned:
@@ -560,17 +635,18 @@ class AutoMod(commands.Cog):
     async def _apply_escalation_tier(self, message: discord.Message, tier: dict, violation_reason: str):
         await self._apply_tier_action(message.guild, message.author, tier, violation_reason, source="Automod")
 
-    async def apply_warn_escalation(self, guild: discord.Guild, member: discord.Member, latest_reason: str) -> None:
+    async def apply_warn_escalation(self, guild: discord.Guild, member: discord.Member, latest_reason: str) -> str | None:
         """Checks a manually-issued warning (from /warn or the WebUI's "Add
         warning") against the same escalation ladder configured on the
         Automod tab, and applies the matching tier if the member's warning
         count within the configured window lands exactly on one.
 
-        Manual warns and AutoMod violations are tracked separately (the
-        `warns` table vs `automod_violations`), but both climb the *same*
-        tier list, since a mod hand-issuing 3 warnings is just as much a
-        signal as AutoMod catching 3 violations - the ladder shouldn't care
-        which one did the counting.
+        Manual warns and AutoMod violations are stored separately for auditability,
+        but the escalation counter combines both tables. The ladder therefore
+        sees the same member-level warning history regardless of whether the
+        warning came from staff or AutoMod. A resolving punishment advances the
+        escalation cycle reset marker without deleting the permanent warning
+        history.
 
         Deliberately only fires on an *exact* threshold match, unlike
         AutoMod's own violation handling - AutoMod clears its violation
@@ -581,32 +657,36 @@ class AutoMod(commands.Cog):
         harshest punishment forever.
         """
         cfg = self.bot.db.get_automod_config(guild.id)
-        recent = self.bot.db.count_recent_warns(guild.id, member.id, int(time.time()) - cfg["violation_window_seconds"])
+        recent = self.bot.db.count_recent_escalation_warnings(guild.id, member.id, int(time.time()) - cfg["violation_window_seconds"])
         tiers = self.bot.db.list_automod_escalation_tiers(guild.id)
         tier = next((t for t in tiers if t["threshold"] == recent), None)
         if tier is None:
-            return
-        await self._apply_tier_action(guild, member, tier, latest_reason, source="Warnings")
+            return None
+        return await self._apply_tier_action(guild, member, tier, latest_reason, source="Warnings")
 
-    async def _apply_tier_action(self, guild: discord.Guild, member: discord.Member, tier: dict, violation_reason: str, source: str):
+    async def _apply_tier_action(self, guild: discord.Guild, member: discord.Member, tier: dict, violation_reason: str, source: str) -> str | None:
         action = tier["action"]
         duration = tier["duration_seconds"]
         reason = f"{source}: {tier['threshold']} warnings (latest: {violation_reason})"
 
         try:
             if action == "warn":
-                self.bot.db.add_warn(guild.id, member.id, self.bot.user.id, reason, int(time.time()))
+                # A tier action must never create another warning event; doing
+                # so double-counts the very threshold that triggered it.
+                self.bot.db.record_member_history(guild.id, member.id, "automod_warn_tier", self.bot.user.id if self.bot.user else None, reason)
             elif action == "timeout":
                 await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=duration), reason=reason)
             elif action == "mute_role":
                 moderation_cog = self.bot.get_cog("Moderation")
                 if moderation_cog is None:
                     logger.warning("can't apply mute_role tier - Moderation cog isn't loaded")
-                    return
+                    await self._log_tier_failure(guild, member, tier, "Moderation cog isn't loaded")
+                    return "Moderation cog isn't loaded"
                 ok, why = await moderation_cog.apply_role_mute(member, duration, reason)
                 if not ok:
                     logger.warning("automod mute_role tier failed for %s in guild %s: %s", member.id, guild.id, why)
-                    return
+                    await self._log_tier_failure(guild, member, tier, why)
+                    return why
             elif action == "kick":
                 await member.kick(reason=reason)
             elif action == "ban":
@@ -616,13 +696,20 @@ class AutoMod(commands.Cog):
                 scheduler.schedule_unban(self.bot.db, guild.id, member.id, int(time.time()) + duration)
             else:
                 logger.warning("unknown automod escalation action %r for guild %s", action, guild.id)
-                return
+                await self._log_tier_failure(guild, member, tier, f"Unknown escalation action: {action}")
+                return f"Unknown escalation action: {action}"
         except discord.Forbidden:
+            error = f"couldn't {action} the member - missing permission or role hierarchy"
             logger.warning(
                 "couldn't %s %s in guild %s - missing permission or role hierarchy",
                 action, member.id, guild.id,
             )
-            return
+            await self._log_tier_failure(guild, member, tier, error)
+            return error
+        except discord.HTTPException as exc:
+            error = f"Discord rejected the {action}: {exc}"
+            await self._log_tier_failure(guild, member, tier, error)
+            return error
 
         # Every other action either removes the member (kick/ban/tempban)
         # or otherwise restricts them (mute/timeout) - either way that
@@ -634,6 +721,7 @@ class AutoMod(commands.Cog):
         # never cleared automatically, from either source.
         if action in RESOLVING_ACTIONS:
             self.bot.db.clear_automod_violations(guild.id, member.id)
+            self.bot.db.set_escalation_reset(guild.id, member.id)
         self.bot.db.record_member_history(
             guild.id, member.id, f"automod_{action}", self.bot.user.id if self.bot.user else None,
             reason, f"duration_seconds={duration}" if duration else None,
@@ -648,6 +736,20 @@ class AutoMod(commands.Cog):
             pass
 
         await self._log_action(guild, tier, member, violation_reason, source)
+
+    async def _log_tier_failure(self, guild: discord.Guild, member: discord.Member, tier: dict, error: str) -> None:
+        logging_cog = self.bot.get_cog("Logging")
+        if logging_cog is None:
+            return
+        embed = discord.Embed(
+            description=f"**AutoMod escalation failed** - {member.mention}",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Tier", value=f"{tier['threshold']} warnings → {ACTION_LABELS.get(tier['action'], tier['action'])}", inline=False)
+        embed.add_field(name="Failure", value=error[:1000], inline=False)
+        embed.set_footer(text=f"User ID: {member.id}")
+        await logging_cog.log_event(guild, "moderation", embed)
 
     async def _log_violation(self, message: discord.Message, reason: str, queued: bool) -> None:
         """Every AutoMod catch, not just the ones that cross an escalation

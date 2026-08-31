@@ -11,6 +11,7 @@ panel message) needs a live gateway connection the dashboard process
 doesn't have, both queue a request here and this cog's pollers pick them
 up (same queue/claim/complete pattern as dashboardmoderation.py).
 """
+import asyncio
 import logging
 
 import discord
@@ -116,6 +117,25 @@ class Tickets(commands.Cog, name="Tickets"):
             await interaction.followup.send(f"Saved, but couldn't post the panel: {error}", ephemeral=True)
         else:
             await interaction.followup.send(f"Ticket panel is up in {channel.mention}.", ephemeral=True)
+
+    @app_commands.command(name="ticketdeleteonclose", description="Choose whether closing a ticket deletes its channel")
+    @app_commands.describe(
+        enabled="If on, closing a ticket deletes the channel instead of just locking it",
+        delay="Seconds to wait after closing before deleting (gives everyone a moment to see it closed)",
+    )
+    @manager_or_permission("manage_guild")
+    async def ticketdeleteonclose(
+        self, interaction: discord.Interaction, enabled: bool, delay: app_commands.Range[int, 3, 300] = 10
+    ):
+        self.bot.db.set_ticket_delete_on_close(interaction.guild.id, enabled, delay)
+        if enabled:
+            await interaction.response.send_message(
+                f"Closing a ticket will now delete its channel **{delay}s** after it's closed."
+            )
+        else:
+            await interaction.response.send_message(
+                "Closing a ticket will now just lock and rename the channel, same as before - it won't be deleted."
+            )
 
     @app_commands.command(name="ticket", description="Open a private support ticket")
     @app_commands.describe(subject="What's this about?")
@@ -251,18 +271,37 @@ class Tickets(commands.Cog, name="Tickets"):
             return None  # lost the race to another close attempt - the other one will finish the job
 
         channel = guild.get_channel(channel_id)
+        cfg = self.bot.db.get_ticket_config(guild.id)
         if channel is not None and isinstance(channel, discord.TextChannel):
-            try:
-                opener = guild.get_member(opener_id)
-                if opener is not None:
-                    await channel.set_permissions(opener, view_channel=True, send_messages=False, reason="Ticket closed")
-                if not channel.name.startswith("closed-"):
-                    await channel.edit(name=f"closed-{channel.name}"[:100], reason="Ticket closed")
-            except (discord.Forbidden, discord.HTTPException):
-                logger.warning("ticket %s: couldn't fully lock/rename channel %s", ticket_id, channel_id)
+            if cfg["delete_on_close"]:
+                delay = cfg["delete_delay_seconds"]
+                try:
+                    await channel.send(f"🔒 Ticket closed. This channel will be deleted in **{delay}s**.")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+                # Scheduled rather than awaited here so the close command/
+                # WebUI poll returns immediately instead of blocking on the
+                # delay - the actual deletion happens in the background.
+                asyncio.create_task(self._delete_ticket_channel(channel, delay, ticket_id))
+            else:
+                try:
+                    opener = guild.get_member(opener_id)
+                    if opener is not None:
+                        await channel.set_permissions(opener, view_channel=True, send_messages=False, reason="Ticket closed")
+                    if not channel.name.startswith("closed-"):
+                        await channel.edit(name=f"closed-{channel.name}"[:100], reason="Ticket closed")
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.warning("ticket %s: couldn't fully lock/rename channel %s", ticket_id, channel_id)
 
         await self._log(guild, f"ticket #{ticket_id} closed", closed_by, channel, reason=reason)
         return None
+
+    async def _delete_ticket_channel(self, channel: discord.TextChannel, delay: int, ticket_id: int) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await channel.delete(reason=f"Ticket #{ticket_id} closed (auto-delete)")
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            logger.warning("ticket %s: couldn't delete channel %s after close", ticket_id, channel.id)
 
     async def _post_or_update_panel(self, guild_id: int) -> str | None:
         """Posts the ticket-panel embed+button, or edits the existing one

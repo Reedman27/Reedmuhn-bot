@@ -11,6 +11,8 @@ forgive the mistake instead of resetting the count. Saves only cover
 wrong numbers, not counting twice in a row - that's a distinct rule and
 resets regardless of saves, same as the reference bot this was modeled on.
 """
+import asyncio
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -23,6 +25,14 @@ from utils import manager_or_permission
 class Counting(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Per-guild lock so two near-simultaneous messages in the counting
+        # channel can't both read the same current_number before either has
+        # written its update back - without this, two people posting the
+        # next number at almost the same time can both be told they're
+        # right (or both trigger a reset), and the stored count can end up
+        # skipping or repeating a number. Same pattern as InviteTracking's
+        # per-guild join lock in cogs/invites.py.
+        self._guild_locks: dict[int, asyncio.Lock] = {}
 
     @app_commands.command(name="calc", description="Evaluates a math expression")
     @app_commands.describe(expression="e.g. 7*6, (3+2)**2, 10/4")
@@ -146,50 +156,64 @@ class Counting(commands.Cog):
         except CalcError:
             return  # not a valid expression either - ignore, don't punish
 
-        expected = state["current_number"] + 1
-
-        if message.author.id == state["last_user_id"]:
-            # Saves deliberately don't cover this - counting twice in a row
-            # is a distinct rule violation, not a miscount.
-            await message.add_reaction("❌")
-            await message.channel.send(
-                f"{message.author.mention} you can't count twice in a row! Back to **0**. Next up: **1**."
-            )
-            self.bot.db.reset_count(message.guild.id)
-            return
-
-        if value != expected:
-            user_stats = self.bot.db.get_user_counting_stats(message.guild.id, message.author.id)
-            if user_stats["saves"] > 0:
-                remaining = self.bot.db.use_save(message.guild.id, message.author.id)
-                await message.add_reaction("🛡️")
-                await message.channel.send(
-                    f"Save used! You have {remaining} save(s) left. "
-                    f"Still on **{state['current_number']}** - next up: **{expected}**."
-                )
+        # Everything from here on reads current_number/last_user_id and then
+        # writes an update based on what it read, so it all has to happen as
+        # one unit per guild - otherwise two messages posted at nearly the
+        # same time (each awaiting a reaction/send before its DB write lands)
+        # can both read the same state and step on each other's update.
+        lock = self._guild_locks.setdefault(message.guild.id, asyncio.Lock())
+        async with lock:
+            # Re-fetch inside the lock: the state read above (used only for
+            # the cheap channel-match check) may be stale by now if another
+            # message was still being processed when this one arrived.
+            state = self.bot.db.get_counting(message.guild.id)
+            if state is None:
                 return
 
-            await message.add_reaction("❌")
-            await message.channel.send(
-                f"{message.author.mention} wrong number! Expected **{expected}**. Back to **0**. Next up: **1**."
+            expected = state["current_number"] + 1
+
+            if message.author.id == state["last_user_id"]:
+                # Saves deliberately don't cover this - counting twice in a row
+                # is a distinct rule violation, not a miscount.
+                await message.add_reaction("❌")
+                await message.channel.send(
+                    f"{message.author.mention} you can't count twice in a row! Back to **0**. Next up: **1**."
+                )
+                self.bot.db.reset_count(message.guild.id)
+                return
+
+            if value != expected:
+                user_stats = self.bot.db.get_user_counting_stats(message.guild.id, message.author.id)
+                if user_stats["saves"] > 0:
+                    remaining = self.bot.db.use_save(message.guild.id, message.author.id)
+                    await message.add_reaction("🛡️")
+                    await message.channel.send(
+                        f"Save used! You have {remaining} save(s) left. "
+                        f"Still on **{state['current_number']}** - next up: **{expected}**."
+                    )
+                    return
+
+                await message.add_reaction("❌")
+                await message.channel.send(
+                    f"{message.author.mention} wrong number! Expected **{expected}**. Back to **0**. Next up: **1**."
+                )
+                self.bot.db.reset_count(message.guild.id)
+                return
+
+            await message.add_reaction("✅")
+            self.bot.db.advance_count(message.guild.id, expected, message.author.id)
+
+            _, _, earned_save = self.bot.db.record_correct_count(
+                message.guild.id, message.author.id, state["save_milestone"], state["max_saves"]
             )
-            self.bot.db.reset_count(message.guild.id)
-            return
+            if earned_save:
+                await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
 
-        await message.add_reaction("✅")
-        self.bot.db.advance_count(message.guild.id, expected, message.author.id)
-
-        _, _, earned_save = self.bot.db.record_correct_count(
-            message.guild.id, message.author.id, state["save_milestone"], state["max_saves"]
-        )
-        if earned_save:
-            await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
-
-        # Off by default (it used to fire on every single count once past
-        # the old record, which got noisy fast) - opt back in per-server
-        # with /highscorealerts on, or via the WebUI toggle.
-        if state["high_score_alerts"] and expected > state["high_score"] > 0:
-            await message.channel.send(f"🏆 New high score: **{expected}**!")
+            # Off by default (it used to fire on every single count once past
+            # the old record, which got noisy fast) - opt back in per-server
+            # with /highscorealerts on, or via the WebUI toggle.
+            if state["high_score_alerts"] and expected > state["high_score"] > 0:
+                await message.channel.send(f"🏆 New high score: **{expected}**!")
 
 
 async def setup(bot: commands.Bot):

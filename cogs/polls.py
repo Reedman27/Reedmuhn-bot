@@ -14,7 +14,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import scheduler
-from utils import manager_or_permission
 
 logger = logging.getLogger("polls")
 

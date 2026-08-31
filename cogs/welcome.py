@@ -58,7 +58,7 @@ class Welcome(commands.Cog):
                 if cfg["welcome_card_enabled"]:
                     file = await self._build_welcome_card_file(member)
 
-                await channel.send(text, file=file)
+                await channel.send(text, file=file, allowed_mentions=discord.AllowedMentions(users=[member]))
 
         if cfg["autorole_id"]:
             role = member.guild.get_role(cfg["autorole_id"])

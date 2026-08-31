@@ -4,6 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import utils
+
 JOKES = [
     "What do you call cheese that isn't yours? Nacho cheese.",
     "I only know 25 letters of the alphabet. I don't know y.",
@@ -59,54 +61,70 @@ class Fun(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # All fun commands live under a single /fun group instead of 16
+    # separate top-level slash commands, to stay well under Discord's
+    # 100-top-level-command cap. Each subcommand keeps its original bare
+    # name (e.g. "hug") passed explicitly to utils.toggleable() so the
+    # WebUI's per-command enable/disable toggles (keyed by that bare name
+    # in db.is_command_enabled) keep working unchanged.
+    fun = app_commands.Group(name="fun", description="Fun and lightweight community commands")
+
     # ---- existing ----
 
-    @app_commands.command(name="hug", description="Hug someone")
+    @fun.command(name="hug", description="Hug someone")
     @app_commands.describe(user="Who to hug")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("hug")
     async def hug(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{interaction.user.mention} hugs {user.mention} 🫂")
 
-    @app_commands.command(name="dadjoke", description="Get a random dad joke")
+    @fun.command(name="dadjoke", description="Get a random dad joke")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("dadjoke")
     async def dadjoke(self, interaction: discord.Interaction):
         await interaction.response.send_message(random.choice(JOKES))
 
-    @app_commands.command(name="insult", description="Playfully roast someone")
+    @fun.command(name="insult", description="Playfully roast someone")
     @app_commands.describe(user="Who to roast")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("insult")
     async def insult(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{user.mention}, {random.choice(INSULTS)}")
 
     # ---- new social ----
 
-    @app_commands.command(name="compliment", description="Give someone a compliment")
+    @fun.command(name="compliment", description="Give someone a compliment")
     @app_commands.describe(user="Who to compliment")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("compliment")
     async def compliment(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{user.mention} {random.choice(COMPLIMENTS)}")
 
-    @app_commands.command(name="pat", description="Pat someone on the head")
+    @fun.command(name="pat", description="Pat someone on the head")
     @app_commands.describe(user="Who to pat")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("pat")
     async def pat(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{interaction.user.mention} pats {user.mention} on the head 🤚")
 
-    @app_commands.command(name="slap", description="Slap someone (playfully)")
+    @fun.command(name="slap", description="Slap someone (playfully)")
     @app_commands.describe(user="Who to slap")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("slap")
     async def slap(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{interaction.user.mention} slaps {user.mention} 👋")
 
-    @app_commands.command(name="highfive", description="High-five someone")
+    @fun.command(name="highfive", description="High-five someone")
     @app_commands.describe(user="Who to high-five")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("highfive")
     async def highfive(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"{interaction.user.mention} high-fives {user.mention} 🙌")
 
-    @app_commands.command(name="ship", description="Ship two people and get a compatibility score")
+    @fun.command(name="ship", description="Ship two people and get a compatibility score")
     @app_commands.describe(user1="First person", user2="Second person")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("ship")
     async def ship(self, interaction: discord.Interaction, user1: discord.Member, user2: discord.Member):
         # Deterministic per-pair so the same two people always get the same
         # score in a given server, instead of a new random number every time.
@@ -123,20 +141,23 @@ class Fun(commands.Cog):
 
     # ---- games / randomness ----
 
-    @app_commands.command(name="8ball", description="Ask the magic 8-ball a question")
+    @fun.command(name="8ball", description="Ask the magic 8-ball a question")
     @app_commands.describe(question="Your question")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("8ball")
     async def eight_ball(self, interaction: discord.Interaction, question: str):
         await interaction.response.send_message(f"🎱 {random.choice(EIGHT_BALL_ANSWERS)}")
 
-    @app_commands.command(name="coinflip", description="Flip a coin")
+    @fun.command(name="coinflip", description="Flip a coin")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("coinflip")
     async def coinflip(self, interaction: discord.Interaction):
         await interaction.response.send_message(f"🪙 {random.choice(['Heads', 'Tails'])}!")
 
-    @app_commands.command(name="roll", description="Roll dice, e.g. 2d6")
+    @fun.command(name="roll", description="Roll dice, e.g. 2d6")
     @app_commands.describe(dice="Format: NdM, like 1d20 or 3d6 (defaults to 1d6)")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("roll")
     async def roll(self, interaction: discord.Interaction, dice: str = "1d6"):
         try:
             count_str, sides_str = dice.lower().split("d")
@@ -154,8 +175,9 @@ class Fun(commands.Cog):
         shown = ", ".join(map(str, rolls)) if count <= 20 else f"{count} rolls"
         await interaction.response.send_message(f"🎲 {shown} = **{total}**")
 
-    @app_commands.command(name="rps", description="Play rock-paper-scissors against the bot")
+    @fun.command(name="rps", description="Play rock-paper-scissors against the bot")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("rps")
     @app_commands.choices(choice=[app_commands.Choice(name=o.capitalize(), value=o) for o in RPS_OPTIONS])
     async def rps(self, interaction: discord.Interaction, choice: app_commands.Choice[str]):
         bot_choice = random.choice(RPS_OPTIONS)
@@ -170,9 +192,10 @@ class Fun(commands.Cog):
 
         await interaction.response.send_message(f"You: **{user_choice}** | Me: **{bot_choice}** — {result}")
 
-    @app_commands.command(name="choose", description="Let the bot pick between options for you")
+    @fun.command(name="choose", description="Let the bot pick between options for you")
     @app_commands.describe(options="Comma-separated list of options")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("choose")
     async def choose(self, interaction: discord.Interaction, options: str):
         choices = [o.strip() for o in options.split(",") if o.strip()]
         if len(choices) < 2:
@@ -180,24 +203,27 @@ class Fun(commands.Cog):
             return
         await interaction.response.send_message(f"I choose: **{random.choice(choices)}**")
 
-    @app_commands.command(name="wouldyourather", description="Get a random would-you-rather question")
+    @fun.command(name="wouldyourather", description="Get a random would-you-rather question")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("wouldyourather")
     async def would_you_rather(self, interaction: discord.Interaction):
         option_a, option_b = random.choice(WOULD_YOU_RATHER)
         await interaction.response.send_message(f"Would you rather **{option_a}**, or **{option_b}**?")
 
     # ---- text toys ----
 
-    @app_commands.command(name="mock", description="MoCk TeXt LiKe tHiS")
+    @fun.command(name="mock", description="MoCk TeXt LiKe tHiS")
     @app_commands.describe(text="Text to mock")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("mock")
     async def mock(self, interaction: discord.Interaction, text: str):
         mocked = "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(text))
         await interaction.response.send_message(mocked)
 
-    @app_commands.command(name="reverse", description="Reverse some text")
+    @fun.command(name="reverse", description="Reverse some text")
     @app_commands.describe(text="Text to reverse")
     @app_commands.checks.cooldown(3, 10.0)
+    @utils.toggleable("reverse")
     async def reverse(self, interaction: discord.Interaction, text: str):
         await interaction.response.send_message(text[::-1])
 
