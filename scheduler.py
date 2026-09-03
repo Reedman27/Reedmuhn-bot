@@ -102,6 +102,8 @@ async def _process_event(bot: discord.Client, db, event_id: int, event_name: str
         await _handle_add_youtube_watch(bot, db, guild_id, data)
     elif event_name == "close_poll":
         await _handle_close_poll(bot, db, guild_id, data)
+    elif event_name == "end_giveaway":
+        await _handle_end_giveaway(bot, data)
     else:
         logger.warning("unknown scheduled event kind: %s", event_name)
 
@@ -259,3 +261,14 @@ async def _handle_close_poll(bot: discord.Client, db, guild_id: int, data: dict)
         return
     guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
     await cog._close_poll(guild, data["poll_id"])
+
+
+async def _handle_end_giveaway(bot: discord.Client, data: dict) -> None:
+    """Ends a giveaway queued from the WebUI (the "End now" button on the
+    Extras page). Delegates to the Extras cog so the winner-picking logic
+    (and its error handling) lives in exactly one place."""
+    cog = bot.get_cog("Extras")
+    if cog is None:
+        logger.warning("scheduled giveaway end: Extras cog isn't loaded")
+        return
+    await cog._end_giveaway(data["message_id"])

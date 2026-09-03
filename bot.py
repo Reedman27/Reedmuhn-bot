@@ -85,6 +85,7 @@ DISCORD_COMMAND_WARN_THRESHOLD = 90
 
 INITIAL_COGS = [
     "cogs.fun",
+    "cogs.extras",
     "cogs.moderation",
     "cogs.customcommands",
     "cogs.reminders",

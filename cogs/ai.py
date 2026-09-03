@@ -159,7 +159,6 @@ class AI(commands.Cog):
             await interaction.response.send_message("AI is enabled but no API key is configured in the WebUI.", ephemeral=True)
             return
 
-        import time
         bucket_key = (interaction.guild.id, interaction.user.id)
         now = time.monotonic()
         recent = [stamp for stamp in self.rate_limits.get(bucket_key, []) if now - stamp < 60]

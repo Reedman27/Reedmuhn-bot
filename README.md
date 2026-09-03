@@ -4,6 +4,15 @@
 
 It combines moderation, automation, server management, and a full web dashboard into one bot.
 
+## ⚠️ Status
+
+This is a self-hosted personal/hobby project that gets iterated on a lot, including with AI assistance. Most of it is tested and works, but treat it as **hit-and-miss**, not a polished commercial product:
+
+- Some features may be half-finished, untested in production, or break on edge cases.
+- Configuration through the web dashboard is generally more reliable than raw database edits, but neither is guaranteed bug-free.
+- Back up your `data/` folder (the SQLite database) before updating.
+- Issues and PRs are welcome, but there's no support SLA - use at your own risk.
+
 ## ✨ Features
 
 - 🛡️ Moderation — warnings, kicks, bans, tempbans, timeouts, mutes, purges
@@ -19,6 +28,8 @@ It combines moderation, automation, server management, and a full web dashboard 
 - 🔢 Counting
 - 🔔 Reminders
 - 📺 YouTube notifications
+- 📡 Twitch and RSS/Atom notifications, live member/online/bot/channel counters
+- 🧮 XP levels, economy (coins), and giveaways
 - 🎙️ Temporary voice channels
 - ⭐ Starboard
 - 💡 Suggestions

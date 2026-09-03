@@ -1290,6 +1290,7 @@ FUN_COMMANDS = [
     ("Social", [("hug", "Hug someone"), ("insult", "Playfully roast someone"), ("compliment", "Give someone a compliment"), ("pat", "Pat someone"), ("slap", "Playful slap"), ("highfive", "High-five someone"), ("ship", "Compatibility score")]),
     ("Games & Randomness", [("8ball", "Magic 8-ball"), ("coinflip", "Flip a coin"), ("roll", "Roll dice"), ("rps", "Rock-paper-scissors"), ("choose", "Pick between options"), ("wouldyourather", "Would-you-rather question")]),
     ("Text Toys", [("dadjoke", "Random dad joke"), ("mock", "MoCk TeXt"), ("reverse", "Reverse text")]),
+    ("Leveling & Economy", [("level", "Show an XP level"), ("leaderboard", "XP leaderboard"), ("balance", "Show a coin balance"), ("daily", "Claim daily coins"), ("pay", "Pay another member"), ("richest", "Richest members leaderboard")]),
 ]
 
 @app.get("/guild/{guild_id}/fun-commands")
@@ -1673,6 +1674,167 @@ async def save_youtube_settings(
     db.set_youtube_role(guild_id, yt_channel_id, parsed_role_id)
     db.set_youtube_live_channel(guild_id, yt_channel_id, parsed_live_channel_id)
     return RedirectResponse(f"/guild/{guild_id}/youtube?saved=1", status_code=303)
+
+
+# ---- extras (leveling/economy leaderboards, counters, twitch, feeds, giveaways) ----
+
+COUNTER_KINDS = {"members": "Member count", "online": "Online count", "bots": "Bot count", "channels": "Channel count"}
+
+
+@app.get("/guild/{guild_id}/extras")
+async def extras_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    counters = [
+        {"kind": kind, "label": COUNTER_KINDS.get(kind, kind.title()), "channel_id": cid, "channel_name": channel_label(guild_id, cid)}
+        for kind, cid in db.list_extras_counters(guild_id)
+    ]
+    twitch = [
+        {"username": username, "channel_id": cid, "channel_name": channel_label(guild_id, cid), "live": bool(live)}
+        for username, cid, live in db.list_extras_twitch(guild_id)
+    ]
+    feeds = [
+        {"url": url, "channel_id": cid, "channel_name": channel_label(guild_id, cid)}
+        for url, cid in db.list_extras_feeds(guild_id)
+    ]
+    giveaways = [
+        {
+            "id": gid, "channel_id": cid, "channel_name": channel_label(guild_id, cid),
+            "message_id": mid, "prize": prize, "winners": winners, "end_at": end_at, "ended": bool(ended),
+        }
+        for gid, cid, mid, prize, winners, end_at, ended in db.list_extras_giveaways(guild_id)
+    ]
+    xp_leaderboard = [
+        {"user_id": uid, "name": member_label(guild_id, uid), "xp": xp, "level": level}
+        for uid, xp, level in db.list_extras_xp_leaderboard(guild_id)
+    ]
+    economy_leaderboard = [
+        {"user_id": uid, "name": member_label(guild_id, uid), "balance": bal}
+        for uid, bal in db.list_extras_economy_leaderboard(guild_id)
+    ]
+    return render(
+        request, "extras.html", guild_id, "extras",
+        counters=counters, twitch=twitch, feeds=feeds, giveaways=giveaways,
+        xp_leaderboard=xp_leaderboard, economy_leaderboard=economy_leaderboard,
+        counter_kinds=COUNTER_KINDS,
+        available_counter_kinds=[k for k in COUNTER_KINDS if k not in {c["kind"] for c in counters}],
+        voice_channels=db.list_bot_channels(guild_id, "voice"),
+        text_channels=db.list_bot_channels(guild_id, "text"),
+        twitch_configured=bool(os.environ.get("TWITCH_CLIENT_ID") and os.environ.get("TWITCH_CLIENT_SECRET")),
+        members=db.list_bot_members(guild_id),
+    )
+
+
+@app.post("/guild/{guild_id}/extras/counter/add")
+async def add_extras_counter(request: Request, guild_id: int, kind: str = Form(...), channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if kind not in COUNTER_KINDS:
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=counterkind", status_code=303)
+    if not validate_channel(guild_id, channel_id, ("voice",)):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=counterchannel", status_code=303)
+    db.upsert_extras_counter(guild_id, kind, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/extras?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/counter/delete")
+async def delete_extras_counter(request: Request, guild_id: int, kind: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.delete_extras_counter(guild_id, kind)
+    return RedirectResponse(f"/guild/{guild_id}/extras", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/twitch/add")
+async def add_extras_twitch(request: Request, guild_id: int, username: str = Form(...), channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    username = username.strip()
+    if not username or not re.fullmatch(r"[A-Za-z0-9_]{1,25}", username):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=twitchuser", status_code=303)
+    if not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=twitchchannel", status_code=303)
+    db.upsert_extras_twitch(guild_id, username, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/extras?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/twitch/delete")
+async def delete_extras_twitch(request: Request, guild_id: int, username: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.delete_extras_twitch(guild_id, username)
+    return RedirectResponse(f"/guild/{guild_id}/extras", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/feed/add")
+async def add_extras_feed(request: Request, guild_id: int, url: str = Form(...), channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    url = url.strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=feedurl", status_code=303)
+    if not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=feedchannel", status_code=303)
+    db.upsert_extras_feed(guild_id, url, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/extras?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/feed/delete")
+async def delete_extras_feed(request: Request, guild_id: int, url: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.delete_extras_feed(guild_id, url)
+    return RedirectResponse(f"/guild/{guild_id}/extras", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/giveaway/end")
+async def end_extras_giveaway(request: Request, guild_id: int, message_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not any(mid == message_id for _gid, _cid, mid, *_rest in db.list_extras_giveaways(guild_id)):
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=giveawaynotfound", status_code=303)
+    # The dashboard has no live Discord connection - queue it for the bot
+    # process to pick up on its next scheduler tick (same mechanism as
+    # poll close / youtube watch add; see scheduler._handle_end_giveaway).
+    db.insert_scheduled_event("end_giveaway", guild_id, int(time.time()), {"message_id": message_id})
+    return RedirectResponse(f"/guild/{guild_id}/extras?queued=1", status_code=303)
+
+
+EXTRAS_MAX_AMOUNT = 1_000_000_000
+
+
+@app.post("/guild/{guild_id}/extras/xp/set")
+async def set_extras_xp_route(request: Request, guild_id: int, user_id: int = Form(...), amount: int = Form(...), op: str = Form("set")):
+    if (r := await require_auth(request)):
+        return r
+    if amount < 0 or amount > EXTRAS_MAX_AMOUNT:
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=xpamount", status_code=303)
+    current = db.get_extras_xp(guild_id, user_id)
+    if op == "add":
+        new_xp = current + amount
+    elif op == "subtract":
+        new_xp = current - amount
+    else:
+        new_xp = amount
+    db.set_extras_xp(guild_id, user_id, new_xp)
+    return RedirectResponse(f"/guild/{guild_id}/extras?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/extras/economy/set")
+async def set_extras_balance_route(request: Request, guild_id: int, user_id: int = Form(...), amount: int = Form(...), op: str = Form("set")):
+    if (r := await require_auth(request)):
+        return r
+    if amount < 0 or amount > EXTRAS_MAX_AMOUNT:
+        return RedirectResponse(f"/guild/{guild_id}/extras?error=coinamount", status_code=303)
+    current = db.get_extras_balance(guild_id, user_id)
+    if op == "add":
+        new_balance = current + amount
+    elif op == "subtract":
+        new_balance = current - amount
+    else:
+        new_balance = amount
+    db.set_extras_balance(guild_id, user_id, new_balance)
+    return RedirectResponse(f"/guild/{guild_id}/extras?saved=1", status_code=303)
 
 
 # ---- automod ----
