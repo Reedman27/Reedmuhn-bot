@@ -613,6 +613,18 @@ body.app {
 }
 
 .sidebar-nav { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: .2rem; scrollbar-width: thin; }
+
+.quickjump-trigger { display:flex; align-items:center; justify-content:space-between; width:calc(100% - 1.2rem); margin:.4rem .6rem .6rem; padding:.5rem .6rem; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--muted); font:inherit; font-size:.85rem; cursor:pointer; text-align:left; }
+.quickjump-trigger:hover { color:var(--text); border-color:var(--accent); }
+.quickjump-kbd { font-size:.7rem; padding:.1rem .35rem; border-radius:5px; background:var(--accent-dim); color:var(--muted); }
+
+.quickjump-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding-top:12vh; z-index:1000; }
+.quickjump-panel { width:min(480px, 90vw); max-height:60vh; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.35); overflow:hidden; }
+.quickjump-input { border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); font:inherit; font-size:1rem; padding:.9rem 1rem; outline:none; }
+.quickjump-results { list-style:none; margin:0; padding:.4rem; overflow-y:auto; }
+.quickjump-results li a { display:block; padding:.55rem .7rem; border-radius:7px; color:var(--text); text-decoration:none; font-size:.9rem; }
+.quickjump-results li a:hover, .quickjump-results li a.active { background:var(--accent-dim); }
+.quickjump-empty { padding:1rem; margin:0; color:var(--muted); font-size:.9rem; text-align:center; }
 .nav-group { margin-bottom: .25rem; }
 .nav-group-title { width:100%; display:flex; justify-content:space-between; align-items:center; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:.55rem .6rem .35rem; cursor:pointer; }
 .nav-group-title span { transition: transform .15s; }

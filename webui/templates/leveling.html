@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Leveling - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Leveling</h1>
+<p class="hint">XP is earned automatically by chatting, and managed with /extras commands in Discord - use the Fun Commands page to disable it per-server.</p>
+
+{% if request.query_params.get('saved') %}<p class="success">Saved.</p>{% endif %}
+{% if request.query_params.get('error') == 'xpamount' %}<p class="error">Enter a valid XP amount (0 or greater).</p>{% endif %}
+
+<section class="card">
+    <h2>XP leaderboard</h2>
+    {% if xp_leaderboard %}
+    <table><thead><tr><th>#</th><th>Member</th><th>Level</th><th>XP</th></tr></thead><tbody>
+    {% for row in xp_leaderboard %}
+        <tr><td>{{ loop.index }}</td><td>{{ row.name }}</td><td>{{ row.level }}</td><td>{{ "{:,}".format(row.xp) }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No XP has been earned yet.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/leveling/xp/set" class="add-form">
+        <label for="xp_user_id">Member</label>
+        <select id="xp_user_id" name="user_id" required><option value="" disabled selected>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}</select>
+        <label for="xp_op">Action</label>
+        <select id="xp_op" name="op">
+            <option value="set">Set to</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+        </select>
+        <label for="xp_amount">Amount</label><input type="number" id="xp_amount" name="amount" min="0" required>
+        <button type="submit">Update XP</button>
+    </form>
+    <p class="hint">Level is recalculated automatically from the resulting XP total.</p>
+</section>
+{% endblock %}

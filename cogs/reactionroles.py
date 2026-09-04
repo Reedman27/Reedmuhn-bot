@@ -118,7 +118,9 @@ class ReactionRoles(commands.Cog):
             )
             return None
 
-    @app_commands.command(name="reactionrolemenu", description="Create a reaction-role menu message in this channel")
+    reactionrole = app_commands.Group(name="reactionrole", description="Reaction-role bindings")
+
+    @reactionrole.command(name="menu", description="Create a reaction-role menu message in this channel")
     @app_commands.describe(
         pairs="Pairs separated by ; or newlines, e.g. 😀=123456789;🎮=<@&987654321>. Up to 10.",
         title="Embed title",
@@ -184,7 +186,7 @@ class ReactionRoles(commands.Cog):
 
         await interaction.response.send_message(f"Created the reaction-role menu: {message.jump_url}")
 
-    @app_commands.command(name="addreactionrole", description="React to a message with an emoji to give/remove a role")
+    @reactionrole.command(name="add", description="React to a message with an emoji to give/remove a role")
     @app_commands.describe(
         message="Paste the message link (right-click the message -> Copy Message Link), or its ID",
         emoji="The emoji members will react with",
@@ -265,7 +267,7 @@ class ReactionRoles(commands.Cog):
             f"Done - reacting {emoji_key} on [that message]({message_obj.jump_url}) now gives {role.mention}."
         )
 
-    @app_commands.command(name="removereactionrole", description="Remove a reaction role binding from a message")
+    @reactionrole.command(name="remove", description="Remove a reaction role binding from a message")
     @app_commands.describe(
         message="The message link or ID the reaction role is on",
         emoji="The emoji to unbind",
@@ -292,7 +294,7 @@ class ReactionRoles(commands.Cog):
             else "No reaction role found for that message and emoji."
         )
 
-    @app_commands.command(name="listreactionroles", description="List this server's reaction role bindings")
+    @reactionrole.command(name="list", description="List this server's reaction role bindings")
     @manager_or_permission("manage_roles")
     async def listreactionroles(self, interaction: discord.Interaction):
         if interaction.guild is None:

@@ -8,21 +8,23 @@ STAR = "⭐"
 class Starboard(commands.Cog, name="Starboard"):
     def __init__(self, bot): self.bot=bot
 
-    @app_commands.command(name="setstarboard", description="Configure the starboard channel and reaction threshold")
+    starboard = app_commands.Group(name="starboard", description="Starboard configuration")
+
+    @starboard.command(name="set", description="Configure the starboard channel and reaction threshold")
     @app_commands.describe(channel="Where starred messages are posted", threshold="Stars required (1-50)")
     @manager_or_permission("manage_guild")
     async def setstarboard(self, interaction: discord.Interaction, channel: discord.TextChannel, threshold: app_commands.Range[int,1,50]=5):
         self.bot.db.set_starboard_config(interaction.guild.id, channel.id, threshold, True)
         await interaction.response.send_message(f"⭐ Starboard enabled in {channel.mention} at **{threshold}** stars.")
 
-    @app_commands.command(name="starboardoff", description="Disable the starboard")
+    @starboard.command(name="off", description="Disable the starboard")
     @manager_or_permission("manage_guild")
     async def starboardoff(self, interaction):
         ch, threshold, _ = self.bot.db.get_starboard_config(interaction.guild.id)
         self.bot.db.set_starboard_config(interaction.guild.id, ch, threshold, False)
         await interaction.response.send_message("⭐ Starboard is now disabled.")
 
-    @app_commands.command(name="starboardstatus", description="Show the current starboard configuration")
+    @starboard.command(name="status", description="Show the current starboard configuration")
     @manager_or_permission("manage_guild")
     async def starboardstatus(self, interaction):
         ch, threshold, enabled = self.bot.db.get_starboard_config(interaction.guild.id)

@@ -341,7 +341,7 @@ class Moderation(commands.Cog):
         await logging_cog.log_event(guild, "moderation", embed)
 
     @moderation.command(name="warn", description="Warn a member")
-    @app_commands.describe(user="Who to warn", reason="Why they're being warned", rule="Rule number they broke (see /rules) - optional")
+    @app_commands.describe(user="Who to warn", reason="Why they're being warned", rule="Rule number they broke (see /rule list) - optional")
     @manager_or_permission("moderate_members")
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str, rule: int | None = None):
         if interaction.guild is None:
@@ -358,7 +358,7 @@ class Moderation(commands.Cog):
         if rule is not None:
             found = self.bot.db.get_rule_by_number(interaction.guild.id, rule)
             if found is None:
-                await interaction.response.send_message(f"There's no rule #{rule}. Check `/rules`.", ephemeral=True)
+                await interaction.response.send_message(f"There's no rule #{rule}. Check `/rule list`.", ephemeral=True)
                 return
             rule_id = found[0]
 

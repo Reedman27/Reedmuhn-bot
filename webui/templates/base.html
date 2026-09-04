@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Reedmuhn Bot{% endblock %}</title>
+    <script>if ('scrollRestoration' in history) { history.scrollRestoration = 'manual'; }</script>
     <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css">
     <script defer src="/static/sidebar.js"></script>
@@ -13,6 +14,7 @@
         <div class="brand">🤖 Reedmuhn Bot</div>
         {% if guild_id %}
         <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
+        <button type="button" id="quickjump-trigger" class="quickjump-trigger">🔍 Jump to page<span class="quickjump-kbd">Ctrl K</span></button>
         <nav class="sidebar-nav" id="sidebar-nav">
             <section class="nav-group" data-group="general"><button class="nav-group-title" type="button" aria-expanded="true">General <span>⌄</span></button><div class="nav-group-items">
                 <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a><a href="/guild/{{ guild_id }}/search" class="{{ 'active' if active == 'search' else '' }}">🔎 Search</a>
@@ -27,7 +29,10 @@
                 <a href="/guild/{{ guild_id }}/fun-commands" class="{{ 'active' if active == 'funcommands' else '' }}">🎮 Fun Commands</a><a href="/guild/{{ guild_id }}/starboard" class="{{ 'active' if active == 'starboard' else '' }}">⭐ Starboard</a><a href="/guild/{{ guild_id }}/suggestions" class="{{ 'active' if active == 'suggestions' else '' }}">💡 Suggestions</a><a href="/guild/{{ guild_id }}/welcome" class="{{ 'active' if active == 'welcome' else '' }}">👋 Welcome & Roles</a><a href="/guild/{{ guild_id }}/birthdays" class="{{ 'active' if active == 'birthdays' else '' }}">🎂 Birthdays</a><a href="/guild/{{ guild_id }}/counting" class="{{ 'active' if active == 'counting' else '' }}">🔢 Counting</a><a href="/guild/{{ guild_id }}/reactionroles" class="{{ 'active' if active == 'reactionroles' else '' }}">🎭 Reaction Roles</a><a href="/guild/{{ guild_id }}/stickyroles" class="{{ 'active' if active == 'stickyroles' else '' }}">🧷 Sticky Roles</a><a href="/guild/{{ guild_id }}/polls" class="{{ 'active' if active == 'polls' else '' }}">📊 Polls</a>
             </div></section>
             <section class="nav-group" data-group="utility"><button class="nav-group-title" type="button" aria-expanded="true">Utility <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a><a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a><a href="/guild/{{ guild_id }}/tickets" class="{{ 'active' if active == 'tickets' else '' }}">🎫 Tickets</a><a href="/guild/{{ guild_id }}/modmail" class="{{ 'active' if active == 'modmail' else '' }}">📬 Modmail</a><a href="/guild/{{ guild_id }}/tempvoice" class="{{ 'active' if active == 'tempvoice' else '' }}">🎙️ Temp Voice</a><a href="/guild/{{ guild_id }}/youtube" class="{{ 'active' if active == 'youtube' else '' }}">📺 YouTube</a><a href="/guild/{{ guild_id }}/extras" class="{{ 'active' if active == 'extras' else '' }}">🎯 Extras</a><a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a><a href="/guild/{{ guild_id }}/ai" class="{{ 'active' if active == 'ai' else '' }}">🤖 AI</a>
+                <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a><a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a><a href="/guild/{{ guild_id }}/tickets" class="{{ 'active' if active == 'tickets' else '' }}">🎫 Tickets</a><a href="/guild/{{ guild_id }}/modmail" class="{{ 'active' if active == 'modmail' else '' }}">📬 Modmail</a><a href="/guild/{{ guild_id }}/tempvoice" class="{{ 'active' if active == 'tempvoice' else '' }}">🎙️ Temp Voice</a><a href="/guild/{{ guild_id }}/youtube" class="{{ 'active' if active == 'youtube' else '' }}">📺 YouTube</a><a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a><a href="/guild/{{ guild_id }}/ai" class="{{ 'active' if active == 'ai' else '' }}">🤖 AI</a>
+            </div></section>
+            <section class="nav-group" data-group="extra"><button class="nav-group-title" type="button" aria-expanded="true">Extra <span>⌄</span></button><div class="nav-group-items">
+                <a href="/guild/{{ guild_id }}/leveling" class="{{ 'active' if active == 'leveling' else '' }}">📈 Leveling</a><a href="/guild/{{ guild_id }}/economy" class="{{ 'active' if active == 'economy' else '' }}">💰 Economy</a><a href="/guild/{{ guild_id }}/giveaways" class="{{ 'active' if active == 'giveaways' else '' }}">🎉 Giveaways</a><a href="/guild/{{ guild_id }}/counters" class="{{ 'active' if active == 'counters' else '' }}">🔢 Counters</a><a href="/guild/{{ guild_id }}/twitch" class="{{ 'active' if active == 'twitch' else '' }}">🟣 Twitch</a><a href="/guild/{{ guild_id }}/feeds" class="{{ 'active' if active == 'feeds' else '' }}">📰 RSS Feeds</a>
             </div></section>
             <section class="nav-group" data-group="logs"><button class="nav-group-title" type="button" aria-expanded="true">Logs & Data <span>⌄</span></button><div class="nav-group-items">
                 <a href="/guild/{{ guild_id }}/logging" class="{{ 'active' if active == 'logging' else '' }}">📋 Logging</a><a href="/guild/{{ guild_id }}/feed" class="{{ 'active' if active == 'feed' else '' }}">👀 Channel Feed</a><a href="/guild/{{ guild_id }}/permissions" class="{{ 'active' if active == 'permissions' else '' }}">🔐 Permissions</a>
@@ -63,5 +68,15 @@
         </div>
     </aside>
     <main>{% block content %}{% endblock %}</main>
+
+    {% if guild_id %}
+    <div id="quickjump-overlay" class="quickjump-overlay" hidden>
+        <div class="quickjump-panel" role="dialog" aria-modal="true" aria-label="Jump to page">
+            <input type="text" id="quickjump-input" class="quickjump-input" placeholder="Search features… (e.g. xp, welcome, automod)" autocomplete="off">
+            <ul id="quickjump-results" class="quickjump-results"></ul>
+            <p id="quickjump-empty" class="quickjump-empty" hidden>No matching page.</p>
+        </div>
+    </div>
+    {% endif %}
 </body>
 </html>

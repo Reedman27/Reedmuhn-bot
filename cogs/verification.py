@@ -142,7 +142,9 @@ class Verification(commands.Cog):
     async def before_poll(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="setverification", description="Configure the verification button (channel + role members get on click)")
+    verification = app_commands.Group(name="verification", description="Member verification gate")
+
+    @verification.command(name="set", description="Configure the verification button (channel + role members get on click)")
     @app_commands.describe(channel="Where to post the Verify button", role="Role given when someone verifies",
                             message="Text shown above the button")
     @manager_or_permission("manage_guild")
@@ -169,7 +171,7 @@ class Verification(commands.Cog):
         else:
             await interaction.followup.send(f"Verification is set up in {channel.mention}.", ephemeral=True)
 
-    @app_commands.command(name="verificationoff", description="Turn off the verification button")
+    @verification.command(name="off", description="Turn off the verification button")
     @manager_or_permission("manage_guild")
     async def verificationoff(self, interaction: discord.Interaction):
         cfg = self.bot.db.get_verification_config(interaction.guild.id)

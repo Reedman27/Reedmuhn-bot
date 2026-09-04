@@ -173,7 +173,9 @@ class YouTube(commands.Cog):
             # aiohttp complaining about it) until the process exits.
             self.bot.loop.create_task(self.session.close())
 
-    @app_commands.command(name="setyoutube", description="Announce new uploads from a YouTube channel")
+    youtube = app_commands.Group(name="youtube", description="YouTube upload/live announcements")
+
+    @youtube.command(name="set", description="Announce new uploads from a YouTube channel")
     @app_commands.describe(
         channel="The YouTube channel's URL, @handle, or channel ID",
         announce_channel="Where to post new-video announcements",
@@ -208,7 +210,7 @@ class YouTube(commands.Cog):
             f"(Only videos uploaded *after* this point will be announced - not their existing back catalog.)"
         )
 
-    @app_commands.command(name="removeyoutube", description="Stop announcing a YouTube channel's uploads")
+    @youtube.command(name="remove", description="Stop announcing a YouTube channel's uploads")
     @app_commands.describe(channel="The YouTube channel's URL, @handle, or channel ID to stop watching")
     @manager_or_permission("manage_guild")
     async def removeyoutube(self, interaction: discord.Interaction, channel: str):
@@ -233,7 +235,7 @@ class YouTube(commands.Cog):
         removed = target_id is not None and self.bot.db.remove_youtube_watch(interaction.guild.id, target_id)
         await interaction.followup.send("Removed." if removed else "Wasn't watching that channel.")
 
-    @app_commands.command(name="listyoutube", description="List YouTube channels being watched")
+    @youtube.command(name="list", description="List YouTube channels being watched")
     async def listyoutube(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)

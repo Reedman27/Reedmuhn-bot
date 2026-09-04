@@ -96,7 +96,9 @@ class Polls(commands.Cog, name="Polls"):
         except Exception:
             logger.exception("failed to re-register open poll views on startup")
 
-    @app_commands.command(name="poll", description="Start a button poll (2-5 options)")
+    poll_group = app_commands.Group(name="poll", description="Button polls")
+
+    @poll_group.command(name="start", description="Start a button poll (2-5 options)")
     @app_commands.describe(
         question="The poll question", option1="First option", option2="Second option",
         option3="Third option (optional)", option4="Fourth option (optional)", option5="Fifth option (optional)",
@@ -130,8 +132,8 @@ class Polls(commands.Cog, name="Polls"):
         if ends_at:
             scheduler.schedule_poll_close(self.bot.db, interaction.guild.id, ends_at, poll_id)
 
-    @app_commands.command(name="closepoll", description="Close a poll you started (or any poll, if you can manage the server)")
-    @app_commands.describe(poll_id="The poll's ID (shown nowhere obvious yet - ask whoever ran /poll, or use the dashboard)")
+    @poll_group.command(name="close", description="Close a poll you started (or any poll, if you can manage the server)")
+    @app_commands.describe(poll_id="The poll's ID (shown nowhere obvious yet - ask whoever ran /poll start, or use the dashboard)")
     async def closepoll(self, interaction: discord.Interaction, poll_id: int):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Giveaways - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Giveaways</h1>
+<p class="hint">Start one with /extras giveaway in Discord.</p>
+
+{% if request.query_params.get('queued') %}<p class="success">Queued - the bot will finish this within about 30 seconds.</p>{% endif %}
+{% if request.query_params.get('error') == 'giveawaynotfound' %}<p class="error">That giveaway isn't active anymore.</p>{% endif %}
+
+<section class="card">
+    {% if giveaways %}
+    <table><thead><tr><th>Prize</th><th>Channel</th><th>Winners</th><th>Ends</th><th></th></tr></thead><tbody>
+    {% for g in giveaways %}
+        <tr><td>{{ g.prize }}</td><td>{{ g.channel_name }}</td><td>{{ g.winners }}</td><td><time data-ts="{{ g.end_at }}">{{ g.end_at }}</time></td><td><form method="post" action="/guild/{{ guild_id }}/giveaways/end" class="inline" onsubmit="return confirm('End this giveaway now and pick winners?');"><input type="hidden" name="message_id" value="{{ g.message_id }}"><button type="submit" class="danger">End now</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No active giveaways.</p>{% endif %}
+</section>
+<script src="/static/feed.js"></script>
+{% endblock %}

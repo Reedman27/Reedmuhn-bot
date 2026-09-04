@@ -87,7 +87,9 @@ class AI(commands.Cog):
         except Exception:
             logger.warning("Failed to index AI message %s in guild %s", message.id, message.guild.id, exc_info=True)
 
-    @app_commands.command(name="aiindex", description="Index recent messages in a channel for AI search")
+    ai = app_commands.Group(name="ai", description="AI channel-indexing admin commands")
+
+    @ai.command(name="index", description="Index recent messages in a channel for AI search")
     @app_commands.describe(channel="Channel to index", limit="How many recent messages to index")
     @manager_or_permission("manage_guild")
     async def aiindex(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None, limit: app_commands.Range[int, 50, 5000] = 500):
@@ -125,7 +127,7 @@ class AI(commands.Cog):
             return
         await interaction.followup.send(f"Indexed {count} message(s) from {target.mention}. Total indexed for this server: {self.bot.db.ai_indexed_count(interaction.guild.id)}.", ephemeral=True)
 
-    @app_commands.command(name="aiclearindex", description="Delete all indexed AI channel messages for this server")
+    @ai.command(name="clearindex", description="Delete all indexed AI channel messages for this server")
     @manager_or_permission("manage_guild")
     async def aiclearindex(self, interaction: discord.Interaction):
         if interaction.guild is None:
