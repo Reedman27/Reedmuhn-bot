@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 XP_COOLDOWN = 60
 XP_PER_MESSAGE = 10
 DAILY_AMOUNT = 250
+DAILY_STREAK_BONUS = 25       # extra coins per consecutive daily streak day, capped below
+DAILY_STREAK_BONUS_CAP = 500  # streak bonus never adds more than this on top of DAILY_AMOUNT
+DAILY_STREAK_GRACE = 48 * 3600  # claim again within this long to keep the streak alive
+WORK_COOLDOWN = 3600
+WORK_MIN, WORK_MAX = 20, 80
+WORK_FLAVOR = [
+    "🛠️ You fixed some bugs for a local business.",
+    "🍔 You flipped burgers all shift.",
+    "📦 You delivered packages across town.",
+    "🎨 You sold a few doodles at the market.",
+    "🐕 You walked every dog on the block.",
+    "🧹 You cleaned up after a big event.",
+]
 
 
 class Extras(commands.Cog):
@@ -26,6 +39,7 @@ class Extras(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._xp_cooldowns = {}
+        self._work_cooldowns = {}
         self.counter_loop.start()
         self.notification_loop.start()
         self.giveaway_loop.start()
@@ -44,7 +58,11 @@ class Extras(commands.Cog):
         return
 
     def _xp_for_level(self, level):
-        return 100 * level * level
+        """Total XP needed to reach `level`. Same curve as Db._extras_xp_for_level
+        (see that method's docstring for why) - duplicated here rather than
+        imported since the bot process owns this cog and the WebUI process
+        owns its own copy of Db; kept in sync by hand."""
+        return (5 * level * (2 * level * level + 27 * level + 91)) // 6
 
     def _level_from_xp(self, xp):
         level = 0
@@ -52,9 +70,30 @@ class Extras(commands.Cog):
             level += 1
         return level
 
+    async def _apply_level_role_rewards(self, member: discord.Member, new_level: int):
+        """Stacking role rewards: grant every reward role at or below
+        new_level that the member doesn't already have."""
+        rewards = self.db.list_extras_level_roles(member.guild.id)
+        if not rewards:
+            return
+        to_add = []
+        for level, role_id in rewards:
+            if level > new_level:
+                continue
+            role = member.guild.get_role(role_id)
+            if role and role not in member.roles:
+                to_add.append(role)
+        if to_add:
+            try:
+                await member.add_roles(*to_add, reason=f"Reached level {new_level}")
+            except discord.HTTPException:
+                pass
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or not message.guild:
+            return
+        if self.db.is_extras_noxp_channel(message.guild.id, message.channel.id):
             return
         now = time.time()
         key = (message.guild.id, message.author.id)
@@ -66,7 +105,14 @@ class Extras(commands.Cog):
             (message.guild.id, message.author.id),
         ).fetchone()
         old_level = int(row[1]) if row else 0
-        xp = (int(row[0]) if row else 0) + random.randint(XP_PER_MESSAGE, XP_PER_MESSAGE + 5)
+        gained = random.randint(XP_PER_MESSAGE, XP_PER_MESSAGE + 5)
+        multiplier = 1.0
+        member_role_ids = {r.id for r in message.author.roles}
+        for role_id, mult in self.db.list_extras_xp_boost_roles(message.guild.id):
+            if role_id in member_role_ids:
+                multiplier = max(multiplier, mult)
+        gained = round(gained * multiplier)
+        xp = (int(row[0]) if row else 0) + gained
         new_level = self._level_from_xp(xp)
         self.db.conn.execute(
             """INSERT INTO extras_xp(guild_id,user_id,xp,level) VALUES(?,?,?,?)
@@ -75,27 +121,57 @@ class Extras(commands.Cog):
         )
         self.db.conn.commit()
         if new_level > old_level:
-            try:
-                await message.channel.send(
-                    f"🎉 {message.author.mention} reached **level {new_level}**!",
-                    allowed_mentions=discord.AllowedMentions(users=[message.author]),
+            await self._apply_level_role_rewards(message.author, new_level)
+            config = self.db.get_extras_level_config(message.guild.id)
+            if config["enabled"]:
+                channel = message.channel
+                if config["channel_id"]:
+                    channel = message.guild.get_channel(config["channel_id"]) or channel
+                text = (
+                    config["message"]
+                    .replace("{user}", message.author.mention)
+                    .replace("{level}", str(new_level))
+                    .replace("{server}", message.guild.name)
                 )
-            except discord.HTTPException:
-                pass
+                try:
+                    await channel.send(text, allowed_mentions=discord.AllowedMentions(users=[message.author]))
+                except discord.HTTPException:
+                    pass
+
 
     extras = app_commands.Group(name="extras", description="XP, economy, giveaways, counters, and notifications")
 
-    @extras.command(name="level", description="Show your or another member's XP level")
+    def _progress_bar(self, current: int, needed: int, length: int = 14) -> str:
+        filled = min(length, round((current / needed) * length)) if needed else length
+        return "█" * filled + "░" * (length - filled)
+
+    @extras.command(name="rank", description="Show your or another member's XP rank and level")
     @app_commands.describe(member="Member to inspect")
-    @utils.toggleable("level")
-    async def level(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    @utils.toggleable("rank")
+    async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         member = member or interaction.user
         row = self.db.conn.execute(
             "SELECT xp,level FROM extras_xp WHERE guild_id=? AND user_id=?",
             (interaction.guild_id, member.id),
         ).fetchone()
         xp, level = (int(row[0]), int(row[1])) if row else (0, 0)
-        await interaction.response.send_message(f"**{member.display_name}** — Level **{level}** • **{xp} XP**")
+        this_level_xp = self._xp_for_level(level)
+        next_level_xp = self._xp_for_level(level + 1)
+        into_level = xp - this_level_xp
+        needed = next_level_xp - this_level_xp
+        rank_pos = self.db.get_extras_rank(interaction.guild_id, member.id)
+        rank_str = f"#{rank_pos}" if rank_pos else "unranked"
+        embed = discord.Embed(color=member.color if member.color.value else discord.Color.blurple())
+        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.add_field(name="Rank", value=rank_str, inline=True)
+        embed.add_field(name="Level", value=str(level), inline=True)
+        embed.add_field(name="Total XP", value=f"{xp:,}", inline=True)
+        embed.add_field(
+            name=f"Progress to level {level + 1}",
+            value=f"`{self._progress_bar(into_level, needed)}` {into_level:,}/{needed:,} XP",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed)
 
     @extras.command(name="leaderboard", description="Show the XP leaderboard")
     @utils.toggleable("leaderboard")
@@ -106,44 +182,74 @@ class Extras(commands.Cog):
         ).fetchall()
         if not rows:
             return await interaction.response.send_message("No XP has been earned yet.")
-        lines = []
-        for i, (uid, xp, level) in enumerate(rows, 1):
-            lines.append(f"**{i}.** <@{uid}> — Level {level} • {xp} XP")
-        await interaction.response.send_message("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"**{medals.get(i, f'{i}.')}** <@{uid}> — Level {level} • {xp:,} XP" for i, (uid, xp, level) in enumerate(rows, 1)]
+        embed = discord.Embed(title="🏆 XP Leaderboard", description="\n".join(lines), color=discord.Color.gold())
+        await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     def _balance(self, guild_id, user_id):
         row = self.db.conn.execute(
-            "SELECT balance,last_daily FROM extras_economy WHERE guild_id=? AND user_id=?",
+            "SELECT balance,last_daily,daily_streak FROM extras_economy WHERE guild_id=? AND user_id=?",
             (guild_id, user_id),
         ).fetchone()
-        return (int(row[0]), row[1]) if row else (0, None)
+        return (int(row[0]), row[1], int(row[2])) if row else (0, None, 0)
 
     @extras.command(name="balance", description="Show an economy balance")
     @utils.toggleable("balance")
     async def balance(self, interaction: discord.Interaction, member: discord.Member | None = None):
         member = member or interaction.user
-        bal, _ = self._balance(interaction.guild_id, member.id)
-        await interaction.response.send_message(f"💰 **{member.display_name}** has **{bal:,} coins**.")
+        bal, _, streak = self._balance(interaction.guild_id, member.id)
+        streak_note = f" • 🔥 **{streak}**-day daily streak" if streak > 1 else ""
+        await interaction.response.send_message(f"💰 **{member.display_name}** has **{bal:,} coins**{streak_note}.")
 
     @extras.command(name="daily", description="Claim your daily coins")
     @utils.toggleable("daily")
     async def daily(self, interaction: discord.Interaction):
         gid, uid = interaction.guild_id, interaction.user.id
-        bal, last = self._balance(gid, uid)
+        bal, last, streak = self._balance(gid, uid)
         now = int(time.time())
         if last and now - int(last) < 86400:
             remaining = 86400 - (now - int(last))
             h, rem = divmod(remaining, 3600)
             m = rem // 60
             return await interaction.response.send_message(f"⏳ Your daily is on cooldown for **{h}h {m}m**.")
-        bal += DAILY_AMOUNT
+        # Streak continues if claimed again within the grace window; otherwise it resets to 1.
+        streak = streak + 1 if last and now - int(last) < DAILY_STREAK_GRACE else 1
+        bonus = min(DAILY_STREAK_BONUS_CAP, DAILY_STREAK_BONUS * (streak - 1))
+        reward = DAILY_AMOUNT + bonus
+        bal += reward
         self.db.conn.execute(
-            """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily) VALUES(?,?,?,?)
-               ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance,last_daily=excluded.last_daily""",
-            (gid, uid, bal, now),
+            """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,?,?)
+               ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance,last_daily=excluded.last_daily,daily_streak=excluded.daily_streak""",
+            (gid, uid, bal, now, streak),
         )
         self.db.conn.commit()
-        await interaction.response.send_message(f"🎁 You claimed **{DAILY_AMOUNT:,} coins**. Balance: **{bal:,}**.")
+        bonus_note = f" (base {DAILY_AMOUNT:,} + 🔥{streak}-day streak bonus {bonus:,})" if bonus else ""
+        await interaction.response.send_message(f"🎁 You claimed **{reward:,} coins**{bonus_note}. Balance: **{bal:,}**.")
+
+    @extras.command(name="work", description="Work a shift for a smaller amount of coins (short cooldown)")
+    @utils.toggleable("work")
+    async def work(self, interaction: discord.Interaction):
+        gid, uid = interaction.guild_id, interaction.user.id
+        now = int(time.time())
+        key = (gid, uid)
+        last = self._work_cooldowns.get(key, 0)
+        if now - last < WORK_COOLDOWN:
+            remaining = WORK_COOLDOWN - (now - last)
+            m, s = divmod(remaining, 60)
+            return await interaction.response.send_message(f"⏳ You're still on the clock. Try again in **{m}m {s}s**.")
+        self._work_cooldowns[key] = now
+        bal, _, _ = self._balance(gid, uid)
+        earned = random.randint(WORK_MIN, WORK_MAX)
+        bal += earned
+        self.db.conn.execute(
+            "INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,NULL,0) "
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance",
+            (gid, uid, bal),
+        )
+        self.db.conn.commit()
+        flavor = random.choice(WORK_FLAVOR)
+        await interaction.response.send_message(f"{flavor} You earned **{earned:,} coins**. Balance: **{bal:,}**.")
 
     @extras.command(name="pay", description="Pay another member")
     @app_commands.describe(member="Recipient", amount="Positive amount of coins")
@@ -152,10 +258,10 @@ class Extras(commands.Cog):
         if member.bot or member.id == interaction.user.id:
             return await interaction.response.send_message("You can only pay another human member.", ephemeral=True)
         gid, uid = interaction.guild_id, interaction.user.id
-        sender, _ = self._balance(gid, uid)
+        sender, _, _ = self._balance(gid, uid)
         if sender < amount:
             return await interaction.response.send_message("You don't have enough coins.", ephemeral=True)
-        receiver, _ = self._balance(gid, member.id)
+        receiver, _, _ = self._balance(gid, member.id)
         self.db.conn.execute(
             "INSERT INTO extras_economy(guild_id,user_id,balance,last_daily) VALUES(?,?,?,NULL) ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance",
             (gid, uid, sender - amount),
@@ -176,10 +282,93 @@ class Extras(commands.Cog):
         ).fetchall()
         if not rows:
             return await interaction.response.send_message("No economy balances exist yet.")
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"**{medals.get(i, f'{i}.')}** <@{uid}> — {bal:,} coins" for i, (uid, bal) in enumerate(rows, 1)]
+        embed = discord.Embed(title="💰 Richest Members", description="\n".join(lines), color=discord.Color.gold())
+        await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @extras.command(name="levelconfig", description="Configure level-up announcements")
+    @app_commands.describe(
+        enabled="Announce level-ups at all",
+        channel="Channel to post in (leave empty to post wherever they leveled up)",
+        message="Message template - {user}, {level}, {server} are replaced",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def levelconfig(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool | None = None,
+        channel: discord.TextChannel | None = None,
+        message: str | None = None,
+    ):
+        current = self.db.get_extras_level_config(interaction.guild_id)
+        new_enabled = current["enabled"] if enabled is None else enabled
+        new_channel_id = current["channel_id"] if channel is None else channel.id
+        new_message = current["message"] if message is None else message
+        self.db.set_extras_level_config(interaction.guild_id, new_enabled, new_channel_id, new_message)
+        where = f"<#{new_channel_id}>" if new_channel_id else "wherever the member leveled up"
         await interaction.response.send_message(
-            "\n".join(f"**{i}.** <@{uid}> — {bal:,} coins" for i, (uid, bal) in enumerate(rows, 1)),
+            f"✅ Level-up announcements are **{'on' if new_enabled else 'off'}**, posting in {where}.\nMessage: {new_message}",
+            ephemeral=True,
+        )
+
+    @extras.command(name="levelrole-add", description="Grant a role automatically when members reach a level")
+    @app_commands.describe(level="Level required", role="Role to grant")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def levelrole_add(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 10000], role: discord.Role):
+        if role >= interaction.guild.me.top_role:
+            return await interaction.response.send_message("I can't assign a role positioned above or equal to my own top role.", ephemeral=True)
+        self.db.set_extras_level_role(interaction.guild_id, level, role.id)
+        await interaction.response.send_message(f"✅ Members reaching level **{level}** will now be given {role.mention}.", ephemeral=True)
+
+    @extras.command(name="levelrole-remove", description="Remove a level role reward")
+    @app_commands.describe(level="Level to remove the reward from")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def levelrole_remove(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 10000]):
+        if self.db.remove_extras_level_role(interaction.guild_id, level):
+            await interaction.response.send_message(f"🗑️ Removed the level **{level}** role reward.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"No role reward is set for level {level}.", ephemeral=True)
+
+    @extras.command(name="levelrole-list", description="List level role rewards")
+    async def levelrole_list(self, interaction: discord.Interaction):
+        rows = self.db.list_extras_level_roles(interaction.guild_id)
+        if not rows:
+            return await interaction.response.send_message("No level role rewards configured.")
+        await interaction.response.send_message(
+            "\n".join(f"Level **{level}** → <@&{role_id}>" for level, role_id in rows),
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+    @extras.command(name="noxpchannel-add", description="Stop a channel from earning XP")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def noxpchannel_add(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        self.db.add_extras_noxp_channel(interaction.guild_id, channel.id)
+        await interaction.response.send_message(f"✅ {channel.mention} no longer earns XP.", ephemeral=True)
+
+    @extras.command(name="noxpchannel-remove", description="Let a channel earn XP again")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def noxpchannel_remove(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if self.db.remove_extras_noxp_channel(interaction.guild_id, channel.id):
+            await interaction.response.send_message(f"✅ {channel.mention} earns XP again.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"{channel.mention} wasn't excluded.", ephemeral=True)
+
+    @extras.command(name="boostrole-add", description="Give a role a message-XP multiplier")
+    @app_commands.describe(role="Role to boost", multiplier="e.g. 1.5 for +50% XP, 2 for double XP")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def boostrole_add(self, interaction: discord.Interaction, role: discord.Role, multiplier: app_commands.Range[float, 1.0, 10.0]):
+        self.db.set_extras_xp_boost_role(interaction.guild_id, role.id, multiplier)
+        await interaction.response.send_message(f"✅ {role.mention} now earns **{multiplier}x** message XP.", ephemeral=True)
+
+    @extras.command(name="boostrole-remove", description="Remove a role's XP multiplier")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def boostrole_remove(self, interaction: discord.Interaction, role: discord.Role):
+        if self.db.remove_extras_xp_boost_role(interaction.guild_id, role.id):
+            await interaction.response.send_message(f"🗑️ Removed {role.mention}'s XP boost.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"{role.mention} doesn't have a boost set.", ephemeral=True)
+
 
     @extras.command(name="giveaway", description="Start a giveaway")
     @app_commands.checks.has_permissions(manage_guild=True)
