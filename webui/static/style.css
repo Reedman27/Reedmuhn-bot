@@ -578,19 +578,41 @@ body.centered {
     justify-content: center;
 }
 
-/* ---- app shell: sidebar + main ---- */
+/* ---- app shell: two layouts (classic sidebar / new top nav), same
+   theme variables either way so every theme keeps working unchanged.
+   Which layout is active is stored in localStorage and applied to
+   <html data-layout> before first paint - see the inline script in
+   base.html's <head>. Default is "topnav"; "sidebar" is the classic
+   layout, kept as an option via the switch in the controls bar. ---- */
 
-body.app {
-    display: flex;
+.shell {
+    display: grid;
     min-height: 100vh;
 }
+
+html[data-layout="sidebar"] .shell {
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 1fr auto;
+    grid-template-areas: "nav main" "controls main";
+}
+html[data-layout="sidebar"] .topnav-bar { display: none; }
+
+html[data-layout="topnav"] .shell {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "nav controls" "main main";
+}
+html[data-layout="topnav"] .sidebar { display: none; }
+
+.sidebar, .topnav-bar { grid-area: nav; }
+.sidebar-footer { grid-area: controls; }
+main { grid-area: main; }
 
 .sidebar {
     width: 220px;
     height: 100vh;
     position: sticky;
     top: 0;
-    flex-shrink: 0;
     background: var(--sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -613,24 +635,16 @@ body.app {
 }
 
 .sidebar-nav { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: .2rem; scrollbar-width: thin; }
-
-.quickjump-trigger { display:flex; align-items:center; justify-content:space-between; width:calc(100% - 1.2rem); margin:.4rem .6rem .6rem; padding:.5rem .6rem; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--muted); font:inherit; font-size:.85rem; cursor:pointer; text-align:left; }
-.quickjump-trigger:hover { color:var(--text); border-color:var(--accent); }
-.quickjump-kbd { font-size:.7rem; padding:.1rem .35rem; border-radius:5px; background:var(--accent-dim); color:var(--muted); }
-
-.quickjump-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding-top:12vh; z-index:1000; }
-.quickjump-panel { width:min(480px, 90vw); max-height:60vh; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.35); overflow:hidden; }
-.quickjump-input { border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); font:inherit; font-size:1rem; padding:.9rem 1rem; outline:none; }
-.quickjump-results { list-style:none; margin:0; padding:.4rem; overflow-y:auto; }
-.quickjump-results li a { display:block; padding:.55rem .7rem; border-radius:7px; color:var(--text); text-decoration:none; font-size:.9rem; }
-.quickjump-results li a:hover, .quickjump-results li a.active { background:var(--accent-dim); }
-.quickjump-empty { padding:1rem; margin:0; color:var(--muted); font-size:.9rem; text-align:center; }
 .nav-group { margin-bottom: .25rem; }
 .nav-group-title { width:100%; display:flex; justify-content:space-between; align-items:center; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:.55rem .6rem .35rem; cursor:pointer; }
 .nav-group-title span { transition: transform .15s; }
 .nav-group.collapsed .nav-group-title span { transform:rotate(-90deg); }
 .nav-group.collapsed .nav-group-items { display:none; }
 .nav-group-items { display:flex; flex-direction:column; gap:.15rem; }
+
+.page-results { list-style:none; margin:0; padding:0; }
+.page-results li a { display:block; padding:.5rem .6rem; border-radius:6px; color:var(--text); text-decoration:none; font-size:.9rem; }
+.page-results li a:hover { background:var(--accent-dim); }
 
 .sidebar nav a {
     color: var(--muted);
@@ -658,8 +672,54 @@ body.app {
 .sidebar-footer .logout { color: var(--muted); text-decoration: none; }
 .sidebar-footer .logout:hover { color: var(--text); }
 
+/* ---- topnav-bar: the no-permanent-sidebar layout option ---- */
+
+.topnav-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.6rem 1rem;
+    background: var(--sidebar);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+.topnav-brand { font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
+.topnav-bar .server-name { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.topnav-bar .nav-spacer { flex: 1; }
+.topnav-links { display: flex; align-items: center; gap: 0.15rem; }
+.topnav-dropdown { position: relative; }
+.topnav-dropdown-btn {
+    display: flex; align-items: center; gap: 0.3rem;
+    background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 0.88rem;
+    padding: 0.5rem 0.65rem; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.topnav-dropdown-btn:hover, .topnav-dropdown-btn.active { color: var(--text); background: var(--accent-dim); }
+.topnav-dropdown-btn span { font-size: 0.7rem; }
+.topnav-dropdown-panel {
+    display: none; position: absolute; top: 100%; left: 0; margin-top: 0.25rem;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 0.35rem; min-width: 200px; z-index: 50;
+    flex-direction: column; gap: 0.1rem;
+}
+.topnav-dropdown.open .topnav-dropdown-panel { display: flex; }
+.topnav-dropdown-panel a { color: var(--muted); text-decoration: none; padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.88rem; white-space: nowrap; }
+.topnav-dropdown-panel a:hover { color: var(--text); background: var(--accent-dim); }
+.topnav-dropdown-panel a.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
+
+/* Controls bar sits beside the topnav-bar (same grid row) instead of below
+   a sidebar, so lay it out as a horizontal row here. */
+html[data-layout="topnav"] .sidebar-footer {
+    display: flex; align-items: center; gap: 0.9rem;
+    border-top: none; border-bottom: 1px solid var(--border);
+    padding: 0.5rem 1rem; font-size: 0.85rem;
+    background: var(--sidebar);
+}
+html[data-layout="topnav"] .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
+html[data-layout="topnav"] .sidebar-footer .logged-in-as { margin-bottom: 0; white-space: nowrap; }
+
+.layout-toggle { white-space: nowrap; }
+
 main {
-    flex-grow: 1;
     max-width: 760px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
@@ -667,7 +727,8 @@ main {
 }
 
 @media (max-width: 700px) {
-    body.app { flex-direction: column; }
+    .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
+
     .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
     .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }
     .sidebar .server-name { display: none; }
@@ -682,14 +743,24 @@ main {
        to reach those links on a phone. */
     .sidebar-nav .nav-group.collapsed .nav-group-items { display: flex; }
     .sidebar .nav-spacer { flex-grow: 1; }
+
+    /* The topnav-bar's hover/click dropdowns don't translate well to touch -
+       flatten every group's links into one horizontally-scrolling row
+       instead, same idea as the sidebar's mobile treatment above. */
+    .topnav-bar { flex-wrap: wrap; }
+    .topnav-bar .server-name { display: none; }
+    .topnav-dropdown { display: contents; }
+    .topnav-dropdown-btn { display: none; }
+    .topnav-dropdown-panel { display: flex !important; position: static; box-shadow: none; border: 0; background: transparent; padding: 0; flex-direction: row; margin-top: 0; }
+
     /* Was "display: none" - the theme menu / account controls were
        invisible on mobile entirely. Now it wraps onto its own row below
        the nav instead, full width, laid out horizontally. */
-    .sidebar-footer {
-        flex-basis: 100%;
+    .sidebar-footer, html[data-layout="topnav"] .sidebar-footer {
         border-top: 1px solid var(--border);
+        border-bottom: 0;
         margin-top: 0.6rem;
-        padding-top: 0.6rem;
+        padding: 0.6rem 1rem;
         display: flex;
         align-items: center;
         flex-wrap: wrap;

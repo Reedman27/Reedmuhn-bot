@@ -4,48 +4,68 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Reedmuhn Bot{% endblock %}</title>
-    <script>if ('scrollRestoration' in history) { history.scrollRestoration = 'manual'; }</script>
+    <script>
+        if ('scrollRestoration' in history) { history.scrollRestoration = 'manual'; }
+        try {
+            var savedLayout = localStorage.getItem('reedmuhn-layout');
+            document.documentElement.dataset.layout = (savedLayout === 'sidebar' || savedLayout === 'topnav') ? savedLayout : 'topnav';
+        } catch (e) { document.documentElement.dataset.layout = 'topnav'; }
+    </script>
     <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css">
     <script defer src="/static/sidebar.js"></script>
 </head>
 <body class="app">
-    <aside class="sidebar">
-        <div class="brand">🤖 Reedmuhn Bot</div>
-        {% if guild_id %}
-        <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
-        <button type="button" id="quickjump-trigger" class="quickjump-trigger">🔍 Jump to page<span class="quickjump-kbd">Ctrl K</span></button>
-        <nav class="sidebar-nav" id="sidebar-nav">
-            <section class="nav-group" data-group="general"><button class="nav-group-title" type="button" aria-expanded="true">General <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}" class="{{ 'active' if active == 'overview' else '' }}">📊 Overview</a><a href="/guild/{{ guild_id }}/search" class="{{ 'active' if active == 'search' else '' }}">🔎 Search</a>
-            </div></section>
-            <section class="nav-group" data-group="statistics"><button class="nav-group-title" type="button" aria-expanded="true">Statistics <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/analytics" class="{{ 'active' if active == 'analytics' else '' }}">📈 Analytics</a><a href="/guild/{{ guild_id }}/staffstats" class="{{ 'active' if active == 'staffstats' else '' }}">📋 Staff Activity</a><a href="/guild/{{ guild_id }}/invites" class="{{ 'active' if active == 'invites' else '' }}">🔗 Invites</a><a href="/guild/{{ guild_id }}/snapshots" class="{{ 'active' if active == 'snapshots' else '' }}">📸 Snapshots</a>
-            </div></section>
-            <section class="nav-group" data-group="moderation"><button class="nav-group-title" type="button" aria-expanded="true">Moderation <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/moderation" class="{{ 'active' if active == 'moderation' else '' }}">🛡️ Moderation</a><a href="/guild/{{ guild_id }}/automod" class="{{ 'active' if active == 'automod' else '' }}">🚨 AutoMod</a><a href="/guild/{{ guild_id }}/moderationqueue" class="{{ 'active' if active == 'moderationqueue' else '' }}">⏳ Moderation Queue</a><a href="/guild/{{ guild_id }}/reports" class="{{ 'active' if active == 'reports' else '' }}">🚩 Reports</a><a href="/guild/{{ guild_id }}/rules" class="{{ 'active' if active == 'rules' else '' }}">📜 Rules</a><a href="/guild/{{ guild_id }}/verification" class="{{ 'active' if active == 'verification' else '' }}">✅ Verification</a><a href="/guild/{{ guild_id }}/emergency" class="{{ 'active' if active == 'emergency' else '' }}">🆘 Emergency</a><a href="/guild/{{ guild_id }}/antinuke" class="{{ 'active' if active == 'antinuke' else '' }}">🧨 Anti-Nuke</a><a href="/guild/{{ guild_id }}/raid" class="{{ 'active' if active == 'raid' else '' }}">🚨 Raid Detection</a>
-            </div></section>
-            <section class="nav-group" data-group="community"><button class="nav-group-title" type="button" aria-expanded="true">Fun & Community <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/fun-commands" class="{{ 'active' if active == 'funcommands' else '' }}">🎮 Fun Commands</a><a href="/guild/{{ guild_id }}/starboard" class="{{ 'active' if active == 'starboard' else '' }}">⭐ Starboard</a><a href="/guild/{{ guild_id }}/suggestions" class="{{ 'active' if active == 'suggestions' else '' }}">💡 Suggestions</a><a href="/guild/{{ guild_id }}/welcome" class="{{ 'active' if active == 'welcome' else '' }}">👋 Welcome & Roles</a><a href="/guild/{{ guild_id }}/birthdays" class="{{ 'active' if active == 'birthdays' else '' }}">🎂 Birthdays</a><a href="/guild/{{ guild_id }}/counting" class="{{ 'active' if active == 'counting' else '' }}">🔢 Counting</a><a href="/guild/{{ guild_id }}/reactionroles" class="{{ 'active' if active == 'reactionroles' else '' }}">🎭 Reaction Roles</a><a href="/guild/{{ guild_id }}/stickyroles" class="{{ 'active' if active == 'stickyroles' else '' }}">🧷 Sticky Roles</a><a href="/guild/{{ guild_id }}/polls" class="{{ 'active' if active == 'polls' else '' }}">📊 Polls</a>
-            </div></section>
-            <section class="nav-group" data-group="utility"><button class="nav-group-title" type="button" aria-expanded="true">Utility <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/commands" class="{{ 'active' if active == 'commands' else '' }}">⚡ Custom Commands</a><a href="/guild/{{ guild_id }}/scheduled" class="{{ 'active' if active == 'scheduled' else '' }}">⏰ Tasks</a><a href="/guild/{{ guild_id }}/tickets" class="{{ 'active' if active == 'tickets' else '' }}">🎫 Tickets</a><a href="/guild/{{ guild_id }}/modmail" class="{{ 'active' if active == 'modmail' else '' }}">📬 Modmail</a><a href="/guild/{{ guild_id }}/tempvoice" class="{{ 'active' if active == 'tempvoice' else '' }}">🎙️ Temp Voice</a><a href="/guild/{{ guild_id }}/youtube" class="{{ 'active' if active == 'youtube' else '' }}">📺 YouTube</a><a href="/guild/{{ guild_id }}/talk" class="{{ 'active' if active == 'talk' else '' }}">💬 Talk</a><a href="/guild/{{ guild_id }}/ai" class="{{ 'active' if active == 'ai' else '' }}">🤖 AI</a>
-            </div></section>
-            <section class="nav-group" data-group="extra"><button class="nav-group-title" type="button" aria-expanded="true">Extra <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/leveling" class="{{ 'active' if active == 'leveling' else '' }}">📈 Leveling</a><a href="/guild/{{ guild_id }}/economy" class="{{ 'active' if active == 'economy' else '' }}">💰 Economy</a><a href="/guild/{{ guild_id }}/giveaways" class="{{ 'active' if active == 'giveaways' else '' }}">🎉 Giveaways</a><a href="/guild/{{ guild_id }}/counters" class="{{ 'active' if active == 'counters' else '' }}">🔢 Counters</a><a href="/guild/{{ guild_id }}/twitch" class="{{ 'active' if active == 'twitch' else '' }}">🟣 Twitch</a><a href="/guild/{{ guild_id }}/feeds" class="{{ 'active' if active == 'feeds' else '' }}">📰 RSS Feeds</a>
-            </div></section>
-            <section class="nav-group" data-group="logs"><button class="nav-group-title" type="button" aria-expanded="true">Logs & Data <span>⌄</span></button><div class="nav-group-items">
-                <a href="/guild/{{ guild_id }}/logging" class="{{ 'active' if active == 'logging' else '' }}">📋 Logging</a><a href="/guild/{{ guild_id }}/feed" class="{{ 'active' if active == 'feed' else '' }}">👀 Channel Feed</a><a href="/guild/{{ guild_id }}/permissions" class="{{ 'active' if active == 'permissions' else '' }}">🔐 Permissions</a>
-            </div></section>
-        </nav>
-        {% else %}
-        <nav class="nav-spacer"></nav>
-        {% endif %}
+    {% set nav_groups = [
+        ("general", "General", [("", "overview", "📊", "Overview"), ("search", "search", "🔎", "Search")]),
+        ("statistics", "Statistics", [("analytics", "analytics", "📈", "Analytics"), ("staffstats", "staffstats", "📋", "Staff Activity"), ("invites", "invites", "🔗", "Invites"), ("snapshots", "snapshots", "📸", "Snapshots")]),
+        ("moderation", "Moderation", [("moderation", "moderation", "🛡️", "Moderation"), ("automod", "automod", "🚨", "AutoMod"), ("moderationqueue", "moderationqueue", "⏳", "Moderation Queue"), ("reports", "reports", "🚩", "Reports"), ("rules", "rules", "📜", "Rules"), ("verification", "verification", "✅", "Verification"), ("emergency", "emergency", "🆘", "Emergency"), ("antinuke", "antinuke", "🧨", "Anti-Nuke"), ("raid", "raid", "🚨", "Raid Detection")]),
+        ("community", "Fun & Community", [("fun-commands", "funcommands", "🎮", "Fun Commands"), ("starboard", "starboard", "⭐", "Starboard"), ("suggestions", "suggestions", "💡", "Suggestions"), ("welcome", "welcome", "👋", "Welcome & Roles"), ("birthdays", "birthdays", "🎂", "Birthdays"), ("counting", "counting", "🔢", "Counting"), ("reactionroles", "reactionroles", "🎭", "Reaction Roles"), ("stickyroles", "stickyroles", "🧷", "Sticky Roles"), ("polls", "polls", "📊", "Polls")]),
+        ("utility", "Utility", [("commands", "commands", "⚡", "Custom Commands"), ("scheduled", "scheduled", "⏰", "Tasks"), ("tickets", "tickets", "🎫", "Tickets"), ("modmail", "modmail", "📬", "Modmail"), ("tempvoice", "tempvoice", "🎙️", "Temp Voice"), ("youtube", "youtube", "📺", "YouTube"), ("talk", "talk", "💬", "Talk"), ("ai", "ai", "🤖", "AI")]),
+        ("extra", "Extra", [("leveling", "leveling", "📈", "Leveling"), ("economy", "economy", "💰", "Economy"), ("giveaways", "giveaways", "🎉", "Giveaways"), ("counters", "counters", "🔢", "Counters"), ("twitch", "twitch", "🟣", "Twitch"), ("feeds", "feeds", "📰", "RSS Feeds")]),
+        ("logs", "Logs & Data", [("logging", "logging", "📋", "Logging"), ("feed", "feed", "👀", "Channel Feed"), ("permissions", "permissions", "🔐", "Permissions")]),
+    ] %}
 
-        {# This footer (theme menu, current server + switch, logged-in-as,
-           log out) is intentionally OUTSIDE the "{% if guild_id %}" block
-           above so it renders identically on every page - including the
-           server picker, which has no guild_id yet. #}
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">🤖 Reedmuhn Bot</div>
+            {% if guild_id %}
+            <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
+            <nav class="sidebar-nav" id="sidebar-nav">
+                {% for gid, glabel, items in nav_groups %}
+                <section class="nav-group" data-group="{{ gid }}"><button class="nav-group-title" type="button" aria-expanded="true">{{ glabel }} <span>⌄</span></button><div class="nav-group-items">
+                    {% for slug, aid, icon, label in items %}<a class="nav-link {{ 'active' if active == aid else '' }}" href="/guild/{{ guild_id }}{{ '/' + slug if slug else '' }}">{{ icon }} {{ label }}</a>{% endfor %}
+                </div></section>
+                {% endfor %}
+            </nav>
+            {% else %}
+            <nav class="nav-spacer"></nav>
+            {% endif %}
+        </aside>
+
+        <nav class="topnav-bar">
+            <div class="topnav-brand">🤖 Reedmuhn Bot</div>
+            {% if guild_id %}
+            <div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>
+            <div class="topnav-links" id="topnav-links">
+                {% for gid, glabel, items in nav_groups %}
+                <div class="topnav-dropdown" data-group="{{ gid }}">
+                    <button type="button" class="topnav-dropdown-btn {{ 'active' if active in items|map(attribute=1) }}">{{ glabel }} <span>⌄</span></button>
+                    <div class="topnav-dropdown-panel">
+                        {% for slug, aid, icon, label in items %}<a class="nav-link {{ 'active' if active == aid else '' }}" href="/guild/{{ guild_id }}{{ '/' + slug if slug else '' }}">{{ icon }} {{ label }}</a>{% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="nav-spacer"></div>
+            {% endif %}
+        </nav>
+
+        {# Controls (theme menu, current server + switch, logged-in-as, log
+           out, layout switch) live in ONE place in the DOM regardless of
+           layout - repositioned by CSS via the "controls" grid area rather
+           than duplicated, so there's only ever one theme menu to wire up. #}
         <div class="sidebar-footer">
             <div class="theme-menu" id="theme-menu">
                 <span class="theme-menu-label">Theme</span>
@@ -56,6 +76,7 @@
                 </button>
                 <div id="theme-menu-panel" class="theme-menu-panel" role="listbox" aria-labelledby="theme-menu-button" hidden></div>
             </div>
+            <button type="button" id="layout-toggle" class="link-btn layout-toggle"></button>
             {% if guild_id %}
             <form action="/switch-guild" method="post">
                 <span class="muted">{{ guild_name }}</span>
@@ -66,17 +87,8 @@
             <a href="/dashboard-log" class="{{ 'active' if active == 'dashboard_log' else '' }}">🗒️ Dashboard Log</a>
             <a href="/logout" class="logout">Log out</a>
         </div>
-    </aside>
-    <main>{% block content %}{% endblock %}</main>
 
-    {% if guild_id %}
-    <div id="quickjump-overlay" class="quickjump-overlay" hidden>
-        <div class="quickjump-panel" role="dialog" aria-modal="true" aria-label="Jump to page">
-            <input type="text" id="quickjump-input" class="quickjump-input" placeholder="Search features… (e.g. xp, welcome, automod)" autocomplete="off">
-            <ul id="quickjump-results" class="quickjump-results"></ul>
-            <p id="quickjump-empty" class="quickjump-empty" hidden>No matching page.</p>
-        </div>
+        <main>{% block content %}{% endblock %}</main>
     </div>
-    {% endif %}
 </body>
 </html>

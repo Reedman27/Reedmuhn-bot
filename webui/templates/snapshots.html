@@ -36,7 +36,7 @@
         <td>{{ s.created_at }}</td>
         <td>
             <a href="/guild/{{ guild_id }}/snapshots?a={{ s.id }}&b=current">Compare to current</a> ·
-            <form method="post" action="/guild/{{ guild_id }}/snapshots/restore" class="inline" onsubmit="return confirm('Restore settings from \'{{ s.name }}\'? This overwrites current settings in every section listed above.');">
+            <form method="post" action="/guild/{{ guild_id }}/snapshots/restore" class="inline" onsubmit='return confirm({{ ("Restore settings from \"" ~ s.name ~ "\"? This overwrites current settings in every section listed above.") | tojson }});'>
                 <input type="hidden" name="snapshot_id" value="{{ s.id }}">
                 <input type="text" name="confirm_text" placeholder="Type RESTORE" required style="width:9em">
                 <button type="submit" class="danger">Restore</button>

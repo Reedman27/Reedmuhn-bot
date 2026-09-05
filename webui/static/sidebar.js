@@ -21,118 +21,67 @@
   });
 })();
 
-// Command-palette-style "jump to page" search. Builds its list straight from
-// the sidebar's own links (plus a few extra keyword synonyms below), so a new
-// page in base.html automatically becomes searchable without touching this file.
+// Ctrl+K jumps straight to the Search page (which searches both pages and
+// content - see search.html). No visible button for this; it's a quiet
+// shortcut for people who want it, not a second search UI to maintain.
 (() => {
-  const trigger = document.getElementById('quickjump-trigger');
-  const overlay = document.getElementById('quickjump-overlay');
-  if (!trigger || !overlay) return;
-
-  const input = document.getElementById('quickjump-input');
-  const list = document.getElementById('quickjump-results');
-  const empty = document.getElementById('quickjump-empty');
-
-  // Extra search terms for pages whose feature name differs from its nav
-  // label/icon (so e.g. typing "xp" or "leveling" finds the Extras page).
-  const SYNONYMS = {
-    '/leveling': 'xp leveling levels leaderboard',
-    '/economy': 'coins balance daily pay richest money',
-    '/giveaways': 'giveaway prize winners',
-    '/counters': 'live counter member count',
-    '/twitch': 'stream live notification',
-    '/feeds': 'rss atom feed news',
-    '/automod': 'spam filter bad words link blocking gif',
-    '/moderation': 'warn warnings kick ban mute timeout tempban cases votekick vote kick history',
-    '/moderationqueue': 'automod approvals pending review',
-    '/rules': 'server rules',
-    '/verification': 'gate captcha button role',
-    '/emergency': 'lockdown panic mass timeout revoke invites',
-    '/antinuke': 'anti nuke nuke protection webhook mass ban mass kick',
-    '/raid': 'raid detection join raid',
-    '/fun-commands': 'toggle commands enable disable per-command',
-    '/starboard': 'star board highlights',
-    '/suggestions': 'suggestion box',
-    '/welcome': 'welcome message autorole welcome card',
-    '/birthdays': 'birthday announcements',
-    '/counting': 'counting game high score',
-    '/reactionroles': 'reaction role menu',
-    '/stickyroles': 'sticky roles rejoin',
-    '/polls': 'poll button poll',
-    '/commands': 'custom commands',
-    '/scheduled': 'reminders tasks nickname revert',
-    '/tickets': 'support tickets',
-    '/modmail': 'mod mail dm staff',
-    '/tempvoice': 'temp voice temporary voice channel hub',
-    '/youtube': 'youtube uploads live announce',
-    '/talk': 'dashboard talk relay say',
-    '/ai': 'ai assistant openai',
-    '/logging': 'audit log message log',
-    '/feed': 'channel feed mirror',
-    '/permissions': 'bot manager roles',
-    '/analytics': 'stats charts',
-    '/staffstats': 'staff activity',
-    '/invites': 'invite tracking',
-    '/snapshots': 'server snapshot backup',
-    '/search': 'find lookup warnings reports rules tickets polls queue',
-  };
-
-  let items = [];
-  function buildIndex() {
-    items = Array.from(document.querySelectorAll('#sidebar-nav a')).map(a => {
-      const path = new URL(a.href, location.origin).pathname;
-      const feature = '/' + path.split('/').slice(3).join('/'); // strip /guild/{id}
-      return {
-        label: a.textContent.trim(),
-        href: a.href,
-        haystack: (a.textContent.trim() + ' ' + (SYNONYMS[feature] || '')).toLowerCase(),
-      };
-    });
-  }
-
-  let activeIndex = -1;
-  function render(matches) {
-    list.innerHTML = '';
-    empty.hidden = matches.length !== 0;
-    matches.forEach((item, i) => {
-      const li = document.createElement('li');
-      const a = document.createElement('a');
-      a.href = item.href;
-      a.textContent = item.label;
-      a.className = i === activeIndex ? 'active' : '';
-      li.appendChild(a);
-      list.appendChild(li);
-    });
-  }
-
-  function search() {
-    const q = input.value.trim().toLowerCase();
-    activeIndex = -1;
-    if (!q) { render(items); return; }
-    render(items.filter(item => item.haystack.includes(q)));
-  }
-
-  function open() {
-    buildIndex();
-    overlay.hidden = false;
-    input.value = '';
-    search();
-    setTimeout(() => input.focus(), 0);
-  }
-  function close() { overlay.hidden = true; }
-
-  trigger.addEventListener('click', open);
+  const searchLink = document.querySelector('#sidebar-nav a[href$="/search"]');
+  if (!searchLink) return;
   document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); overlay.hidden ? open() : close(); }
-    else if (e.key === '/' && overlay.hidden && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); open(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      location.href = searchLink.href;
+    }
   });
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  input.addEventListener('input', search);
-  input.addEventListener('keydown', (e) => {
-    const links = Array.from(list.querySelectorAll('a'));
-    if (e.key === 'Escape') { close(); }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, links.length - 1); render(items.filter(it => it.haystack.includes(input.value.trim().toLowerCase()))); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); render(items.filter(it => it.haystack.includes(input.value.trim().toLowerCase()))); }
-    else if (e.key === 'Enter') { const target = links[activeIndex] || links[0]; if (target) { location.href = target.href; } }
+})();
+
+// Top-nav dropdown menus (click to open, click outside or Escape to close;
+// only one open at a time).
+(() => {
+  const dropdowns = document.querySelectorAll('.topnav-dropdown');
+  if (!dropdowns.length) return;
+
+  function closeAll(except) {
+    dropdowns.forEach(d => { if (d !== except) d.classList.remove('open'); });
+  }
+
+  dropdowns.forEach(dropdown => {
+    const btn = dropdown.querySelector('.topnav-dropdown-btn');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !dropdown.classList.contains('open');
+      closeAll();
+      dropdown.classList.toggle('open', willOpen);
+    });
   });
+
+  document.addEventListener('click', () => closeAll());
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(); });
+})();
+
+// Layout switch: classic sidebar vs. top nav. Persisted in localStorage and
+// applied to <html data-layout> before first paint (see base.html's <head>)
+// so there's no flash of the other layout. This just wires up the button
+// label/click - the actual visual switch is pure CSS keyed off the attribute.
+(() => {
+  const btn = document.getElementById('layout-toggle');
+  if (!btn) return;
+  const KEY = 'reedmuhn-layout';
+
+  function label(layout) {
+    return layout === 'sidebar' ? '☰ Try the new layout' : '📐 Switch to classic sidebar';
+  }
+
+  function refresh() {
+    btn.textContent = label(document.documentElement.dataset.layout);
+  }
+
+  btn.addEventListener('click', () => {
+    const next = document.documentElement.dataset.layout === 'sidebar' ? 'topnav' : 'sidebar';
+    document.documentElement.dataset.layout = next;
+    try { localStorage.setItem(KEY, next); } catch (e) { /* layout still applies for this page view */ }
+    refresh();
+  });
+
+  refresh();
 })();

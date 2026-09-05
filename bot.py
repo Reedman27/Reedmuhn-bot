@@ -156,6 +156,7 @@ FEATURES = FeatureStore([
     Feature("say", "cogs.say", "Owner/Administrator command to post a message as the bot.", "utility"),
     Feature("modmail", "cogs.modmail", "DM-based modmail threads with staff.", "moderation"),
     Feature("ping", "cogs.ping", "Basic latency check command.", "utility"),
+    Feature("extras", "cogs.extras", "XP/leveling, economy, giveaways, live counters, Twitch/RSS notifications.", "fun"),
 ])
 
 intents = discord.Intents.default()
