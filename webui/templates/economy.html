@@ -2,7 +2,7 @@
 {% block title %}Economy - {{ guild_name }}{% endblock %}
 {% block content %}
 <h1>Economy</h1>
-<p class="hint">Coins are earned with /extras daily and managed with /extras commands in Discord - use the Fun Commands page to disable it per-server.</p>
+<p class="hint">Coins are earned with /extras daily (streaks add a bonus) and /extras work, and managed with /extras commands in Discord - use the Fun Commands page to disable it per-server.</p>
 
 {% if request.query_params.get('saved') %}<p class="success">Saved.</p>{% endif %}
 {% if request.query_params.get('error') == 'coinamount' %}<p class="error">Enter a valid coin amount (0 or greater).</p>{% endif %}
@@ -10,9 +10,9 @@
 <section class="card">
     <h2>Economy leaderboard</h2>
     {% if economy_leaderboard %}
-    <table><thead><tr><th>#</th><th>Member</th><th>Coins</th></tr></thead><tbody>
+    <table><thead><tr><th>#</th><th>Member</th><th>Coins</th><th>Daily streak</th></tr></thead><tbody>
     {% for row in economy_leaderboard %}
-        <tr><td>{{ loop.index }}</td><td>{{ row.name }}</td><td>{{ "{:,}".format(row.balance) }}</td></tr>
+        <tr><td>{{ loop.index }}</td><td>{{ row.name }}</td><td>{{ "{:,}".format(row.balance) }}</td><td>{{ "🔥 " + row.streak|string if row.streak > 1 else "—" }}</td></tr>
     {% endfor %}
     </tbody></table>
     {% else %}<p class="muted">No economy balances exist yet.</p>{% endif %}

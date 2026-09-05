@@ -1290,7 +1290,7 @@ FUN_COMMANDS = [
     ("Social", [("hug", "Hug someone"), ("insult", "Playfully roast someone"), ("compliment", "Give someone a compliment"), ("pat", "Pat someone"), ("slap", "Playful slap"), ("highfive", "High-five someone"), ("ship", "Compatibility score")]),
     ("Games & Randomness", [("8ball", "Magic 8-ball"), ("coinflip", "Flip a coin"), ("roll", "Roll dice"), ("rps", "Rock-paper-scissors"), ("choose", "Pick between options"), ("wouldyourather", "Would-you-rather question")]),
     ("Text Toys", [("dadjoke", "Random dad joke"), ("mock", "MoCk TeXt"), ("reverse", "Reverse text")]),
-    ("Leveling & Economy", [("level", "Show an XP level"), ("leaderboard", "XP leaderboard"), ("balance", "Show a coin balance"), ("daily", "Claim daily coins"), ("pay", "Pay another member"), ("richest", "Richest members leaderboard")]),
+    ("Leveling & Economy", [("rank", "Show your rank/level"), ("leaderboard", "XP leaderboard"), ("balance", "Show a coin balance"), ("daily", "Claim daily coins"), ("work", "Work a shift for coins"), ("pay", "Pay another member"), ("richest", "Richest members leaderboard")]),
 ]
 
 @app.get("/guild/{guild_id}/fun-commands")
@@ -1826,9 +1826,15 @@ async def leveling_page(request: Request, guild_id: int):
         {"user_id": uid, "name": member_label(guild_id, uid), "xp": xp, "level": level}
         for uid, xp, level in db.list_extras_xp_leaderboard(guild_id)
     ]
+    level_config = db.get_extras_level_config(guild_id)
+    level_roles = [(level, role_id, role_label(guild_id, role_id)) for level, role_id in db.list_extras_level_roles(guild_id)]
+    noxp_channels = [(cid, channel_label(guild_id, cid)) for cid in db.list_extras_noxp_channels(guild_id)]
+    boost_roles = [(role_id, role_label(guild_id, role_id), mult) for role_id, mult in db.list_extras_xp_boost_roles(guild_id)]
     return render(
         request, "leveling.html", guild_id, "leveling",
         xp_leaderboard=xp_leaderboard, members=db.list_bot_members(guild_id),
+        level_config=level_config, level_roles=level_roles, noxp_channels=noxp_channels, boost_roles=boost_roles,
+        text_channels=db.list_bot_channels(guild_id, "text"), roles=db.list_bot_roles(guild_id),
     )
 
 
@@ -1849,13 +1855,78 @@ async def set_extras_xp_route(request: Request, guild_id: int, user_id: int = Fo
     return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
 
 
+@app.post("/guild/{guild_id}/leveling/config")
+async def set_extras_level_config_route(
+    request: Request, guild_id: int, enabled: str = Form(None), channel_id: str = Form(""), message: str = Form(...)
+):
+    if (r := await require_auth(request)):
+        return r
+    channel_id_int = int(channel_id) if channel_id and validate_channel(guild_id, int(channel_id), ("text",)) else None
+    db.set_extras_level_config(guild_id, bool(enabled), channel_id_int, message.strip() or "🎉 {user} reached **level {level}**!")
+    return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/roles/add")
+async def add_extras_level_role(request: Request, guild_id: int, level: int = Form(...), role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if level < 1:
+        return RedirectResponse(f"/guild/{guild_id}/leveling?error=levelrolelevel", status_code=303)
+    db.set_extras_level_role(guild_id, level, role_id)
+    return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/roles/delete")
+async def delete_extras_level_role(request: Request, guild_id: int, level: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_extras_level_role(guild_id, level)
+    return RedirectResponse(f"/guild/{guild_id}/leveling", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/noxp/add")
+async def add_extras_noxp_channel_route(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, channel_id, ("text",)):
+        return RedirectResponse(f"/guild/{guild_id}/leveling?error=noxpchannel", status_code=303)
+    db.add_extras_noxp_channel(guild_id, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/noxp/delete")
+async def delete_extras_noxp_channel_route(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_extras_noxp_channel(guild_id, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/leveling", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/boost/add")
+async def add_extras_boost_role_route(request: Request, guild_id: int, role_id: int = Form(...), multiplier: float = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if multiplier < 1.0 or multiplier > 10.0:
+        return RedirectResponse(f"/guild/{guild_id}/leveling?error=boostmultiplier", status_code=303)
+    db.set_extras_xp_boost_role(guild_id, role_id, multiplier)
+    return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
+
+
+@app.post("/guild/{guild_id}/leveling/boost/delete")
+async def delete_extras_boost_role_route(request: Request, guild_id: int, role_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_extras_xp_boost_role(guild_id, role_id)
+    return RedirectResponse(f"/guild/{guild_id}/leveling", status_code=303)
+
+
 @app.get("/guild/{guild_id}/economy")
 async def economy_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
     economy_leaderboard = [
-        {"user_id": uid, "name": member_label(guild_id, uid), "balance": bal}
-        for uid, bal in db.list_extras_economy_leaderboard(guild_id)
+        {"user_id": uid, "name": member_label(guild_id, uid), "balance": bal, "streak": streak}
+        for uid, bal, streak in db.list_extras_economy_leaderboard(guild_id)
     ]
     return render(
         request, "economy.html", guild_id, "economy",

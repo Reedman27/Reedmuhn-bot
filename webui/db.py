@@ -54,6 +54,44 @@ class Db:
         self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_feeds (
             guild_id INTEGER NOT NULL, url TEXT NOT NULL, channel_id INTEGER NOT NULL,
             last_id TEXT NOT NULL DEFAULT '', PRIMARY KEY(guild_id,url))""")
+        # Level-up announcements: per-guild on/off, which channel to post in
+        # (NULL = wherever the member's message that triggered the level-up
+        # was sent), and a {user}/{level}/{server}-style message template.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_level_config (
+            guild_id INTEGER PRIMARY KEY, announce_enabled INTEGER NOT NULL DEFAULT 1,
+            announce_channel_id INTEGER, announce_message TEXT NOT NULL DEFAULT '🎉 {user} reached **level {level}**!')""")
+        # Level-up role rewards. Stacking (Arcane-style): reaching a level
+        # grants every reward role at or below it that the member doesn't
+        # already have, rather than swapping a single "current level" role.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_level_roles (
+            guild_id INTEGER NOT NULL, level INTEGER NOT NULL, role_id INTEGER NOT NULL,
+            PRIMARY KEY(guild_id,level))""")
+        # Channels excluded from earning XP (e.g. a bot-commands or media-dump
+        # channel that would otherwise dominate the leaderboard).
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_noxp_channels (
+            guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, PRIMARY KEY(guild_id,channel_id))""")
+        # XP multiplier roles (booster/VIP-style roles that earn XP faster).
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_xp_boost_roles (
+            guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL, multiplier REAL NOT NULL DEFAULT 1.5,
+            PRIMARY KEY(guild_id,role_id))""")
+        # extras_economy predates the daily_streak column - add it for
+        # anyone upgrading from an older bot.db without wiping their data.
+        economy_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(extras_economy)")}
+        if "daily_streak" not in economy_cols:
+            self.conn.execute("ALTER TABLE extras_economy ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
+        # The XP curve changed from a flat 100*level^2 to a smoother,
+        # community-standard progression (see _extras_xp_for_level) - do a
+        # one-time recompute of every stored level so leaderboards and rank
+        # cards are correct immediately instead of waiting for each member's
+        # next message. Gated behind user_version so this only runs once.
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+            for gid, uid, xp, old_level in self.conn.execute("SELECT guild_id, user_id, xp, level FROM extras_xp").fetchall():
+                new_level = self._extras_level_from_xp(xp)
+                if new_level != old_level:
+                    self.conn.execute(
+                        "UPDATE extras_xp SET level=? WHERE guild_id=? AND user_id=?", (new_level, gid, uid)
+                    )
+            self.conn.execute("PRAGMA user_version = 1")
 
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS scheduled_events (
@@ -2611,14 +2649,24 @@ class Db:
 
     @staticmethod
     def _extras_level_from_xp(xp: int) -> int:
-        """Mirrors cogs.extras.Extras._level_from_xp's 100*level^2 curve.
-        Duplicated deliberately, not imported - the WebUI process doesn't
-        import cogs (see the note atop this file about webui/db.py being a
-        deliberate copy of this one, not an import)."""
+        """Mirrors cogs.extras.Extras._level_from_xp's curve. Duplicated
+        deliberately, not imported - the WebUI process doesn't import cogs
+        (see the note atop this file about webui/db.py being a deliberate
+        copy of this one, not an import).
+
+        Curve: total XP needed for level n = (5*n*(2n^2 + 27n + 91)) // 6,
+        the same shape used by several popular leveling bots (MEE6 among
+        them) - early levels are quick, later ones stretch out considerably.
+        Replaces the old flat 100*level^2 curve, which felt harsh early on
+        and too flat later."""
         level = 0
-        while 100 * (level + 1) * (level + 1) <= xp:
+        while Db._extras_xp_for_level(level + 1) <= xp:
             level += 1
         return level
+
+    @staticmethod
+    def _extras_xp_for_level(level: int) -> int:
+        return (5 * level * (2 * level * level + 27 * level + 91)) // 6
 
     def get_extras_xp(self, guild_id: int, user_id: int) -> int:
         row = self.conn.execute(
@@ -2664,11 +2712,106 @@ class Db:
         ).fetchall()
 
     def list_extras_economy_leaderboard(self, guild_id: int, limit: int = 10):
-        """Returns [(user_id, balance), ...] ordered highest balance first."""
+        """Returns [(user_id, balance, daily_streak), ...] ordered highest balance first."""
         return self.conn.execute(
-            "SELECT user_id, balance FROM extras_economy WHERE guild_id=? ORDER BY balance DESC LIMIT ?",
+            "SELECT user_id, balance, daily_streak FROM extras_economy WHERE guild_id=? ORDER BY balance DESC LIMIT ?",
             (guild_id, limit),
         ).fetchall()
+
+    # ---- extras: level-up announcements, role rewards, no-XP channels, XP boost roles ----
+
+    def get_extras_level_config(self, guild_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT announce_enabled, announce_channel_id, announce_message FROM extras_level_config WHERE guild_id=?",
+            (guild_id,),
+        ).fetchone()
+        if row is None:
+            return {"enabled": True, "channel_id": None, "message": "🎉 {user} reached **level {level}**!"}
+        return {"enabled": bool(row[0]), "channel_id": row[1], "message": row[2]}
+
+    def set_extras_level_config(self, guild_id: int, enabled: bool, channel_id: int | None, message: str) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_level_config(guild_id,announce_enabled,announce_channel_id,announce_message)
+               VALUES(?,?,?,?)
+               ON CONFLICT(guild_id) DO UPDATE SET announce_enabled=excluded.announce_enabled,
+                   announce_channel_id=excluded.announce_channel_id, announce_message=excluded.announce_message""",
+            (guild_id, int(enabled), channel_id, message),
+        )
+        self.conn.commit()
+
+    def list_extras_level_roles(self, guild_id: int):
+        """Returns [(level, role_id), ...] ordered lowest level first."""
+        return self.conn.execute(
+            "SELECT level, role_id FROM extras_level_roles WHERE guild_id=? ORDER BY level ASC", (guild_id,)
+        ).fetchall()
+
+    def set_extras_level_role(self, guild_id: int, level: int, role_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_level_roles(guild_id,level,role_id) VALUES(?,?,?)
+               ON CONFLICT(guild_id,level) DO UPDATE SET role_id=excluded.role_id""",
+            (guild_id, level, role_id),
+        )
+        self.conn.commit()
+
+    def remove_extras_level_role(self, guild_id: int, level: int) -> bool:
+        cur = self.conn.execute("DELETE FROM extras_level_roles WHERE guild_id=? AND level=?", (guild_id, level))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_noxp_channels(self, guild_id: int) -> list[int]:
+        return [row[0] for row in self.conn.execute(
+            "SELECT channel_id FROM extras_noxp_channels WHERE guild_id=?", (guild_id,)
+        ).fetchall()]
+
+    def is_extras_noxp_channel(self, guild_id: int, channel_id: int) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM extras_noxp_channels WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        ).fetchone() is not None
+
+    def add_extras_noxp_channel(self, guild_id: int, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO extras_noxp_channels(guild_id,channel_id) VALUES(?,?)", (guild_id, channel_id)
+        )
+        self.conn.commit()
+
+    def remove_extras_noxp_channel(self, guild_id: int, channel_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM extras_noxp_channels WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_xp_boost_roles(self, guild_id: int):
+        """Returns [(role_id, multiplier), ...]."""
+        return self.conn.execute(
+            "SELECT role_id, multiplier FROM extras_xp_boost_roles WHERE guild_id=?", (guild_id,)
+        ).fetchall()
+
+    def set_extras_xp_boost_role(self, guild_id: int, role_id: int, multiplier: float) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_xp_boost_roles(guild_id,role_id,multiplier) VALUES(?,?,?)
+               ON CONFLICT(guild_id,role_id) DO UPDATE SET multiplier=excluded.multiplier""",
+            (guild_id, role_id, multiplier),
+        )
+        self.conn.commit()
+
+    def remove_extras_xp_boost_role(self, guild_id: int, role_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM extras_xp_boost_roles WHERE guild_id=? AND role_id=?", (guild_id, role_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_extras_rank(self, guild_id: int, user_id: int) -> int | None:
+        """1-based leaderboard position by XP, or None if they have no XP row."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) + 1 FROM extras_xp WHERE guild_id=? AND xp > (SELECT xp FROM extras_xp WHERE guild_id=? AND user_id=?)",
+            (guild_id, guild_id, user_id),
+        ).fetchone()
+        exists = self.conn.execute(
+            "SELECT 1 FROM extras_xp WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        ).fetchone()
+        return int(row[0]) if exists else None
 
     def list_extras_giveaways(self, guild_id: int, include_ended: bool = False):
         """Returns [(id, channel_id, message_id, prize, winners, end_at, ended), ...]."""

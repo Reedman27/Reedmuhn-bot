@@ -5,7 +5,10 @@
 <p class="hint">XP is earned automatically by chatting, and managed with /extras commands in Discord - use the Fun Commands page to disable it per-server.</p>
 
 {% if request.query_params.get('saved') %}<p class="success">Saved.</p>{% endif %}
-{% if request.query_params.get('error') == 'xpamount' %}<p class="error">Enter a valid XP amount (0 or greater).</p>{% endif %}
+{% if request.query_params.get('error') == 'xpamount' %}<p class="error">Enter a valid XP amount (0 or greater).</p>
+{% elif request.query_params.get('error') == 'levelrolelevel' %}<p class="error">Level must be 1 or greater.</p>
+{% elif request.query_params.get('error') == 'noxpchannel' %}<p class="error">Choose a valid text channel.</p>
+{% elif request.query_params.get('error') == 'boostmultiplier' %}<p class="error">Multiplier must be between 1 and 10.</p>{% endif %}
 
 <section class="card">
     <h2>XP leaderboard</h2>
@@ -29,6 +32,87 @@
         <label for="xp_amount">Amount</label><input type="number" id="xp_amount" name="amount" min="0" required>
         <button type="submit">Update XP</button>
     </form>
-    <p class="hint">Level is recalculated automatically from the resulting XP total.</p>
+    <p class="hint">Level is recalculated automatically from the resulting XP total, using a curve that's quick early on and stretches out at higher levels.</p>
+</section>
+
+<section class="card">
+    <h2>Level-up announcements</h2>
+    <form method="post" action="/guild/{{ guild_id }}/leveling/config" class="add-form">
+        <label for="levelconfig_enabled"><input type="checkbox" id="levelconfig_enabled" name="enabled" value="1" {{ "checked" if level_config.enabled }}> Announce level-ups</label>
+        <label for="levelconfig_channel">Channel (optional)</label>
+        <select id="levelconfig_channel" name="channel_id">
+            <option value="">Wherever they leveled up</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}" {{ "selected" if cid == level_config.channel_id }}>#{{ name }}</option>{% endfor %}
+        </select>
+        <label for="levelconfig_message">Message</label>
+        <input type="text" id="levelconfig_message" name="message" value="{{ level_config.message }}" required>
+        <button type="submit">Save</button>
+    </form>
+    <p class="hint">Placeholders: <code>{user}</code>, <code>{level}</code>, <code>{server}</code>.</p>
+</section>
+
+<section class="card">
+    <h2>Level role rewards</h2>
+    <p class="hint">Reaching a level grants every reward at or below it that a member doesn't already have.</p>
+    {% if level_roles %}
+    <table><thead><tr><th>Level</th><th>Role</th><th></th></tr></thead><tbody>
+    {% for level, role_id, name in level_roles %}
+        <tr><td>{{ level }}</td><td>{{ name }}</td><td><form method="post" action="/guild/{{ guild_id }}/leveling/roles/delete" class="inline"><input type="hidden" name="level" value="{{ level }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No level role rewards configured.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/leveling/roles/add" class="add-form">
+        <label for="levelrole_level">Level</label><input type="number" id="levelrole_level" name="level" min="1" required>
+        <label for="levelrole_role">Role</label>
+        <select id="levelrole_role" name="role_id" required>
+            <option value="" disabled selected>Choose a role…</option>
+            {% for rid, name, pos in roles %}<option value="{{ rid }}">{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Add reward</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>XP boost roles</h2>
+    <p class="hint">Members with a boosted role earn a multiplied amount of message XP.</p>
+    {% if boost_roles %}
+    <table><thead><tr><th>Role</th><th>Multiplier</th><th></th></tr></thead><tbody>
+    {% for role_id, name, mult in boost_roles %}
+        <tr><td>{{ name }}</td><td>{{ mult }}x</td><td><form method="post" action="/guild/{{ guild_id }}/leveling/boost/delete" class="inline"><input type="hidden" name="role_id" value="{{ role_id }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No XP boost roles configured.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/leveling/boost/add" class="add-form">
+        <label for="boostrole_role">Role</label>
+        <select id="boostrole_role" name="role_id" required>
+            <option value="" disabled selected>Choose a role…</option>
+            {% for rid, name, pos in roles %}<option value="{{ rid }}">{{ name }}</option>{% endfor %}
+        </select>
+        <label for="boostrole_mult">Multiplier</label><input type="number" id="boostrole_mult" name="multiplier" min="1" max="10" step="0.1" value="1.5" required>
+        <button type="submit">Add boost</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>No-XP channels</h2>
+    <p class="hint">Messages in these channels never earn XP.</p>
+    {% if noxp_channels %}
+    <table><thead><tr><th>Channel</th><th></th></tr></thead><tbody>
+    {% for cid, name in noxp_channels %}
+        <tr><td>{{ name }}</td><td><form method="post" action="/guild/{{ guild_id }}/leveling/noxp/delete" class="inline"><input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No channels excluded.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/leveling/noxp/add" class="add-form">
+        <label for="noxp_channel">Channel</label>
+        <select id="noxp_channel" name="channel_id" required>
+            <option value="" disabled selected>Choose a channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}">#{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Exclude channel</button>
+    </form>
 </section>
 {% endblock %}
