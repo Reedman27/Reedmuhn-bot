@@ -1,13 +1,19 @@
-name: Test Docker Login
+name: Build and Push Docker Images
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  docker-login:
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -15,5 +21,25 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Test Docker access
-        run: docker info
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push bot image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/reedmuhn-bot:bot
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push webui image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./webui
+          file: ./webui/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/reedmuhn-bot:webui
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
