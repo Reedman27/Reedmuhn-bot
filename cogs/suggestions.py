@@ -38,7 +38,9 @@ class Suggestions(commands.Cog, name="Suggestions"):
     def __init__(self,bot): self.bot=bot
     async def cog_load(self): self.bot.add_view(SuggestionView())
 
-    @app_commands.command(name="suggest",description="Submit a suggestion for the server")
+    suggestion = app_commands.Group(name="suggestion", description="Server suggestions")
+
+    @suggestion.command(name="submit",description="Submit a suggestion for the server")
     @app_commands.describe(idea="What should the server add or change?")
     async def suggest(self,interaction,idea:str):
         if interaction.guild is None:
@@ -63,7 +65,7 @@ class Suggestions(commands.Cog, name="Suggestions"):
         await message.edit(embed=embed)
         await interaction.followup.send(f"Your suggestion **#{sid}** was submitted in {channel.mention}.",ephemeral=True)
 
-    @app_commands.command(name="suggestionstatus",description="Show a suggestion")
+    @suggestion.command(name="status",description="Show a suggestion")
     @app_commands.describe(suggestion_id="Suggestion number")
     async def suggestionstatus(self,interaction,suggestion_id:int):
         if interaction.guild is None:
@@ -78,7 +80,7 @@ class Suggestions(commands.Cog, name="Suggestions"):
         if reason: embed.add_field(name="Staff note",value=reason[:1024],inline=False)
         await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="suggestions",description="List recent server suggestions")
+    @suggestion.command(name="list",description="List recent server suggestions")
     @manager_or_permission("manage_guild")
     async def suggestions(self,interaction):
         rows=self.bot.db.list_suggestions(interaction.guild.id,10)

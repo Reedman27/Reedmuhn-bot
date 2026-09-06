@@ -17,7 +17,9 @@ class CustomCommands(commands.Cog):
         # losing this on restart just means a very brief cold start.
         self._trigger_cooldowns: dict = {}
 
-    @app_commands.command(name="addcommand", description="Add a custom command")
+    customcommand = app_commands.Group(name="customcommand", description="Manage per-server custom text commands")
+
+    @customcommand.command(name="add", description="Add a custom command")
     @app_commands.describe(trigger="e.g. !rules", response="What the bot replies with")
     @manager_or_permission("manage_guild")
     async def addcommand(self, interaction: discord.Interaction, trigger: str, response: str):
@@ -27,7 +29,7 @@ class CustomCommands(commands.Cog):
         self.bot.db.add_custom_command(interaction.guild.id, trigger, response)
         await interaction.response.send_message(f"Added `{trigger}` -> `{response}`")
 
-    @app_commands.command(name="removecommand", description="Remove a custom command")
+    @customcommand.command(name="remove", description="Remove a custom command")
     @app_commands.describe(trigger="The trigger to remove")
     @manager_or_permission("manage_guild")
     async def removecommand(self, interaction: discord.Interaction, trigger: str):
@@ -38,14 +40,14 @@ class CustomCommands(commands.Cog):
         msg = f"Removed `{trigger}`" if removed else f"No custom command called `{trigger}`"
         await interaction.response.send_message(msg)
 
-    @app_commands.command(name="listcommands", description="List this server's custom commands")
+    @customcommand.command(name="list", description="List this server's custom commands")
     async def listcommands(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("Only works in a server.", ephemeral=True)
             return
         rows = self.bot.db.list_custom_commands(interaction.guild.id)
         if not rows:
-            content = "No custom commands set up yet. Add one with `/addcommand`."
+            content = "No custom commands set up yet. Add one with `/customcommand add`."
         else:
             content = "\n".join(f"`{trigger}` -> {response}" for trigger, response in rows)
         await interaction.response.send_message(content)

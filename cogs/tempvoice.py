@@ -76,7 +76,9 @@ class TempVoice(commands.Cog):
     async def _before_limit_request_worker(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="setvoicehub", description="Joining this voice channel gives you your own temporary channel")
+    voicehub = app_commands.Group(name="voicehub", description="Temporary voice-channel hubs")
+
+    @voicehub.command(name="set", description="Joining this voice channel gives you your own temporary channel")
     @app_commands.describe(
         channel="A voice channel to add as a 'create a channel' hub",
         user_limit="Max people allowed in channels created from this hub (0 = unlimited). Omit to leave unchanged.",
@@ -106,7 +108,7 @@ class TempVoice(commands.Cog):
         else:
             await interaction.response.send_message(f"{channel.mention} is already a voice hub.")
 
-    @app_commands.command(name="removevoicehub", description="Turn off temp voice channel creation for a hub")
+    @voicehub.command(name="remove", description="Turn off temp voice channel creation for a hub")
     @app_commands.describe(channel="The hub voice channel to remove")
     @manager_or_permission("manage_channels")
     async def removevoicehub(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
@@ -116,7 +118,7 @@ class TempVoice(commands.Cog):
         removed = self.bot.db.remove_voice_hub(interaction.guild.id, channel.id)
         await interaction.response.send_message("Removed." if removed else f"{channel.mention} wasn't a hub.")
 
-    @app_commands.command(name="listvoicehubs", description="List the voice hubs configured in this server")
+    @voicehub.command(name="list", description="List the voice hubs configured in this server")
     @manager_or_permission("manage_channels")
     async def listvoicehubs(self, interaction: discord.Interaction):
         if interaction.guild is None:
@@ -133,7 +135,7 @@ class TempVoice(commands.Cog):
             lines.append(f"{name} - limit: {user_limit if user_limit else 'unlimited'}")
         await interaction.response.send_message("Voice hubs:\n" + "\n".join(lines))
 
-    @app_commands.command(name="vclimit", description="Set how many people can join your temporary voice channel")
+    @voicehub.command(name="limit", description="Set how many people can join your temporary voice channel")
     @app_commands.describe(user_limit="Max people allowed in your channel (0 = unlimited)")
     async def vclimit(self, interaction: discord.Interaction, user_limit: app_commands.Range[int, 0, 99]):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):

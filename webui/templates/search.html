@@ -4,10 +4,16 @@
 <h1>Search</h1>
 <section class="card">
     <form method="get" action="/guild/{{ guild_id }}/search" class="add-form">
-        <label for="q">Search warnings, reports, rules, tickets, polls, and the moderation queue</label>
-        <input type="text" id="q" name="q" value="{{ query }}" placeholder="Search…" autofocus>
+        <label for="q">Search pages, warnings, reports, rules, tickets, polls, and the moderation queue</label>
+        <input type="text" id="q" name="q" value="{{ query }}" placeholder="Search…" autofocus autocomplete="off">
         <button type="submit">Search</button>
     </form>
+</section>
+
+<section class="card" id="page-results-card" hidden>
+    <h2>Pages</h2>
+    <ul id="page-results" class="page-results"></ul>
+    <p id="page-results-empty" class="muted" hidden>No matching pages.</p>
 </section>
 
 {% if results %}
@@ -76,4 +82,6 @@
 
 {% endif %}
 {% endif %}
+
+<script src="/static/search.js"></script>
 {% endblock %}

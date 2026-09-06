@@ -578,19 +578,41 @@ body.centered {
     justify-content: center;
 }
 
-/* ---- app shell: sidebar + main ---- */
+/* ---- app shell: two layouts (classic sidebar / new top nav), same
+   theme variables either way so every theme keeps working unchanged.
+   Which layout is active is stored in localStorage and applied to
+   <html data-layout> before first paint - see the inline script in
+   base.html's <head>. Default is "topnav"; "sidebar" is the classic
+   layout, kept as an option via the switch in the controls bar. ---- */
 
-body.app {
-    display: flex;
+.shell {
+    display: grid;
     min-height: 100vh;
 }
+
+html[data-layout="sidebar"] .shell {
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 1fr auto;
+    grid-template-areas: "nav main" "controls main";
+}
+html[data-layout="sidebar"] .topnav-bar { display: none; }
+
+html[data-layout="topnav"] .shell {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "nav controls" "main main";
+}
+html[data-layout="topnav"] .sidebar { display: none; }
+
+.sidebar, .topnav-bar { grid-area: nav; }
+.sidebar-footer { grid-area: controls; }
+main { grid-area: main; }
 
 .sidebar {
     width: 220px;
     height: 100vh;
     position: sticky;
     top: 0;
-    flex-shrink: 0;
     background: var(--sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -620,6 +642,10 @@ body.app {
 .nav-group.collapsed .nav-group-items { display:none; }
 .nav-group-items { display:flex; flex-direction:column; gap:.15rem; }
 
+.page-results { list-style:none; margin:0; padding:0; }
+.page-results li a { display:block; padding:.5rem .6rem; border-radius:6px; color:var(--text); text-decoration:none; font-size:.9rem; }
+.page-results li a:hover { background:var(--accent-dim); }
+
 .sidebar nav a {
     color: var(--muted);
     text-decoration: none;
@@ -646,8 +672,54 @@ body.app {
 .sidebar-footer .logout { color: var(--muted); text-decoration: none; }
 .sidebar-footer .logout:hover { color: var(--text); }
 
+/* ---- topnav-bar: the no-permanent-sidebar layout option ---- */
+
+.topnav-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.6rem 1rem;
+    background: var(--sidebar);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+.topnav-brand { font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
+.topnav-bar .server-name { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.topnav-bar .nav-spacer { flex: 1; }
+.topnav-links { display: flex; align-items: center; gap: 0.15rem; }
+.topnav-dropdown { position: relative; }
+.topnav-dropdown-btn {
+    display: flex; align-items: center; gap: 0.3rem;
+    background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 0.88rem;
+    padding: 0.5rem 0.65rem; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.topnav-dropdown-btn:hover, .topnav-dropdown-btn.active { color: var(--text); background: var(--accent-dim); }
+.topnav-dropdown-btn span { font-size: 0.7rem; }
+.topnav-dropdown-panel {
+    display: none; position: absolute; top: 100%; left: 0; margin-top: 0.25rem;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 0.35rem; min-width: 200px; z-index: 50;
+    flex-direction: column; gap: 0.1rem;
+}
+.topnav-dropdown.open .topnav-dropdown-panel { display: flex; }
+.topnav-dropdown-panel a { color: var(--muted); text-decoration: none; padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.88rem; white-space: nowrap; }
+.topnav-dropdown-panel a:hover { color: var(--text); background: var(--accent-dim); }
+.topnav-dropdown-panel a.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
+
+/* Controls bar sits beside the topnav-bar (same grid row) instead of below
+   a sidebar, so lay it out as a horizontal row here. */
+html[data-layout="topnav"] .sidebar-footer {
+    display: flex; align-items: center; gap: 0.9rem;
+    border-top: none; border-bottom: 1px solid var(--border);
+    padding: 0.5rem 1rem; font-size: 0.85rem;
+    background: var(--sidebar);
+}
+html[data-layout="topnav"] .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
+html[data-layout="topnav"] .sidebar-footer .logged-in-as { margin-bottom: 0; white-space: nowrap; }
+
+.layout-toggle { white-space: nowrap; }
+
 main {
-    flex-grow: 1;
     max-width: 760px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
@@ -655,7 +727,8 @@ main {
 }
 
 @media (max-width: 700px) {
-    body.app { flex-direction: column; }
+    .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
+
     .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
     .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }
     .sidebar .server-name { display: none; }
@@ -670,14 +743,24 @@ main {
        to reach those links on a phone. */
     .sidebar-nav .nav-group.collapsed .nav-group-items { display: flex; }
     .sidebar .nav-spacer { flex-grow: 1; }
+
+    /* The topnav-bar's hover/click dropdowns don't translate well to touch -
+       flatten every group's links into one horizontally-scrolling row
+       instead, same idea as the sidebar's mobile treatment above. */
+    .topnav-bar { flex-wrap: wrap; }
+    .topnav-bar .server-name { display: none; }
+    .topnav-dropdown { display: contents; }
+    .topnav-dropdown-btn { display: none; }
+    .topnav-dropdown-panel { display: flex !important; position: static; box-shadow: none; border: 0; background: transparent; padding: 0; flex-direction: row; margin-top: 0; }
+
     /* Was "display: none" - the theme menu / account controls were
        invisible on mobile entirely. Now it wraps onto its own row below
        the nav instead, full width, laid out horizontally. */
-    .sidebar-footer {
-        flex-basis: 100%;
+    .sidebar-footer, html[data-layout="topnav"] .sidebar-footer {
         border-top: 1px solid var(--border);
+        border-bottom: 0;
         margin-top: 0.6rem;
-        padding-top: 0.6rem;
+        padding: 0.6rem 1rem;
         display: flex;
         align-items: center;
         flex-wrap: wrap;
@@ -1362,3 +1445,34 @@ select option {
 [data-theme-preview="forest"] { --bg:#101813; --card:#18241b; --sidebar:#0b110d; --text:#e4f0e4; --muted:#9caf9d; --accent:#7dbb88; --border:#2e4633; --danger:#db7575; }
 [data-theme="paper"] { --bg:#f3efe6; --card:#fffdf8; --sidebar:#e6dfd1; --text:#28251f; --muted:#756f63; --accent:#8b6f47; --border:#d3c8b7; --danger:#b84f4f; --accent-dim:#d3c8b7; --accent-contrast:#fffdf8; --shadow:0 6px 16px rgba(40,37,31,.12); }
 [data-theme-preview="paper"] { --bg:#f3efe6; --card:#fffdf8; --sidebar:#e6dfd1; --text:#28251f; --muted:#756f63; --accent:#8b6f47; --border:#d3c8b7; --danger:#b84f4f; }
+
+/* ---- poll results ----
+   Moved out of polls.html's inline <style> block, which the page's
+   `default-src 'self'` CSP (no 'unsafe-inline') silently drops. Also
+   switched from a hardcoded fallback color (var(--surface, #2a2a3a), where
+   --surface isn't a real theme variable, so every theme silently fell back
+   to that one hardcoded dark color) to the same real --bg/--border pattern
+   used by .daybar-track below. */
+.poll-results { display: flex; flex-direction: column; gap: .5em; margin: .75em 0; }
+.poll-row { display: grid; grid-template-columns: 10em 1fr 7em; align-items: center; gap: .75em; }
+.poll-bar-track { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; height: 10px; overflow: hidden; }
+.poll-bar-fill { background: var(--accent); height: 100%; }
+
+/* ---- small layout utility classes ----
+   These replace one-off inline style="..." attributes, which the page's
+   `default-src 'self'` CSP (no 'unsafe-inline') silently drops. Percentage
+   widths that vary per-row (poll bars, day bars) instead use a data-pct
+   attribute read by pct-bars.js, since those need a value that isn't known
+   until render time. */
+.w-5em { width: 5em; }
+.w-6em { width: 6em; }
+.w-9em { width: 9em; }
+.w-10em { width: 10em; }
+.w-12em { width: 12em; }
+.w-14em { width: 14em; }
+.mt-1em { margin-top: 1em; }
+.mt-2rem { margin-top: 2rem; }
+.mt-125rem { margin-top: 1.25rem; }
+.js-hidden { display: none; }
+.text-plain { text-decoration: none; }
+.text-wrap-box { white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere; }

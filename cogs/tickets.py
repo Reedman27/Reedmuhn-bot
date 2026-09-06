@@ -94,7 +94,9 @@ class Tickets(commands.Cog, name="Tickets"):
         self.bot.add_view(TicketCloseView(self.bot))
         self.bot.add_view(TicketPanelView(self.bot))
 
-    @app_commands.command(name="setuptickets", description="Configure where ticket channels are created and who can see them")
+    ticket = app_commands.Group(name="ticket", description="Support tickets")
+
+    @ticket.command(name="setup", description="Configure where ticket channels are created and who can see them")
     @app_commands.describe(category="Category tickets are created under", support_role="Role that can see and manage tickets")
     @manager_or_permission("manage_guild")
     async def setuptickets(self, interaction: discord.Interaction, category: discord.CategoryChannel, support_role: discord.Role):
@@ -103,7 +105,7 @@ class Tickets(commands.Cog, name="Tickets"):
             f"Tickets will now open under **{category.name}**, visible to {support_role.mention} and whoever opened them."
         )
 
-    @app_commands.command(name="setticketpanel", description="Post (or move/update) the 'Open a Ticket' button in a channel")
+    @ticket.command(name="setpanel", description="Post (or move/update) the 'Open a Ticket' button in a channel")
     @app_commands.describe(channel="Where to post the panel", title="Embed title", description="Embed body text")
     @manager_or_permission("manage_guild")
     async def setticketpanel(
@@ -118,7 +120,7 @@ class Tickets(commands.Cog, name="Tickets"):
         else:
             await interaction.followup.send(f"Ticket panel is up in {channel.mention}.", ephemeral=True)
 
-    @app_commands.command(name="ticketdeleteonclose", description="Choose whether closing a ticket deletes its channel")
+    @ticket.command(name="deleteonclose", description="Choose whether closing a ticket deletes its channel")
     @app_commands.describe(
         enabled="If on, closing a ticket deletes the channel instead of just locking it",
         delay="Seconds to wait after closing before deleting (gives everyone a moment to see it closed)",
@@ -137,7 +139,7 @@ class Tickets(commands.Cog, name="Tickets"):
                 "Closing a ticket will now just lock and rename the channel, same as before - it won't be deleted."
             )
 
-    @app_commands.command(name="ticket", description="Open a private support ticket")
+    @ticket.command(name="open", description="Open a private support ticket")
     @app_commands.describe(subject="What's this about?")
     async def ticket(self, interaction: discord.Interaction, subject: str = ""):
         await self.open_ticket(interaction, subject)
@@ -218,7 +220,7 @@ class Tickets(commands.Cog, name="Tickets"):
         await interaction.followup.send(f"Opened {channel.mention}.", ephemeral=True)
         await self._log(interaction.guild, f"ticket #{ticket_id} opened", interaction.user.id, channel)
 
-    @app_commands.command(name="closeticket", description="Close the ticket in this channel")
+    @ticket.command(name="close", description="Close the ticket in this channel")
     @app_commands.describe(reason="Why this ticket is being closed")
     async def closeticket(self, interaction: discord.Interaction, reason: str = ""):
         await self.handle_close_interaction(interaction, reason=reason or "No reason given")

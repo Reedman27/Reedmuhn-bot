@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}#{{ channel_name }} - {{ guild_name }}{% endblock %}
 {% block content %}
-<h1><a href="/guild/{{ guild_id }}/feed" class="muted" style="text-decoration:none;">Channel Feed</a> / #{{ channel_name }}</h1>
+<h1><a href="/guild/{{ guild_id }}/feed" class="muted" class="text-plain">Channel Feed</a> / #{{ channel_name }}</h1>
 {% if not enabled %}
 <section class="card">
     <p class="error">The Channel Feed is currently off for this server, so no new messages are being mirrored. <a href="/guild/{{ guild_id }}/feed">Turn it on</a> to keep this view live.</p>

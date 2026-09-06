@@ -21,7 +21,7 @@
         {% for ch in channels %}
         <tr>
             <td><a href="/guild/{{ guild_id }}/feed/{{ ch.channel_id }}">#{{ ch.channel_name }}</a></td>
-            <td><div style="white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere;">{{ ch.preview or "*(attachment only)*" }}</div></td>
+            <td><div class="text-wrap-box">{{ ch.preview or "*(attachment only)*" }}</div></td>
             <td>{{ ch.author_name }}</td>
             <td class="muted" data-ts="{{ ch.created_at }}">{{ ch.created_at }}</td>
         </tr>

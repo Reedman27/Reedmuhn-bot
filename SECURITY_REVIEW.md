@@ -1,51 +1,35 @@
 # Reedmuhn Security Review
 
-This is a static/code-level review of the uploaded project and the changes made for the dashboard update. It is not a substitute for a production penetration test.
+This is a static/code-level review of the project as it currently stands. It is not a substitute for a production penetration test.
 
-## Fixed in this update
+## Authentication model
 
-- - Dashboard login uses the shared `WEBUI_PASSWORD` with a per-IP failed-login lockout; Discord OAuth is not required.
-- The guild picker only lists servers the logged-in account is actually authorized for, instead of every server the bot happens to be in.
-- OAuth `state` parameter is a per-session random token checked with a constant-time comparison, closing the CSRF window on the login callback.
+The dashboard uses a single shared `WEBUI_PASSWORD` (set in `.env`) - there is no Discord OAuth and no per-user login. Anyone with the password gets full dashboard access to every guild the bot is in. This is intentional for a self-hosted, single-operator/small-staff deployment; it is **not** meant for handing out individual accounts to a large staff team.
 
-- Bot Manager role changes immediately invalidate the cached access decision for that guild, instead of waiting out the cache window.
-- Dashboard guild routes now verify the requested guild is one the bot currently tracks.
-- Dashboard channel/role/member selections are backed by bot-maintained caches and validated before configuration writes.
-- Scheduled-event cancellation is scoped to the selected guild, preventing a user with dashboard access from deleting an event belonging to another guild by guessing its numeric database ID.
-- Session signing uses a persistent random secret; the generated secret file is restricted to owner read/write where the filesystem permits it.
-- Session cookies use `SameSite=Lax` and a 12-hour lifetime. `WEBUI_HTTPS_ONLY=1` can force the Secure cookie flag when the dashboard is served over HTTPS.
-- Dashboard responses add `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a restrictive Content Security Policy.
-- Same-origin checks are applied to authenticated POST actions when browsers provide an Origin header.
-- Dashboard numeric settings have reasonable upper bounds to prevent accidental extreme values.
-- Tempban/tempnick durations are bounded and nicknames are capped at Discord's 32-character limit.
-- The arithmetic evaluator remains AST-based with a fixed operator whitelist rather than using `eval()`.
-- SQL operations continue to use parameterized queries.
+## In place today
 
-## Reviewed areas
-
-- `webui/main.py`
-- `webui/discord_oauth.py`
-- `db.py`
-- `webui/db.py`
-- `bot.py`
-- `cogs/moderation.py`
-- `cogs/tempvoice.py`
-- `cogs/youtube.py`
-- `cogs/automod.py`
-- `automod_checks.py`
-- `utils.py`
-- Docker configuration and dependency manifests
+- Password login uses `hmac.compare_digest` (constant-time comparison) and a per-IP failed-login lockout (5 attempts / 5 minutes).
+- The app refuses to start if `WEBUI_PASSWORD` isn't set - there is no default password to accidentally ship.
+- Session cookies are signed with a persistent random secret (`webui_secret_key`, generated on first run and stored alongside `bot.db`, `chmod 600` where the filesystem allows it) - so sessions survive container restarts without needing a fixed secret in `.env`.
+- Session cookies use `SameSite=Lax` and a 12-hour lifetime. Set `WEBUI_HTTPS_ONLY=1` to also mark them `Secure` once the dashboard is served over HTTPS - do this for anything reachable outside your LAN.
+- Every authenticated POST request checks the `Origin`/`Referer` header against the dashboard's own origin (exact scheme+host match, not a prefix check) and rejects mismatches - this covers CSRF for the common case where a browser sends one of those headers.
+- Responses set `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, and a restrictive `Content-Security-Policy`.
+- Guild-scoped routes (`/guild/{guild_id}/...`) verify the bot is actually in that guild before doing anything, so a logged-in user can't act on a guild ID the bot doesn't track.
+- Numeric settings (durations, multipliers, amounts) are bounds-checked; nicknames are capped at Discord's 32-character limit.
+- The custom-commands arithmetic evaluator is AST-based with a fixed operator whitelist, not `eval()`.
+- All SQL goes through parameterized queries. The handful of f-string-built statements in `db.py` only ever interpolate fixed column/table names from code, never request data - grepped and confirmed as part of this review.
+- All Jinja2 templates render with autoescaping on; nothing uses the `|safe` filter to opt back out of it, so no template renders unescaped user-supplied text into HTML by default.
 
 ## Important limitations
 
+- **No per-user accounts or audit trail of *who* took an action** - only "the dashboard did X" is logged (see `dashboard_log.html` / `record_webui_action`), not which staff member was at the keyboard, since everyone shares one password. If you need individual accountability, that would need a real multi-user login system, which this project doesn't have.
+- **No CSRF token** - the Origin/Referer check covers browsers that send those headers, but a request with neither header present isn't rejected. This is a reasonable trade-off for a small trusted-staff tool but wouldn't pass a strict security audit.
+- The Origin/Referer check and the session cookie's `Lax` SameSite policy assume you aren't embedding the dashboard in an iframe or reverse-proxying from a wildly different origin without adjusting these settings.
+- This is a code-level review only - it hasn't been exercised against a live penetration test or fuzzing pass.
 
-- Access decisions are cached in-process per (guild, user) for up to 5 minutes to limit REST calls. A role change made directly in Discord (not through this dashboard's Bot Manager roles list) - e.g. an admin removing someone's Administrator permission - can take up to that window to be reflected here. Removing a Bot Manager role through the dashboard itself takes effect immediately.
-- The cache is in-memory and per-process; it resets on restart and isn't shared across multiple webui instances if the deployment is ever scaled beyond one.
-- `DISCORD_CLIENT_SECRET` and `DISCORD_TOKEN` are both required in the webui container's environment now (previously only `DISCORD_TOKEN` was needed by the bot container). Treat `.env` with the same care as any other secret store - do not commit it or log its contents.
-- This has been reviewed at the code level only; the OAuth exchange, callback, and REST calls have not been exercised against Discord's live API as part of this review. Test the full login flow against a real Discord application before relying on it in production.
+## Deployment recommendations for anyone with real users
 
-For public internet exposure, still use HTTPS (`WEBUI_HTTPS_ONLY=1`) - Discord OAuth authenticates *who* is logging in, but the traffic itself should still be encrypted.
-
-## Dependency note
-
-Dependency versions are intentionally expressed as minimum versions in the current project. Operators should periodically rebuild with current packages and review dependency advisories before exposing the dashboard publicly.
+- Set `WEBUI_HTTPS_ONLY=1` and put the dashboard behind HTTPS (a reverse proxy like Caddy/nginx with a real cert, or at minimum a Tailscale/VPN-only setup) if it's reachable from outside your own machine.
+- Treat `WEBUI_PASSWORD` and the `data/` directory (which now also holds `webui_secret_key`) with the same care as any other secret - don't commit `.env`, don't log it.
+- Rotate `WEBUI_PASSWORD` if it's ever shared with someone who no longer needs access - there's no per-user revocation, only the one shared password.
+- Rebuild both containers periodically and check `requirements.txt` / `webui/requirements.txt` against current dependency advisories - versions here are expressed as minimums intentionally, so a stale build can silently miss security patches.

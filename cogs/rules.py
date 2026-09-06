@@ -19,7 +19,9 @@ class Rules(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="rules", description="List this server's rules")
+    rule = app_commands.Group(name="rule", description="Server rules")
+
+    @rule.command(name="list", description="List this server's rules")
     async def rules(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
@@ -36,7 +38,7 @@ class Rules(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="addrule", description="Add a numbered server rule")
+    @rule.command(name="add", description="Add a numbered server rule")
     @app_commands.describe(text="The rule's text")
     @manager_or_permission("manage_guild")
     async def addrule(self, interaction: discord.Interaction, text: str):
@@ -50,8 +52,8 @@ class Rules(commands.Cog):
         count = len(self.bot.db.list_rules(interaction.guild.id))
         await interaction.response.send_message(f"Added as rule #{count}.")
 
-    @app_commands.command(name="removerule", description="Remove a server rule by its number")
-    @app_commands.describe(number="The rule's number, as shown in /rules")
+    @rule.command(name="remove", description="Remove a server rule by its number")
+    @app_commands.describe(number="The rule's number, as shown in /rule list")
     @manager_or_permission("manage_guild")
     async def removerule(self, interaction: discord.Interaction, number: int):
         if interaction.guild is None:

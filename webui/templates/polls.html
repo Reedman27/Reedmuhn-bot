@@ -21,13 +21,13 @@
     {% for r in p.results %}
         <div class="poll-row">
             <div class="poll-option">{{ r.option }}</div>
-            <div class="poll-bar-track"><div class="poll-bar-fill" style="width: {{ r.pct }}%"></div></div>
+            <div class="poll-bar-track"><div class="poll-bar-fill" data-pct="{{ r.pct }}"></div></div>
             <div class="poll-count">{{ r.pct }}% ({{ r.count }})</div>
         </div>
     {% endfor %}
     </div>
     {% if not p.closed %}
-    <form method="post" action="/guild/{{ guild_id }}/polls/close" onsubmit="return confirm('Close this poll?');">
+    <form method="post" action="/guild/{{ guild_id }}/polls/close" data-confirm="Close this poll?">
         <input type="hidden" name="poll_id" value="{{ p.id }}">
         <button type="submit" class="danger">Close poll</button>
     </form>
@@ -37,11 +37,4 @@
 {% else %}
 <section class="card"><p class="muted">No polls yet - start one with /poll in Discord.</p></section>
 {% endif %}
-
-<style>
-.poll-results { display: flex; flex-direction: column; gap: .5em; margin: .75em 0; }
-.poll-row { display: grid; grid-template-columns: 10em 1fr 7em; align-items: center; gap: .75em; }
-.poll-bar-track { background: var(--surface, #2a2a3a); border-radius: 4px; height: 10px; overflow: hidden; }
-.poll-bar-fill { background: var(--accent, #7c6cf0); height: 100%; }
-</style>
 {% endblock %}

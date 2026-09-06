@@ -40,7 +40,7 @@
             {% endif %}
             <form method="post" action="/guild/{{ guild_id }}/reports/resolve" class="inline">
                 <input type="hidden" name="report_id" value="{{ r.id }}">
-                <input type="text" name="note" placeholder="Resolution note / warn reason" style="width:12em">
+                <input type="text" name="note" placeholder="Resolution note / warn reason" class="w-12em">
                 <label class="checkbox-inline"><input type="checkbox" name="issue_warning"> also warn {{ r.target_name }}</label>
                 <button type="submit">Resolve</button>
             </form>

@@ -99,7 +99,7 @@
             {% if t.status == "open" %}
             <form method="post" action="/guild/{{ guild_id }}/tickets/close" class="inline">
                 <input type="hidden" name="ticket_id" value="{{ t.id }}">
-                <input type="text" name="reason" placeholder="Reason (optional)" style="width:10em">
+                <input type="text" name="reason" placeholder="Reason (optional)" class="w-10em">
                 <button type="submit" class="danger">Close</button>
             </form>
             {% endif %}

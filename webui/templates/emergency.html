@@ -13,14 +13,14 @@
     {% if locked %}
     <p class="badge">🔒 Locked - {{ locked_channel_count }} channel(s), since {{ locked_since }}</p>
     <p class="hint">Unlock restores each channel's exact previous @everyone send-permission - not a blanket "unlock everything", so a channel that was already locked before the emergency stays that way.</p>
-    <form method="post" action="/guild/{{ guild_id }}/emergency/unlock" onsubmit="return confirm('Lift the lockdown?');">
+    <form method="post" action="/guild/{{ guild_id }}/emergency/unlock" data-confirm="Lift the lockdown?">
         <label for="unlock_confirm">Type UNLOCK to confirm</label>
         <input id="unlock_confirm" type="text" name="confirm_text" placeholder="UNLOCK" required>
         <button type="submit">Unlock</button>
     </form>
     {% else %}
     <p class="hint">Denies Send Messages for @everyone in every text channel the bot can manage. Channels that already had it denied are left alone and untouched by Unlock later.</p>
-    <form method="post" action="/guild/{{ guild_id }}/emergency/lockdown" onsubmit="return confirm('Lock down every text channel?');">
+    <form method="post" action="/guild/{{ guild_id }}/emergency/lockdown" data-confirm="Lock down every text channel?">
         <label for="lockdown_confirm">Type LOCKDOWN to confirm</label>
         <input id="lockdown_confirm" type="text" name="confirm_text" placeholder="LOCKDOWN" required>
         <button type="submit" class="danger">Lock down server</button>
@@ -31,7 +31,7 @@
 <section class="card">
     <h2>Revoke all invites</h2>
     <p class="hint">Deletes every active invite link. Doesn't remove members already in the server, and a new invite can be created afterward - this just closes the doors that already exist right now.</p>
-    <form method="post" action="/guild/{{ guild_id }}/emergency/revoke-invites" onsubmit="return confirm('Revoke every active invite link?');">
+    <form method="post" action="/guild/{{ guild_id }}/emergency/revoke-invites" data-confirm="Revoke every active invite link?">
         <label for="revoke_confirm">Type REVOKE INVITES to confirm</label>
         <input id="revoke_confirm" type="text" name="confirm_text" placeholder="REVOKE INVITES" required>
         <button type="submit" class="danger">Revoke all invites</button>
@@ -41,7 +41,7 @@
 <section class="card">
     <h2>Mass timeout by role</h2>
     <p class="hint">Times out every current member of the chosen role. Server owner, Administrators, bots, and anyone the bot's own role can't reach are automatically skipped.</p>
-    <form method="post" action="/guild/{{ guild_id }}/emergency/mass-timeout" onsubmit="return confirm('Time out every member with this role?');">
+    <form method="post" action="/guild/{{ guild_id }}/emergency/mass-timeout" data-confirm="Time out every member with this role?">
         <label for="mt_role">Role</label>
         <select id="mt_role" name="role_id" required>
             <option value="" disabled selected>Choose a role…</option>

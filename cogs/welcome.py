@@ -16,8 +16,10 @@ class Welcome(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(
-        name="setwelcome",
+    welcome = app_commands.Group(name="welcome", description="Welcome messages and autorole")
+
+    @welcome.command(
+        name="message",
         description="Set the welcome channel and message. {mention}, {server}, {server(members)} and more work too.",
     )
     @app_commands.describe(
@@ -29,7 +31,7 @@ class Welcome(commands.Cog):
         self.bot.db.set_welcome(interaction.guild.id, channel.id, message)
         await interaction.response.send_message("Welcome message set.")
 
-    @app_commands.command(name="setautorole", description="Set a role to automatically give new members")
+    @welcome.command(name="autorole", description="Set a role to automatically give new members")
     @app_commands.describe(role="Role to auto-assign")
     @manager_or_permission("manage_guild")
     async def setautorole(self, interaction: discord.Interaction, role: discord.Role):
@@ -38,7 +40,7 @@ class Welcome(commands.Cog):
             "Autorole set. Make sure my role is above it in the role list."
         )
 
-    @app_commands.command(name="welcomecard", description="Turn generated welcome card images on or off")
+    @welcome.command(name="card", description="Turn generated welcome card images on or off")
     @app_commands.describe(enabled="Show a generated image card alongside the welcome message")
     @manager_or_permission("manage_guild")
     async def welcomecard(self, interaction: discord.Interaction, enabled: bool):

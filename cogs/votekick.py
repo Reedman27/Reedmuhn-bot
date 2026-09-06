@@ -74,7 +74,9 @@ class VoteKick(commands.Cog, name="VoteKick"):
         except Exception:
             logger.exception("failed to re-register open vote-kick views on startup")
 
-    @app_commands.command(name="votekick", description="Start a community vote to kick a member")
+    votekick_group = app_commands.Group(name="votekick", description="Community vote-kick")
+
+    @votekick_group.command(name="start", description="Start a community vote to kick a member")
     @app_commands.describe(user="Member the server may vote to kick", reason="Why you want the member kicked")
     async def votekick(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason given"):
         if interaction.guild is None:
@@ -116,7 +118,7 @@ class VoteKick(commands.Cog, name="VoteKick"):
         message = await interaction.original_response()
         self.bot.db.set_votekick_message_id(vote_id, message.id)
 
-    @app_commands.command(name="votekicktoggle", description="Enable or disable Vote Kick for this server")
+    @votekick_group.command(name="toggle", description="Enable or disable Vote Kick for this server")
     @app_commands.describe(enabled="Whether community vote kicks are allowed")
     @manager_or_permission("manage_guild")
     async def votekicktoggle(self, interaction: discord.Interaction, enabled: bool):

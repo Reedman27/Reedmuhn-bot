@@ -16,13 +16,13 @@
 <a href="/guild/{{ guild_id }}/analytics?days={{ days }}" class="stat-link">← Back to Analytics</a>
 
 {% if meta.kind == "timeseries" %}
-<div class="card" style="margin-top:1.25rem;">
+<div class="card" class="mt-125rem">
     <h2>By day</h2>
     <div class="daybar-list">
         {% for row in breakdown %}
         <div class="daybar-row">
             <span class="daybar-date muted">{{ row.day }}</span>
-            <div class="daybar-track"><div class="daybar-fill analytics-{{ meta.color }}" style="width: {{ row.pct }}%;"></div></div>
+            <div class="daybar-track"><div class="daybar-fill analytics-{{ meta.color }}" data-pct="{{ row.pct }}"></div></div>
             <span class="daybar-count">{{ row.count }}</span>
         </div>
         {% endfor %}
@@ -56,7 +56,7 @@
 {% endif %}
 
 {% if members is not none %}
-<div class="card" style="margin-top:1.25rem;">
+<div class="card" class="mt-125rem">
     <h2 id="member-count">{{ members|length }} member{{ "s" if members|length != 1 else "" }}</h2>
     {% if members %}
     <input type="text" id="member-search" class="member-search" placeholder="Search members…" autocomplete="off">
@@ -68,29 +68,8 @@
             {% endfor %}
         </tbody>
     </table>
-    <p class="muted" id="member-empty" style="display:none;">No members match your search.</p>
-    <script>
-    (function () {
-        const input = document.getElementById("member-search");
-        const rows = Array.from(document.querySelectorAll("#member-table tbody tr"));
-        const empty = document.getElementById("member-empty");
-        const countLabel = document.getElementById("member-count");
-        const baseLabel = {{ members|length }};
-        input.addEventListener("input", function () {
-            const q = input.value.trim().toLowerCase();
-            let visible = 0;
-            rows.forEach(function (row) {
-                const match = !q || row.dataset.search.includes(q);
-                row.style.display = match ? "" : "none";
-                if (match) visible++;
-            });
-            empty.style.display = visible === 0 ? "" : "none";
-            countLabel.textContent = q
-                ? visible + " of " + baseLabel + " member" + (baseLabel !== 1 ? "s" : "")
-                : baseLabel + " member" + (baseLabel !== 1 ? "s" : "");
-        });
-    })();
-    </script>
+    <p class="muted js-hidden" id="member-empty">No members match your search.</p>
+    <script src="/static/analytics-member-search.js"></script>
     {% else %}
     <p class="muted">No members cached yet.</p>
     {% endif %}
@@ -98,7 +77,7 @@
 {% endif %}
 
 {% if channels is not none %}
-<div class="card" style="margin-top:1.25rem;">
+<div class="card" class="mt-125rem">
     <h2>{{ channels|length }} channel{{ "s" if channels|length != 1 else "" }}</h2>
     {% if channels %}
     <table>
@@ -116,7 +95,7 @@
 {% endif %}
 
 {% if roles is not none %}
-<div class="card" style="margin-top:1.25rem;">
+<div class="card" class="mt-125rem">
     <h2>{{ roles|length + 1 }} role{{ "s" if roles|length != 0 else "" }}</h2>
     <table>
         <thead><tr><th>Role</th></tr></thead>

@@ -36,12 +36,12 @@
         <td>{{ s.created_at }}</td>
         <td>
             <a href="/guild/{{ guild_id }}/snapshots?a={{ s.id }}&b=current">Compare to current</a> ·
-            <form method="post" action="/guild/{{ guild_id }}/snapshots/restore" class="inline" onsubmit="return confirm('Restore settings from \'{{ s.name }}\'? This overwrites current settings in every section listed above.');">
+            <form method="post" action="/guild/{{ guild_id }}/snapshots/restore" class="inline" data-confirm="{{ ('Restore settings from "' ~ s.name ~ '"? This overwrites current settings in every section listed above.') }}">
                 <input type="hidden" name="snapshot_id" value="{{ s.id }}">
-                <input type="text" name="confirm_text" placeholder="Type RESTORE" required style="width:9em">
+                <input type="text" name="confirm_text" placeholder="Type RESTORE" required class="w-9em">
                 <button type="submit" class="danger">Restore</button>
             </form>
-            <form method="post" action="/guild/{{ guild_id }}/snapshots/delete" class="inline" onsubmit="return confirm('Delete this snapshot?');">
+            <form method="post" action="/guild/{{ guild_id }}/snapshots/delete" class="inline" data-confirm="Delete this snapshot?">
                 <input type="hidden" name="snapshot_id" value="{{ s.id }}">
                 <button type="submit">Delete</button>
             </form>
@@ -66,7 +66,7 @@
         <button type="submit">Compare</button>
     </form>
     {% if compare_result %}
-        <h3 style="margin-top:1em">{{ compare_result.name_a }} → {{ compare_result.name_b }}</h3>
+        <h3 class="mt-1em">{{ compare_result.name_a }} → {{ compare_result.name_b }}</h3>
         {% if compare_result.changes %}
         <table><thead><tr><th>Setting</th><th>Change</th></tr></thead><tbody>
             {% for c in compare_result.changes %}

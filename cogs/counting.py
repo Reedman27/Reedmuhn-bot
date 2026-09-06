@@ -34,7 +34,9 @@ class Counting(commands.Cog):
         # per-guild join lock in cogs/invites.py.
         self._guild_locks: dict[int, asyncio.Lock] = {}
 
-    @app_commands.command(name="calc", description="Evaluates a math expression")
+    counting = app_commands.Group(name="counting", description="Counting game commands")
+
+    @counting.command(name="calc", description="Evaluates a math expression")
     @app_commands.describe(expression="e.g. 7*6, (3+2)**2, 10/4")
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: i.user.id)
     async def calc(self, interaction: discord.Interaction, expression: str):
@@ -46,7 +48,7 @@ class Counting(commands.Cog):
         result = int(result) if isinstance(result, float) and result.is_integer() else result
         await interaction.response.send_message(f"`{expression}` = **{result}**")
 
-    @app_commands.command(name="channel", description="Sets the counting channel for this server")
+    @counting.command(name="channel", description="Sets the counting channel for this server")
     @app_commands.describe(channel="The channel members will count in")
     @manager_or_permission("manage_guild")
     async def channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -59,7 +61,7 @@ class Counting(commands.Cog):
             f"Counting channel set to {channel.mention}. Next number is **1**."
         )
 
-    @app_commands.command(name="current-number", description="Replies with the current number and high score")
+    @counting.command(name="current-number", description="Replies with the current number and high score")
     async def current_number(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
@@ -68,7 +70,7 @@ class Counting(commands.Cog):
         state = self.bot.db.get_counting(interaction.guild.id)
         if state is None:
             await interaction.response.send_message(
-                "No counting channel set up yet. An admin can set one with `/channel`.", ephemeral=True
+                "No counting channel set up yet. An admin can set one with `/counting channel`.", ephemeral=True
             )
             return
 
@@ -76,7 +78,7 @@ class Counting(commands.Cog):
             f"Current number: **{state['current_number']}** | High score: **{state['high_score']}**"
         )
 
-    @app_commands.command(name="saves", description="Check your banked saves and progress toward the next one")
+    @counting.command(name="saves", description="Check your banked saves and progress toward the next one")
     async def saves(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
@@ -100,7 +102,7 @@ class Counting(commands.Cog):
             f"Lifetime correct counts: **{stats['correct_count']}**\n{progress_note}", ephemeral=True
         )
 
-    @app_commands.command(name="savemilestone", description="Configure how saves are earned in the counting game")
+    @counting.command(name="savemilestone", description="Configure how saves are earned in the counting game")
     @app_commands.describe(
         milestone="Correct counts needed to earn 1 save (default 50)",
         max_saves="Max saves a person can bank at once (default 3)",
@@ -121,7 +123,7 @@ class Counting(commands.Cog):
             f"Saves are now earned every **{milestone}** correct counts, capped at **{max_saves}** banked."
         )
 
-    @app_commands.command(name="highscorealerts", description="Toggle the '🏆 new high score!' announcement")
+    @counting.command(name="highscorealerts", description="Toggle the '🏆 new high score!' announcement")
     @app_commands.describe(enabled="Whether to announce it in the counting channel when a new high score is hit")
     @manager_or_permission("manage_guild")
     async def highscorealerts(self, interaction: discord.Interaction, enabled: bool):
@@ -132,7 +134,7 @@ class Counting(commands.Cog):
         self.bot.db.record_bot_event("counting.high_score_alerts", interaction.guild.id, interaction.user.id, None, f"enabled={enabled}")
         await interaction.response.send_message(
             f"High score alerts are now {'on' if enabled else 'off'}."
-            + ("" if enabled else " `/current-number` still shows the high score any time you want it.")
+            + ("" if enabled else " `/counting current-number` still shows the high score any time you want it.")
         )
 
     @commands.Cog.listener()

@@ -15,7 +15,7 @@
     <tr><td>{{ name }}</td><td>
         <form method="post" action="/guild/{{ guild_id }}/tempvoice/hub/limit" class="inline">
             <input type="hidden" name="channel_id" value="{{ cid }}">
-            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" style="width:5em">
+            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" class="w-5em">
             <button type="submit">Update</button>
         </form>
     </td><td>
@@ -29,7 +29,7 @@
         <label for="hub_channel_id">Add a hub</label>
         <select id="hub_channel_id" name="channel_id" required><option value="" disabled selected>Choose a voice channel…</option>{% for cid, name, ctype, pos in voice_channels %}<option value="{{ cid }}">🔊 {{ name }}</option>{% endfor %}</select>
         <label for="hub_user_limit">Default channel limit (0 = unlimited)</label>
-        <input type="number" id="hub_user_limit" name="user_limit" min="0" max="99" value="0" style="width:5em">
+        <input type="number" id="hub_user_limit" name="user_limit" min="0" max="99" value="0" class="w-5em">
         <button type="submit">Add hub</button>
     </form>
 </section>
@@ -44,11 +44,11 @@
     <tr><td>{{ channel_name }}</td><td>{{ owner_name }}</td><td>
         <form method="post" action="/guild/{{ guild_id }}/tempvoice/limit" class="inline">
             <input type="hidden" name="channel_id" value="{{ cid }}">
-            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" style="width:5em">
+            <input type="number" name="user_limit" min="0" max="99" value="{{ user_limit }}" class="w-5em">
             <button type="submit">Update</button>
         </form>
     </td><td>
-        <form method="post" action="/guild/{{ guild_id }}/tempvoice/delete" onsubmit="return confirm('Delete this temporary voice channel?');">
+        <form method="post" action="/guild/{{ guild_id }}/tempvoice/delete" data-confirm="Delete this temporary voice channel?">
             <input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit" class="danger">Delete</button>
         </form>
     </td></tr>

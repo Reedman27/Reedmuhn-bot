@@ -33,6 +33,66 @@ class Db:
         self._create_tables()
 
     def _create_tables(self) -> None:
+        # Extras: XP/levels, economy, giveaways, live counters and notifications.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_xp (
+            guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
+            level INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild_id,user_id))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_economy (
+            guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, balance INTEGER NOT NULL DEFAULT 0,
+            last_daily INTEGER, PRIMARY KEY(guild_id,user_id))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_giveaways (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL UNIQUE, prize TEXT NOT NULL, winners INTEGER NOT NULL,
+            end_at INTEGER NOT NULL, ended INTEGER NOT NULL DEFAULT 0)""")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_extras_giveaways_due ON extras_giveaways(ended,end_at)")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_counters (
+            guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            PRIMARY KEY(guild_id,kind))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_twitch (
+            guild_id INTEGER NOT NULL, username TEXT NOT NULL, channel_id INTEGER NOT NULL,
+            last_live INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild_id,username))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_feeds (
+            guild_id INTEGER NOT NULL, url TEXT NOT NULL, channel_id INTEGER NOT NULL,
+            last_id TEXT NOT NULL DEFAULT '', PRIMARY KEY(guild_id,url))""")
+        # Level-up announcements: per-guild on/off, which channel to post in
+        # (NULL = wherever the member's message that triggered the level-up
+        # was sent), and a {user}/{level}/{server}-style message template.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_level_config (
+            guild_id INTEGER PRIMARY KEY, announce_enabled INTEGER NOT NULL DEFAULT 1,
+            announce_channel_id INTEGER, announce_message TEXT NOT NULL DEFAULT '🎉 {user} reached **level {level}**!')""")
+        # Level-up role rewards. Stacking (Arcane-style): reaching a level
+        # grants every reward role at or below it that the member doesn't
+        # already have, rather than swapping a single "current level" role.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_level_roles (
+            guild_id INTEGER NOT NULL, level INTEGER NOT NULL, role_id INTEGER NOT NULL,
+            PRIMARY KEY(guild_id,level))""")
+        # Channels excluded from earning XP (e.g. a bot-commands or media-dump
+        # channel that would otherwise dominate the leaderboard).
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_noxp_channels (
+            guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, PRIMARY KEY(guild_id,channel_id))""")
+        # XP multiplier roles (booster/VIP-style roles that earn XP faster).
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_xp_boost_roles (
+            guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL, multiplier REAL NOT NULL DEFAULT 1.5,
+            PRIMARY KEY(guild_id,role_id))""")
+        # extras_economy predates the daily_streak column - add it for
+        # anyone upgrading from an older bot.db without wiping their data.
+        economy_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(extras_economy)")}
+        if "daily_streak" not in economy_cols:
+            self.conn.execute("ALTER TABLE extras_economy ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
+        # The XP curve changed from a flat 100*level^2 to a smoother,
+        # community-standard progression (see _extras_xp_for_level) - do a
+        # one-time recompute of every stored level so leaderboards and rank
+        # cards are correct immediately instead of waiting for each member's
+        # next message. Gated behind user_version so this only runs once.
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+            for gid, uid, xp, old_level in self.conn.execute("SELECT guild_id, user_id, xp, level FROM extras_xp").fetchall():
+                new_level = self._extras_level_from_xp(xp)
+                if new_level != old_level:
+                    self.conn.execute(
+                        "UPDATE extras_xp SET level=? WHERE guild_id=? AND user_id=?", (new_level, gid, uid)
+                    )
+            self.conn.execute("PRAGMA user_version = 1")
+
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS scheduled_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2584,6 +2644,247 @@ class Db:
         )
         self.conn.commit()
         return self.get_user_counting_stats(guild_id, user_id)["saves"]
+
+    # ---- extras (leveling, economy, counters, twitch, feeds, giveaways) ----
+
+    @staticmethod
+    def _extras_level_from_xp(xp: int) -> int:
+        """Mirrors cogs.extras.Extras._level_from_xp's curve. Duplicated
+        deliberately, not imported - the WebUI process doesn't import cogs
+        (see the note atop this file about webui/db.py being a deliberate
+        copy of this one, not an import).
+
+        Curve: total XP needed for level n = (5*n*(2n^2 + 27n + 91)) // 6,
+        the same shape used by several popular leveling bots (MEE6 among
+        them) - early levels are quick, later ones stretch out considerably.
+        Replaces the old flat 100*level^2 curve, which felt harsh early on
+        and too flat later."""
+        level = 0
+        while Db._extras_xp_for_level(level + 1) <= xp:
+            level += 1
+        return level
+
+    @staticmethod
+    def _extras_xp_for_level(level: int) -> int:
+        return (5 * level * (2 * level * level + 27 * level + 91)) // 6
+
+    def get_extras_xp(self, guild_id: int, user_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT xp FROM extras_xp WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def set_extras_xp(self, guild_id: int, user_id: int, xp: int) -> int:
+        """Sets a member's XP to an absolute value (clamped to >= 0) and
+        recomputes their level to match. Returns the resulting level."""
+        xp = max(0, xp)
+        level = self._extras_level_from_xp(xp)
+        self.conn.execute(
+            """INSERT INTO extras_xp(guild_id,user_id,xp,level) VALUES(?,?,?,?)
+               ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=excluded.xp,level=excluded.level""",
+            (guild_id, user_id, xp, level),
+        )
+        self.conn.commit()
+        return level
+
+    def get_extras_balance(self, guild_id: int, user_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT balance FROM extras_economy WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def set_extras_balance(self, guild_id: int, user_id: int, balance: int) -> None:
+        """Sets a member's coin balance to an absolute value (clamped to
+        >= 0). Preserves their existing last_daily cooldown timestamp."""
+        balance = max(0, balance)
+        self.conn.execute(
+            """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily) VALUES(?,?,?,NULL)
+               ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance""",
+            (guild_id, user_id, balance),
+        )
+        self.conn.commit()
+
+    def list_extras_xp_leaderboard(self, guild_id: int, limit: int = 10):
+        """Returns [(user_id, xp, level), ...] ordered highest XP first."""
+        return self.conn.execute(
+            "SELECT user_id, xp, level FROM extras_xp WHERE guild_id=? ORDER BY xp DESC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+
+    def list_extras_economy_leaderboard(self, guild_id: int, limit: int = 10):
+        """Returns [(user_id, balance, daily_streak), ...] ordered highest balance first."""
+        return self.conn.execute(
+            "SELECT user_id, balance, daily_streak FROM extras_economy WHERE guild_id=? ORDER BY balance DESC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+
+    # ---- extras: level-up announcements, role rewards, no-XP channels, XP boost roles ----
+
+    def get_extras_level_config(self, guild_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT announce_enabled, announce_channel_id, announce_message FROM extras_level_config WHERE guild_id=?",
+            (guild_id,),
+        ).fetchone()
+        if row is None:
+            return {"enabled": True, "channel_id": None, "message": "🎉 {user} reached **level {level}**!"}
+        return {"enabled": bool(row[0]), "channel_id": row[1], "message": row[2]}
+
+    def set_extras_level_config(self, guild_id: int, enabled: bool, channel_id: int | None, message: str) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_level_config(guild_id,announce_enabled,announce_channel_id,announce_message)
+               VALUES(?,?,?,?)
+               ON CONFLICT(guild_id) DO UPDATE SET announce_enabled=excluded.announce_enabled,
+                   announce_channel_id=excluded.announce_channel_id, announce_message=excluded.announce_message""",
+            (guild_id, int(enabled), channel_id, message),
+        )
+        self.conn.commit()
+
+    def list_extras_level_roles(self, guild_id: int):
+        """Returns [(level, role_id), ...] ordered lowest level first."""
+        return self.conn.execute(
+            "SELECT level, role_id FROM extras_level_roles WHERE guild_id=? ORDER BY level ASC", (guild_id,)
+        ).fetchall()
+
+    def set_extras_level_role(self, guild_id: int, level: int, role_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_level_roles(guild_id,level,role_id) VALUES(?,?,?)
+               ON CONFLICT(guild_id,level) DO UPDATE SET role_id=excluded.role_id""",
+            (guild_id, level, role_id),
+        )
+        self.conn.commit()
+
+    def remove_extras_level_role(self, guild_id: int, level: int) -> bool:
+        cur = self.conn.execute("DELETE FROM extras_level_roles WHERE guild_id=? AND level=?", (guild_id, level))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_noxp_channels(self, guild_id: int) -> list[int]:
+        return [row[0] for row in self.conn.execute(
+            "SELECT channel_id FROM extras_noxp_channels WHERE guild_id=?", (guild_id,)
+        ).fetchall()]
+
+    def is_extras_noxp_channel(self, guild_id: int, channel_id: int) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM extras_noxp_channels WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        ).fetchone() is not None
+
+    def add_extras_noxp_channel(self, guild_id: int, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO extras_noxp_channels(guild_id,channel_id) VALUES(?,?)", (guild_id, channel_id)
+        )
+        self.conn.commit()
+
+    def remove_extras_noxp_channel(self, guild_id: int, channel_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM extras_noxp_channels WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_xp_boost_roles(self, guild_id: int):
+        """Returns [(role_id, multiplier), ...]."""
+        return self.conn.execute(
+            "SELECT role_id, multiplier FROM extras_xp_boost_roles WHERE guild_id=?", (guild_id,)
+        ).fetchall()
+
+    def set_extras_xp_boost_role(self, guild_id: int, role_id: int, multiplier: float) -> None:
+        self.conn.execute(
+            """INSERT INTO extras_xp_boost_roles(guild_id,role_id,multiplier) VALUES(?,?,?)
+               ON CONFLICT(guild_id,role_id) DO UPDATE SET multiplier=excluded.multiplier""",
+            (guild_id, role_id, multiplier),
+        )
+        self.conn.commit()
+
+    def remove_extras_xp_boost_role(self, guild_id: int, role_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM extras_xp_boost_roles WHERE guild_id=? AND role_id=?", (guild_id, role_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_extras_rank(self, guild_id: int, user_id: int) -> int | None:
+        """1-based leaderboard position by XP, or None if they have no XP row."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) + 1 FROM extras_xp WHERE guild_id=? AND xp > (SELECT xp FROM extras_xp WHERE guild_id=? AND user_id=?)",
+            (guild_id, guild_id, user_id),
+        ).fetchone()
+        exists = self.conn.execute(
+            "SELECT 1 FROM extras_xp WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        ).fetchone()
+        return int(row[0]) if exists else None
+
+
+    def list_extras_giveaways(self, guild_id: int, include_ended: bool = False):
+        """Returns [(id, channel_id, message_id, prize, winners, end_at, ended), ...]."""
+        if include_ended:
+            return self.conn.execute(
+                "SELECT id, channel_id, message_id, prize, winners, end_at, ended FROM extras_giveaways WHERE guild_id=? ORDER BY end_at DESC",
+                (guild_id,),
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT id, channel_id, message_id, prize, winners, end_at, ended FROM extras_giveaways WHERE guild_id=? AND ended=0 ORDER BY end_at ASC",
+            (guild_id,),
+        ).fetchall()
+
+    def list_extras_counters(self, guild_id: int):
+        """Returns [(kind, channel_id), ...] for configured live counter channels."""
+        return self.conn.execute(
+            "SELECT kind, channel_id FROM extras_counters WHERE guild_id=?", (guild_id,)
+        ).fetchall()
+
+    def upsert_extras_counter(self, guild_id: int, kind: str, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT INTO extras_counters(guild_id,channel_id,kind) VALUES(?,?,?) "
+            "ON CONFLICT(guild_id,kind) DO UPDATE SET channel_id=excluded.channel_id",
+            (guild_id, channel_id, kind),
+        )
+        self.conn.commit()
+
+    def delete_extras_counter(self, guild_id: int, kind: str) -> bool:
+        cur = self.conn.execute("DELETE FROM extras_counters WHERE guild_id=? AND kind=?", (guild_id, kind))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_twitch(self, guild_id: int):
+        """Returns [(username, channel_id, last_live), ...]."""
+        return self.conn.execute(
+            "SELECT username, channel_id, last_live FROM extras_twitch WHERE guild_id=? ORDER BY username",
+            (guild_id,),
+        ).fetchall()
+
+    def upsert_extras_twitch(self, guild_id: int, username: str, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT INTO extras_twitch(guild_id,username,channel_id,last_live) VALUES(?,?,?,0) "
+            "ON CONFLICT(guild_id,username) DO UPDATE SET channel_id=excluded.channel_id",
+            (guild_id, username.lower().strip(), channel_id),
+        )
+        self.conn.commit()
+
+    def delete_extras_twitch(self, guild_id: int, username: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM extras_twitch WHERE guild_id=? AND username=?", (guild_id, username.lower().strip())
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_extras_feeds(self, guild_id: int):
+        """Returns [(url, channel_id), ...]."""
+        return self.conn.execute(
+            "SELECT url, channel_id FROM extras_feeds WHERE guild_id=? ORDER BY url", (guild_id,)
+        ).fetchall()
+
+    def upsert_extras_feed(self, guild_id: int, url: str, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT INTO extras_feeds(guild_id,url,channel_id,last_id) VALUES(?,?,?,'') "
+            "ON CONFLICT(guild_id,url) DO UPDATE SET channel_id=excluded.channel_id",
+            (guild_id, url, channel_id),
+        )
+        self.conn.commit()
+
+    def delete_extras_feed(self, guild_id: int, url: str) -> bool:
+        cur = self.conn.execute("DELETE FROM extras_feeds WHERE guild_id=? AND url=?", (guild_id, url))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ---- youtube notifications ----
 

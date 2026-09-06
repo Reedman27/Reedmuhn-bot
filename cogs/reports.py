@@ -28,7 +28,9 @@ class Reports(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="report", description="Report a member to the staff team")
+    report_group = app_commands.Group(name="report", description="Member reports")
+
+    @report_group.command(name="send", description="Report a member to the staff team")
     @app_commands.describe(user="Who you're reporting", reason="What happened")
     async def report(self, interaction: discord.Interaction, user: discord.Member, reason: str):
         if interaction.guild is None:
@@ -66,7 +68,7 @@ class Reports(commands.Cog):
                 except discord.Forbidden:
                     logger.warning("missing permission to post report notification in guild %s", interaction.guild.id)
 
-    @app_commands.command(name="reports", description="List open member reports")
+    @report_group.command(name="list", description="List open member reports")
     @manager_or_permission("moderate_members")
     async def reports(self, interaction: discord.Interaction):
         if interaction.guild is None:
@@ -89,7 +91,7 @@ class Reports(commands.Cog):
             embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
         )
 
-    @app_commands.command(name="setreportschannel", description="Set where new report notifications get posted")
+    @report_group.command(name="setchannel", description="Set where new report notifications get posted")
     @app_commands.describe(channel="Channel for report notifications - omit to turn notifications off")
     @manager_or_permission("manage_guild")
     async def setreportschannel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
