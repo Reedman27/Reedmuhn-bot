@@ -715,6 +715,7 @@ async def scheduled_page(request: Request, guild_id: int, nick_q: str = ""):
             "id": event_id,
             "user_id": user_id,
             "user_name": user_name,
+            "original_nick": parsed.get("original_nick"),
             "reverts_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
@@ -942,7 +943,7 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
     if (r := await require_auth(request)):
         return r
 
-    if tab not in {"overview", "warnings", "cases", "tempbans", "tempnicks"}:
+    if tab not in {"overview", "warnings", "cases", "tempbans"}:
         tab = "overview"
 
     warns = []
@@ -1005,16 +1006,7 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
             "unban_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
         })
 
-    tempnicks = []
-    for event_id, _, run_at, data in db.list_scheduled_events(guild_id, "revert_nick"):
-        parsed = json.loads(data)
-        tempnicks.append({
-            "id": event_id,
-            "user_id": parsed["user_id"],
-            "user_name": member_label(guild_id, parsed["user_id"]),
-            "original_nick": parsed.get("original_nick"),
-            "revert_at": datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M"),
-        })
+    tempnicks_count = len(db.list_scheduled_events(guild_id, "revert_nick"))
 
     cfg = db.get_guild_config(guild_id)
     members = db.list_bot_members(guild_id)
@@ -1057,7 +1049,8 @@ async def moderation_page(request: Request, guild_id: int, user_id: Optional[int
         request, "moderation.html", guild_id, "moderation",
         tab=tab, looked_up_user_id=user_id,
         looked_up_user_name=(member_label(guild_id, user_id) if user_id else None),
-        warns=warns, warned_users=warned_users, members=members, tempbans=tempbans, tempnicks=tempnicks,
+        warns=warns, warned_users=warned_users, members=members, tempbans=tempbans,
+        active_temp_nicknames=tempnicks_count,
         text_channels=db.list_bot_channels(guild_id, "text"), purge_requests=purge_requests,
         purge_member_names={uid: display for uid, display, _name in members},
         muted_role_id=cfg["muted_role_id"], roles=db.list_bot_roles(guild_id), muted_config=cfg,
@@ -1219,25 +1212,6 @@ async def unban_tempban_now(request: Request, guild_id: int, event_id: int = For
         parsed = json.loads(data)
         db.insert_scheduled_event("unban", guild_id, int(time.time()), {"user_id": parsed["user_id"]})
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=tempbans", status_code=303)
-
-
-@app.post("/guild/{guild_id}/moderation/tempnicks/revert")
-async def revert_tempnick_now(request: Request, guild_id: int, event_id: int = Form(...)):
-    if (r := await require_auth(request)):
-        return r
-    event = db.get_scheduled_event(event_id, guild_id, "revert_nick")
-    if event:
-        _event_id, _name, _run_at, data = event
-        db.delete_scheduled_event(event_id, guild_id)
-        parsed = json.loads(data)
-        # Same near-immediate-reschedule pattern as "Unban now" above - the
-        # dashboard has no Discord connection of its own, so the bot process
-        # picks this up and reverts the nickname on its next scheduler tick.
-        db.insert_scheduled_event(
-            "revert_nick", guild_id, int(time.time()),
-            {"user_id": parsed["user_id"], "original_nick": parsed.get("original_nick")},
-        )
-    return RedirectResponse(f"/guild/{guild_id}/moderation?tab=tempnicks", status_code=303)
 
 
 @app.post("/guild/{guild_id}/moderation/action")

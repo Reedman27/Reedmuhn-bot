@@ -587,15 +587,17 @@ body.centered {
 
 .shell {
     display: grid;
-    height: 100vh;
+    min-height: 100vh;
 }
 
 html[data-layout="sidebar"] .shell {
+    height: 100vh;
     grid-template-columns: 220px 1fr;
     grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas: "nav main" "controls main";
 }
 html[data-layout="sidebar"] .topnav-bar { display: none; }
+html[data-layout="sidebar"] main { overflow-y: auto; height: 100vh; }
 
 html[data-layout="topnav"] .shell {
     grid-template-columns: 1fr auto;
@@ -610,7 +612,6 @@ main { grid-area: main; }
 
 .sidebar {
     width: 220px;
-    height: 100%;
     position: sticky;
     top: 0;
     background: var(--sidebar);
@@ -681,27 +682,12 @@ main { grid-area: main; }
     padding: 0.6rem 1rem;
     background: var(--sidebar);
     border-bottom: 1px solid var(--border);
-    /* The horizontal scroll for an overflowing nav lives on .topnav-links
-       below, not here. Per spec, an axis left "visible" next to a sibling
-       axis that isn't gets its COMPUTED value forced to "auto" too, even
-       if you write "overflow-y: visible" explicitly - so overflow-x: auto
-       directly on this flex/grid item was silently turning it into a
-       scroll container whose auto height no longer grows to fit wrapped
-       content on mobile (flex-wrap: wrap below): it collapsed to ~20px
-       tall and let the controls bar below overlap it. */
-    /* This is also a grid item (grid-area: nav). Grid items default to
-       min-width: auto, i.e. they refuse to shrink below their content's
-       natural width - so once overflow-x was removed from here (above),
-       this item (and the whole .shell grid, and the page) stretched to
-       fit its overflowing nav-links child instead of clipping to its
-       track. min-width: 0 opts back into the normal "shrink to the
-       track/viewport, let the child scroll instead" behavior. */
-    min-width: 0;
+    overflow-x: auto;
 }
-.topnav-brand { font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
-.topnav-bar .server-name { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.topnav-brand { font-weight: 600; font-size: 1.05rem; white-space: nowrap; flex-shrink: 0; }
+.topnav-bar .server-name { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; flex-shrink: 0; }
 .topnav-bar .nav-spacer { flex: 1; }
-.topnav-links { display: flex; align-items: center; gap: 0.15rem; min-width: 0; flex: 1 1 auto; overflow-x: auto; }
+.topnav-links { display: flex; align-items: center; gap: 0.15rem; flex-shrink: 0; }
 .topnav-dropdown { position: relative; }
 .topnav-dropdown-btn {
     display: flex; align-items: center; gap: 0.3rem;
@@ -711,7 +697,7 @@ main { grid-area: main; }
 .topnav-dropdown-btn:hover, .topnav-dropdown-btn.active { color: var(--text); background: var(--accent-dim); }
 .topnav-dropdown-btn span { font-size: 0.7rem; }
 .topnav-dropdown-panel {
-    display: none; position: absolute; top: 100%; left: 0; margin-top: 0.25rem;
+    display: none; position: fixed; margin-top: 0.25rem;
     background: var(--card); border: 1px solid var(--border); border-radius: 8px;
     box-shadow: var(--shadow); padding: 0.35rem; min-width: 200px; z-index: 50;
     flex-direction: column; gap: 0.1rem;
@@ -724,7 +710,8 @@ main { grid-area: main; }
 /* Controls bar sits beside the topnav-bar (same grid row) instead of below
    a sidebar, so lay it out as a horizontal row here. */
 html[data-layout="topnav"] .sidebar-footer {
-    display: flex; align-items: center; gap: 0.9rem;
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 0.5rem 0.9rem;
     border-top: none; border-bottom: 1px solid var(--border);
     padding: 0.5rem 1rem; font-size: 0.85rem;
     background: var(--sidebar);
@@ -742,14 +729,7 @@ main {
 }
 
 @media (max-width: 700px) {
-    /* Specificity note: html[data-layout="..."] .shell (used above to pick
-       the desktop grid shape) is MORE specific than a plain ".shell" here,
-       so a plain ".shell" override in this media query would silently lose
-       to the desktop rule at every width, including mobile - the stacked
-       mobile layout would never actually apply. Match that specificity
-       (and win on source-order, since this block comes later) by targeting
-       "html[data-layout] .shell" instead of ".shell". */
-    html[data-layout] .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
+    .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
 
     .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
     .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }

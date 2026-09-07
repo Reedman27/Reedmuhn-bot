@@ -37,12 +37,33 @@
 
 // Top-nav dropdown menus (click to open, click outside or Escape to close;
 // only one open at a time).
+//
+// Panels are position:fixed and placed here via JS (not CSS top/left)
+// because .topnav-bar has overflow-x:auto for narrow screens, and per the
+// CSS spec, setting one overflow axis to a non-visible value forces the
+// other axis to compute as non-visible too - so overflow-y silently
+// becomes "auto" as well. That clipped these panels down to a sliver
+// (only the couple pixels that fit inside the bar's own short height were
+// visible) since position:absolute panels are clipped by an overflow
+// ancestor. position:fixed escapes that clipping entirely since it's
+// positioned relative to the viewport instead.
 (() => {
   const dropdowns = document.querySelectorAll('.topnav-dropdown');
   if (!dropdowns.length) return;
 
   function closeAll(except) {
-    dropdowns.forEach(d => { if (d !== except) d.classList.remove('open'); });
+    dropdowns.forEach(d => {
+      if (d === except) return;
+      d.classList.remove('open');
+    });
+  }
+
+  function place(dropdown) {
+    const btn = dropdown.querySelector('.topnav-dropdown-btn');
+    const panel = dropdown.querySelector('.topnav-dropdown-panel');
+    const rect = btn.getBoundingClientRect();
+    panel.style.top = rect.bottom + 4 + 'px';
+    panel.style.left = rect.left + 'px';
   }
 
   dropdowns.forEach(dropdown => {
@@ -51,12 +72,21 @@
       e.stopPropagation();
       const willOpen = !dropdown.classList.contains('open');
       closeAll();
+      if (willOpen) place(dropdown);
       dropdown.classList.toggle('open', willOpen);
     });
   });
 
   document.addEventListener('click', () => closeAll());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(); });
+  // Fixed-position panels don't move with the page, so if someone scrolls
+  // the page while one's open, close it rather than leave it floating
+  // over the wrong spot. Deliberately NOT capture-phase: that would also
+  // catch .topnav-bar's own internal horizontal scroll (e.g. the browser
+  // auto-scrolling a partially-clipped button into view right before a
+  // click), which would close the very dropdown that click just opened.
+  window.addEventListener('scroll', () => closeAll());
+  window.addEventListener('resize', () => closeAll());
 })();
 
 // Layout switch: classic sidebar vs. top nav. Persisted in localStorage and
