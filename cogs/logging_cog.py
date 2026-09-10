@@ -15,7 +15,7 @@ import logging
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils import manager_or_permission
 
@@ -29,7 +29,14 @@ CATEGORY_CHOICES = [
     app_commands.Choice(name="Voice (join/leave/move)", value="voice"),
     app_commands.Choice(name="Automod (filter actions)", value="automod"),
     app_commands.Choice(name="Tickets (opened/closed)", value="tickets"),
+    app_commands.Choice(name="Reports (filed/resolved/dismissed)", value="reports"),
 ]
+
+# Name used for the WebUI's "Automatic - create/reuse" option. An existing
+# channel with this name is reused (same find-by-name-first approach as
+# /muterole's auto-created "Muted" role) so clicking Automatic for a second
+# category doesn't spawn a duplicate channel.
+AUTO_LOG_CHANNEL_NAME = "bot-logs"
 
 # How recent an audit log entry has to be to count as "this is what caused
 # the event we just saw" - long enough to allow for normal API latency,
@@ -53,6 +60,75 @@ def _truncate(text: str, limit: int = 1024) -> str:
 class LoggingCog(commands.Cog, name="Logging"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.poll_log_channel_create_requests.start()
+
+    def cog_unload(self):
+        self.poll_log_channel_create_requests.cancel()
+
+    # ---- WebUI -> Discord: create/reuse the auto "bot-logs" channel ----
+    # The dashboard is a separate process with no bot token, so it can only
+    # queue the request in SQLite; this loop is what actually talks to
+    # Discord. Same queue/claim/complete shape as the muted-role sync in
+    # cogs/dashboardmoderation.py.
+
+    async def get_or_create_log_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Return a private text channel for auto-created logs, creating it
+        if needed. An existing channel named "bot-logs" is reused (rather
+        than making a new one per category) so clicking Automatic for
+        several categories converges on a single shared channel, the same
+        way /muterole reuses an existing "Muted"-named role instead of
+        making a second one."""
+        existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name == AUTO_LOG_CHANNEL_NAME, guild.channels)
+        if existing is not None:
+            return existing
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        }
+        if guild.me is not None:
+            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True)
+        try:
+            return await guild.create_text_channel(
+                AUTO_LOG_CHANNEL_NAME,
+                overwrites=overwrites,
+                reason="Auto-created by WebUI logging setup",
+            )
+        except discord.Forbidden:
+            return None
+        except discord.HTTPException:
+            return None
+
+    @tasks.loop(seconds=2)
+    async def poll_log_channel_create_requests(self):
+        try:
+            requests = self.bot.db.claim_log_channel_create_requests(limit=5)
+        except Exception:
+            logger.exception("failed to claim WebUI log-channel create requests")
+            return
+        for request_id, guild_id, category, _reason in requests:
+            try:
+                guild = self.bot.get_guild(guild_id)
+                if guild is None:
+                    self.bot.db.complete_log_channel_create(request_id, "The bot is no longer in that server.")
+                    continue
+                channel = await self.get_or_create_log_channel(guild)
+                if channel is None:
+                    self.bot.db.complete_log_channel_create(request_id, "Couldn't find or create the channel - the bot needs Manage Channels.")
+                    continue
+                me = guild.me
+                if me is not None and not channel.permissions_for(me).send_messages:
+                    self.bot.db.complete_log_channel_create(request_id, f"Created/found #{channel.name}, but the bot can't send messages there - check its permissions.", channel_id=channel.id)
+                    continue
+                self.bot.db.set_log_channel(guild_id, category, channel.id)
+                self.bot.db.complete_log_channel_create(request_id, channel_id=channel.id)
+                logger.info("WebUI log-channel create %s pointed %s logs at channel %s in guild %s", request_id, category, channel.id, guild_id)
+            except Exception as exc:
+                logger.exception("WebUI log-channel create %s failed", request_id)
+                self.bot.db.complete_log_channel_create(request_id, str(exc)[:500])
+
+    @poll_log_channel_create_requests.before_loop
+    async def before_poll_log_channel_create(self):
+        await self.bot.wait_until_ready()
 
     # ---- configuration commands ----
 

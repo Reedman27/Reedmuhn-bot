@@ -1411,12 +1411,23 @@ async def logging_page(request: Request, guild_id: int):
         return r
     configured = db.get_all_log_channels(guild_id)
     ignored_ids = db.list_ignored_log_channels(guild_id)
+    channel_sync = None
+    sync_row = db.latest_log_channel_create(guild_id)
+    if sync_row:
+        status, created_at, error, channel_id, category = sync_row
+        channel_sync = {
+            "status": status, "error": error, "channel_id": channel_id,
+            "category": dict((key, name) for key, name, _desc in LOG_CATEGORIES).get(category, category),
+            "channel_name": channel_label(guild_id, channel_id) if channel_id else None,
+            "created_at": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M"),
+        }
     return render(
         request, "logging.html", guild_id, "logging",
         categories=LOG_CATEGORIES,
         configured=configured,
         ignored_channels=[(cid, channel_label(guild_id, cid)) for cid in ignored_ids],
         channel_choices=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
+        channel_sync=channel_sync,
     )
 
 
@@ -1429,6 +1440,9 @@ async def save_logging_channel(request: Request, guild_id: int, category: str = 
         return RedirectResponse(f"/guild/{guild_id}/logging?error=category", status_code=303)
     if channel_id == "off":
         db.disable_log_category(guild_id, category)
+    elif channel_id == "auto":
+        category_name = dict((key, name) for key, name, _desc in LOG_CATEGORIES).get(category, category)
+        db.queue_log_channel_create(guild_id, category, f"WebUI: create channel for {category_name} logs")
     else:
         try:
             cid = int(channel_id)

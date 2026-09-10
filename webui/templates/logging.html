@@ -8,9 +8,23 @@
 <section class="card"><p class="error">That logging configuration could not be saved. Pick a channel from the server's available channels and try again.</p></section>
 {% endif %}
 
+{% if channel_sync %}
+<section class="card">
+    <p class="hint {{ 'error' if channel_sync.status == 'failed' else '' }}">
+        {% if channel_sync.status == 'completed' %}
+            ✅ Last request ({{ channel_sync.created_at }}): created/reused {{ channel_sync.channel_name or ('#' + channel_sync.channel_id|string) }} and pointed <strong>{{ channel_sync.category }}</strong> logs there.
+        {% elif channel_sync.status == 'failed' %}
+            ⚠️ Last request ({{ channel_sync.created_at }}) to create a channel for <strong>{{ channel_sync.category }}</strong> failed: {{ channel_sync.error }}
+        {% else %}
+            ⏳ Creating a channel for <strong>{{ channel_sync.category }}</strong> - this updates within a couple seconds, refresh to check.
+        {% endif %}
+    </p>
+</section>
+{% endif %}
+
 <section class="card">
     <h2>Log destinations</h2>
-    <p class="hint">Use separate channels for clean, focused logs, or send several categories to the same moderation channel.</p>
+    <p class="hint">Use separate channels for clean, focused logs, or send several categories to the same moderation channel. Pick "Automatic" to have the bot create/reuse a private <strong>#bot-logs</strong> channel for you.</p>
     {% for key, name, description in categories %}
     <form method="post" action="/guild/{{ guild_id }}/logging/channel" class="setting-row">
         <input type="hidden" name="category" value="{{ key }}">
@@ -20,6 +34,7 @@
         </div>
         <select name="channel_id" required>
             <option value="off" {% if not configured.get(key) %}selected{% endif %}>Off</option>
+            <option value="auto">Automatic — create/reuse "bot-logs"</option>
             {% for cid, cname, ctype, position in channel_choices %}
             <option value="{{ cid }}" {% if configured.get(key) == cid %}selected{% endif %}>#{{ cname }}</option>
             {% endfor %}

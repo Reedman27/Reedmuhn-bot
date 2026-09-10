@@ -403,6 +403,19 @@ class Db:
             )"""
         )
         self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_log_channel_create_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                error TEXT,
+                channel_id INTEGER
+            )"""
+        )
+        self.conn.execute(
             """CREATE TABLE IF NOT EXISTS verification_config (
                 guild_id INTEGER PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0,
@@ -2813,6 +2826,7 @@ class Db:
         ).fetchone()
         return int(row[0]) if exists else None
 
+
     def list_extras_giveaways(self, guild_id: int, include_ended: bool = False):
         """Returns [(id, channel_id, message_id, prize, winners, end_at, ended), ...]."""
         if include_ended:
@@ -3394,6 +3408,60 @@ class Db:
         row = self.conn.execute(
             """SELECT status, created_at, error, changed, failed
                FROM dashboard_mute_role_sync_requests WHERE guild_id=? ORDER BY id DESC LIMIT 1""",
+            (guild_id,),
+        ).fetchone()
+        return row
+
+    # ---- logging: auto-create channel (WebUI asks for a channel to be
+    # created for a category, same queue/claim/complete pattern as the
+    # muted-role sync above, since only the bot process holds Discord
+    # channel-creation permissions) ----
+
+    def queue_log_channel_create(self, guild_id: int, category: str, reason: str) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO dashboard_log_channel_create_requests (guild_id, category, reason, status, created_at)
+               VALUES (?, ?, ?, 'queued', ?)""",
+            (guild_id, category, reason, int(time.time())),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def claim_log_channel_create_requests(self, limit: int = 10) -> list[tuple[int, int, str, str]]:
+        limit = max(1, min(int(limit), 100))
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, guild_id, category, reason FROM dashboard_log_channel_create_requests WHERE status = 'queued' ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            ids = [row[0] for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                self.conn.execute(
+                    f"UPDATE dashboard_log_channel_create_requests SET status='processing', error=NULL WHERE id IN ({placeholders}) AND status='queued'",
+                    ids,
+                )
+            self.conn.commit()
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def complete_log_channel_create(self, request_id: int, error: str | None = None, channel_id: int | None = None) -> None:
+        self.conn.execute(
+            """UPDATE dashboard_log_channel_create_requests
+               SET status=?, completed_at=?, error=?, channel_id=? WHERE id=?""",
+            ('failed' if error else 'completed', int(time.time()), error, channel_id, request_id),
+        )
+        self.conn.commit()
+
+    def latest_log_channel_create(self, guild_id: int) -> Optional[tuple[str, int, Optional[str], Optional[int], str]]:
+        """Most recent create-channel attempt for this guild - lets the
+        WebUI show whether a queued request has actually been carried out
+        yet, not just stored."""
+        row = self.conn.execute(
+            """SELECT status, created_at, error, channel_id, category
+               FROM dashboard_log_channel_create_requests WHERE guild_id=? ORDER BY id DESC LIMIT 1""",
             (guild_id,),
         ).fetchone()
         return row
