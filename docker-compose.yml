@@ -12,7 +12,7 @@ services:
       - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
       - REDIS_URL=redis://redis:6379/0
     volumes:
-      - ./data:/app/data:Z
+      - ./data:/app/data:z
     depends_on:
       - lavalink
       - redis
@@ -60,7 +60,7 @@ services:
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
       - REDIS_URL=redis://redis:6379/0
     volumes:
-      - ./data:/app/data:Z
+      - ./data:/app/data:z
     depends_on:
       - redis
     ports:
