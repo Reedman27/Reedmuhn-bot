@@ -249,9 +249,10 @@ reference for music-bot design; it is not a runtime dependency. See
 
 ### Lavalink image
 
-The Lavalink node is published separately as:
+The Lavalink node is published as the `:lavalink` tag in the same repo as
+the bot/webui images:
 
-`docker.io/<your-dockerhub-user>/reedmuhn-bot-lavalink:latest`
+`docker.io/<your-dockerhub-user>/reedmuhn-bot:lavalink`
 
 The GitHub Actions workflow `.github/workflows/lavalink-publish.yml` is intended
 for a dedicated `lavalink` branch. Changes under `lavalink/` on that branch

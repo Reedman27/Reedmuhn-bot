@@ -2,10 +2,11 @@ name: Build and Push ReedMuhn Lavalink
 
 # Publishes the Lavalink image on its own, separate from the bot/webui
 # workflow: any push to the `lavalink` branch rebuilds and republishes
-# reedmuhn-bot-lavalink:latest to Docker Hub. Push to that branch (it
-# doesn't need to be merged into main for this to run) whenever you
-# change anything under lavalink/ - the Dockerfile, application.yml,
-# or plugin versions.
+# reedmuhn-bot:lavalink to Docker Hub, as a tag in the same reedmuhn-bot
+# repository as :bot/:webui (not a separate repo). Push to that branch
+# (it doesn't need to be merged into main for this to run) whenever you
+# change anything under lavalink/ - the Dockerfile, application.yml, or
+# plugin versions.
 
 on:
   push:
@@ -36,6 +37,6 @@ jobs:
           context: ./lavalink
           file: ./lavalink/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/reedmuhn-bot-lavalink:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/reedmuhn-bot:lavalink
           cache-from: type=gha
           cache-to: type=gha,mode=max

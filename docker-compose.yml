@@ -31,10 +31,11 @@ services:
       - "6379" # only reachable from other containers on this compose network - never publish this port to the host
 
   lavalink:
-    image: ${LAVALINK_IMAGE:-docker.io/reedman27/reedmuhn-bot-lavalink:latest}
+    image: ${LAVALINK_IMAGE:-docker.io/reedman27/reedmuhn-bot:lavalink}
     build: ./lavalink
-    # Docker/Podman can use the dedicated published image, or build the same
-    # image locally with --build when developing the Lavalink branch.
+    # Docker/Podman can use the published :lavalink tag (same reedmuhn-bot
+    # repo as :bot/:webui), or build the same image locally with --build
+    # when developing the lavalink branch.
     container_name: mybot-lavalink
     restart: unless-stopped
     environment:
