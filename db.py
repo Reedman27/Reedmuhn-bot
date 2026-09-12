@@ -26,6 +26,7 @@ class Db:
         # single asyncio event loop in one OS thread - we're never actually
         # touching this connection from two threads at once.
         # Bot and WebUI are separate processes sharing this SQLite file.
+        self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.conn.execute("PRAGMA busy_timeout = 30000")
         self.conn.execute("PRAGMA journal_mode = WAL")
@@ -4343,6 +4344,18 @@ class Db:
             (guild_id, user_id, reason, created_at),
         )
         self.conn.commit()
+
+    def list_automod_violations(self, guild_id: int, limit: int = 25) -> list[tuple[int, str, int]]:
+        """Most recent AutoMod violations across the whole guild, newest
+        first, as (user_id, reason, created_at) tuples - used by
+        /logging import to backfill the automod log channel."""
+        limit = max(1, min(int(limit), 200))
+        cur = self.conn.execute(
+            """SELECT user_id, reason, created_at FROM automod_violations
+               WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
 
     def count_recent_automod_violations(self, guild_id: int, user_id: int, since: int) -> int:
         row = self.conn.execute(

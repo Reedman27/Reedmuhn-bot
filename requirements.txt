@@ -2,3 +2,17 @@ discord.py>=2.4
 Pillow>=10.4
 feedparser>=6.0
 aiohttp>=3.9
+
+# music feature (ported from Vocard - see voicelink/ and THIRD_PARTY_NOTICES.md)
+dnspython==2.2.1
+tldextract==3.2.1
+validators==0.18.2
+humanize==4.0.0
+beautifulsoup4==4.11.1
+psutil==5.9.8
+
+python-dotenv>=1.0
+
+# fast/temporary state layer (cooldowns, rate limits, automod counters) -
+# see redis_client.py; optional at runtime, degrades to in-memory if unset
+redis>=5.0

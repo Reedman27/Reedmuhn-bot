@@ -35,6 +35,7 @@ MAX_MASS_TIMEOUT_SECONDS = 28 * 86400  # Discord's own timeout ceiling
 class Emergency(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("emergency", self.poll_emergency_requests)
         self.poll_emergency_requests.start()
 
     def cog_unload(self):

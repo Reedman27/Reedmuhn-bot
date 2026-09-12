@@ -73,6 +73,7 @@ class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.poll_verify_post_requests.start()
+        self.bot.register_webui_wake("verify_post", self.poll_verify_post_requests)
 
     def cog_unload(self):
         self.poll_verify_post_requests.cancel()

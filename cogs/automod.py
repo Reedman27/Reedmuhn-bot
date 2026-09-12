@@ -60,6 +60,7 @@ from utils import manager_or_permission
 class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("automod", self._poll_queue_decisions)
         # In-memory only, keyed by (guild_id, channel_id, user_id) - see
         # automod_checks.UserMessageTracker for why this isn't persisted.
         self.trackers: dict[tuple[int, int, int], UserMessageTracker] = defaultdict(UserMessageTracker)

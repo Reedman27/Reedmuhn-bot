@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Music · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>🎵 Music</h1>
+<p class="muted">Vocard-derived music playback with queues, playlists, lyrics, effects, and Lavalink. Use <code>/music</code> in Discord for playback controls — these are the per-server defaults.</p>
+<section class="card">
+<form method="post" action="/guild/{{ guild_id }}/music/save" class="stack-form">
+<label>Default volume (1-150%)<input type="number" name="volume" min="1" max="150" value="{{ volume }}"></label>
+<label>DJ role<select name="dj_role_id"><option value="">No DJ role (anyone can control playback)</option>{% for id,name,pos in roles %}<option value="{{ id }}" {% if id==dj_role_id %}selected{% endif %}>@{{ name }}</option>{% endfor %}</select></label>
+<p class="muted">When a DJ role is set, only members with that role (or Manage Server) can skip, stop, or change the queue for others.</p>
+<label><input type="checkbox" name="always_on" value="on" {% if always_on %}checked{% endif %}> Stay in voice 24/7 (don't leave when the queue empties or the channel is empty)</label>
+<button type="submit">Save Music Settings</button>
+</form>
+</section>
+{% endblock %}

@@ -21,6 +21,8 @@ from utils import manager_or_permission
 class TempVoice(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("tempvoice_delete", self._delete_request_worker)
+        bot.register_webui_wake("tempvoice_limit", self._limit_request_worker)
         self._cleaned_up = False
         self._delete_request_worker.start()
         self._limit_request_worker.start()

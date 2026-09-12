@@ -40,6 +40,9 @@ MAX_TIMEOUT_SECONDS = 28 * 86400
 class DashboardModeration(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("purge", self.poll_purge_requests)
+        bot.register_webui_wake("mute_role_sync", self.poll_mute_role_sync_requests)
+        bot.register_webui_wake("mod_action", self.poll_mod_action_requests)
         self.poll_purge_requests.start()
         self.poll_mod_action_requests.start()
         self.poll_mute_role_sync_requests.start()

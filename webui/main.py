@@ -27,7 +27,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 import hmac
+import asyncio
 from db import Db
+from redis_client import RedisClient
 
 MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
@@ -59,10 +61,40 @@ def load_or_create_secret_key() -> str:
 
 SECRET_KEY = load_or_create_secret_key()
 db = Db(DB_PATH)
+redis_client = RedisClient(os.environ.get("REDIS_URL"))
+_wake_tasks: set[asyncio.Task] = set()
+
+
+async def _wake(topic: str) -> None:
+    try:
+        # If Redis was unavailable when the WebUI started, try again on the
+        # next dashboard action. SQLite polling remains the correctness
+        # fallback, so Redis is only an acceleration path.
+        if not redis_client.enabled:
+            await redis_client.connect()
+        await redis_client.publish_json("webui:wake", {"topic": topic})
+    except Exception:
+        # SQLite polling remains the correctness fallback; a Redis outage
+        # must never break a dashboard action.
+        pass
+
+
+def _wake_fire_and_forget(topic: str) -> None:
+    task = asyncio.create_task(_wake(topic))
+    _wake_tasks.add(task)
+    task.add_done_callback(_wake_tasks.discard)
 
 
 async def _lifespan(app: FastAPI):
-    yield
+    await redis_client.connect()
+    try:
+        yield
+    finally:
+        for task in tuple(_wake_tasks):
+            task.cancel()
+        if _wake_tasks:
+            await asyncio.gather(*_wake_tasks, return_exceptions=True)
+        await redis_client.close()
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -1079,6 +1111,7 @@ async def queue_dashboard_purge(
         return RedirectResponse(f"/guild/{guild_id}/moderation?error=purge", status_code=303)
     reason = reason.strip()[:500] or "WebUI message purge"
     db.queue_purge_request(guild_id, channel_id, target, amount, reason)
+    await _wake("purge")
     return RedirectResponse(f"/guild/{guild_id}/moderation?purge=queued", status_code=303)
 
 
@@ -1100,6 +1133,7 @@ async def add_warn_route(request: Request, guild_id: int, user_id: int = Form(..
     # Discord user, unlike /warn issued in Discord itself.
     db.add_warn(guild_id, user_id, 0, reason, int(time.time()))
     queue_warn_escalation_if_due(guild_id, user_id, reason)
+    _wake_fire_and_forget("mod_action")
     return RedirectResponse(f"/guild/{guild_id}/moderation?tab=warnings&user_id={user_id}", status_code=303)
 
 
@@ -1147,6 +1181,7 @@ async def save_muted_role(request: Request, guild_id: int, role_id: str = Form("
     else:
         return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
     db.queue_mute_role_sync(guild_id, "WebUI: Muted role changed")
+    await _wake("mute_role_sync")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 MUTE_PRESETS = {
@@ -1187,6 +1222,7 @@ async def save_muted_role_settings(
     )
     db.set_muted_strip_roles(guild_id, strip_roles == "on")
     db.queue_mute_role_sync(guild_id, "WebUI: Muted role settings changed")
+    await _wake("mute_role_sync")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
@@ -1198,6 +1234,7 @@ async def save_muted_role_preset(request: Request, guild_id: int, preset: str = 
         return RedirectResponse(f"/guild/{guild_id}/moderation?error=invalid", status_code=303)
     db.set_muted_settings(guild_id, **MUTE_PRESETS[preset])
     db.queue_mute_role_sync(guild_id, f"WebUI: Muted role preset applied ({preset})")
+    await _wake("mute_role_sync")
     return RedirectResponse(f"/guild/{guild_id}/moderation", status_code=303)
 
 
@@ -1256,6 +1293,7 @@ async def queue_dashboard_mod_action(
 
     reason = reason.strip()[:500] or "WebUI moderation action"
     db.queue_mod_action(guild_id, target_id, action, duration_seconds, reason)
+    await _wake("mod_action")
     return RedirectResponse(f"/guild/{guild_id}/moderation?action=queued", status_code=303)
 
 
@@ -1280,6 +1318,35 @@ async def toggle_fun_command(request: Request, guild_id: int, command_name: str 
     allowed={cmd for _,items in FUN_COMMANDS for cmd,_ in items}
     if command_name in allowed: db.set_command_enabled(guild_id,command_name,enabled=="on")
     return RedirectResponse(f"/guild/{guild_id}/fun-commands",status_code=303)
+
+# ---- music ----
+
+@app.get("/guild/{guild_id}/music")
+async def music_page(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    settings = db.get_music_settings(guild_id)
+    return render(
+        request, "music.html", guild_id, "music",
+        volume=settings.get("volume", 100),
+        dj_role_id=settings.get("dj"),
+        always_on=bool(settings.get("24/7", False)),
+        roles=db.list_bot_roles(guild_id),
+    )
+
+
+@app.post("/guild/{guild_id}/music/save")
+async def music_save(
+    request: Request, guild_id: int,
+    volume: int = Form(100), dj_role_id: str = Form(""), always_on: str = Form(""),
+):
+    if (r := await require_auth(request)):
+        return r
+    volume = max(1, min(150, volume))
+    dj_id = int(dj_role_id) if dj_role_id else None
+    db.update_music_settings(guild_id, volume=volume, dj=dj_id, **{"24/7": always_on == "on"})
+    return RedirectResponse(f"/guild/{guild_id}/music", status_code=303)
+
 
 # ---- starboard ----
 
@@ -1404,6 +1471,21 @@ LOG_CATEGORIES = [
     ("voice", "Voice", "Voice joins, leaves, and moves"),
 ]
 
+# Channel name each category's "Automatic" option creates/reuses - kept in
+# sync with cogs/logging_cog.py's CATEGORY_LOG_CHANNEL_NAMES (that file is
+# the bot process, which the webui container has no import path to since
+# they only share the SQLite db, not Python modules).
+LOG_CATEGORY_CHANNEL_NAMES = {
+    "messages": "message-logs",
+    "members": "member-logs",
+    "moderation": "moderation-logs",
+    "automod": "automod-logs",
+    "tickets": "ticket-logs",
+    "reports": "report-logs",
+    "server": "server-logs",
+    "voice": "voice-logs",
+}
+
 
 @app.get("/guild/{guild_id}/logging")
 async def logging_page(request: Request, guild_id: int):
@@ -1424,11 +1506,26 @@ async def logging_page(request: Request, guild_id: int):
     return render(
         request, "logging.html", guild_id, "logging",
         categories=LOG_CATEGORIES,
+        category_channel_names=LOG_CATEGORY_CHANNEL_NAMES,
         configured=configured,
         ignored_channels=[(cid, channel_label(guild_id, cid)) for cid in ignored_ids],
         channel_choices=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"),
         channel_sync=channel_sync,
     )
+
+
+@app.post("/guild/{guild_id}/logging/auto-create")
+async def auto_create_log_channels(request: Request, guild_id: int):
+    if (r := await require_auth(request)):
+        return r
+    # The WebUI is intentionally token-less. Queue one Discord-side request per
+    # category; LoggingCog claims these requests and performs the real channel
+    # creation with the bot token, just like the muted-role sync workflow.
+    for key, _name, _description in LOG_CATEGORIES:
+        if not db.get_all_log_channels(guild_id).get(key):
+            db.queue_log_channel_create(guild_id, key, "WebUI: create/reuse all log channels")
+    await _wake("log_channel_create")
+    return RedirectResponse(f"/guild/{guild_id}/logging", status_code=303)
 
 
 @app.post("/guild/{guild_id}/logging/channel")
@@ -1443,6 +1540,7 @@ async def save_logging_channel(request: Request, guild_id: int, category: str = 
     elif channel_id == "auto":
         category_name = dict((key, name) for key, name, _desc in LOG_CATEGORIES).get(category, category)
         db.queue_log_channel_create(guild_id, category, f"WebUI: create channel for {category_name} logs")
+        await _wake("log_channel_create")
     else:
         try:
             cid = int(channel_id)
@@ -2321,6 +2419,7 @@ async def delete_tempvoice_route(request: Request, guild_id: int, channel_id: in
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
     if not db.request_temp_voice_delete(guild_id, channel_id):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    await _wake("tempvoice_delete")
     return RedirectResponse(f"/guild/{guild_id}/tempvoice?requested=1", status_code=303)
 
 
@@ -2334,6 +2433,7 @@ async def queue_tempvoice_limit_route(request: Request, guild_id: int, channel_i
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
     if not db.request_temp_voice_limit(guild_id, channel_id, user_limit):
         return RedirectResponse(f"/guild/{guild_id}/tempvoice?error=not_found", status_code=303)
+    await _wake("tempvoice_limit")
     return RedirectResponse(f"/guild/{guild_id}/tempvoice?limitrequested=1", status_code=303)
 
 
@@ -2442,6 +2542,7 @@ async def delete_talk_message(request: Request, guild_id: int, message_id: int =
     if row is None or row[1] != guild_id:
         return RedirectResponse(f"/guild/{guild_id}/talk?error=notfound", status_code=303)
     if db.request_message_delete(guild_id, message_id):
+        await _wake("message_delete")
         try:
             db.record_bot_event("dashboard.talk.delete_requested", guild_id, None, row[2], f"message_id={message_id}", source="dashboard_talk")
         except Exception:
@@ -2463,6 +2564,7 @@ async def send_talk_message(request: Request, guild_id: int, channel_id: int = F
         return RedirectResponse(f"/guild/{guild_id}/talk?error=channel", status_code=303)
     try:
         message_id = db.queue_outbound_message(guild_id, channel_id, content)
+        await _wake("outbound_message")
         try:
             db.record_bot_event("dashboard.talk.queued", guild_id, None, channel_id,
                                 f"message_id={message_id} content_length={len(content)}", source="dashboard_talk")
@@ -2511,6 +2613,7 @@ async def save_verification(
     db.set_verification_config(guild_id, enabled == "on", channel_id, role_id, message)
     if enabled == "on":
         db.queue_verify_post(guild_id)
+        await _wake("verify_post")
     return RedirectResponse(f"/guild/{guild_id}/verification?saved=1", status_code=303)
 
 
@@ -2585,6 +2688,7 @@ async def save_ticket_panel_route(
     panel_description = panel_description.strip()[:1000] or "Click the button below to open a private ticket with the support team."
     db.set_ticket_panel_config(guild_id, panel_channel_id, panel_title, panel_description)
     db.queue_ticket_panel_post(guild_id)
+    await _wake("ticket_panel")
     return RedirectResponse(f"/guild/{guild_id}/tickets?panelsaved=1", status_code=303)
 
 
@@ -2598,6 +2702,7 @@ async def close_ticket_route(request: Request, guild_id: int, ticket_id: int = F
     if row[5] != "open":
         return RedirectResponse(f"/guild/{guild_id}/tickets?error=alreadyclosed", status_code=303)
     db.queue_ticket_close(guild_id, ticket_id, reason.strip()[:500] or "Closed from the dashboard")
+    await _wake("ticket_close")
     return RedirectResponse(f"/guild/{guild_id}/tickets?closequeued={ticket_id}", status_code=303)
 
 
@@ -2699,6 +2804,7 @@ async def close_poll_route(request: Request, guild_id: int, poll_id: int = Form(
     if poll["closed"]:
         return RedirectResponse(f"/guild/{guild_id}/polls?error=alreadyclosed", status_code=303)
     db.queue_poll_close(guild_id, poll_id)
+    await _wake("poll_close")
     return RedirectResponse(f"/guild/{guild_id}/polls?closequeued={poll_id}", status_code=303)
 
 
@@ -2809,6 +2915,10 @@ async def resolve_report_route(
         reason = note or report["reason"]
         linked_warn_id = db.add_warn(guild_id, report["target_user_id"], 0, reason, int(time.time()))
         queue_warn_escalation_if_due(guild_id, report["target_user_id"], reason)
+        # queue_warn_escalation_if_due may have queued a mod action (mute/
+        # timeout/kick/ban/tempban) onto dashboard_mod_actions - wake the bot
+        # the same way add_warn_route does, so it isn't left to the next poll.
+        await _wake("mod_action")
     db.close_report(guild_id, report_id, "resolved", 0, note or None, linked_warn_id)
     return RedirectResponse(f"/guild/{guild_id}/reports", status_code=303)
 
@@ -2940,6 +3050,7 @@ async def moderationqueue_decide_route(request: Request, guild_id: int, review_i
     # other dashboard-attributed action in this codebase.
     if decision == "dismiss":
         db.queue_automod_decision(guild_id, review_id, "dismiss", 0)
+        await _wake("automod")
         return RedirectResponse(f"/guild/{guild_id}/moderationqueue?dismissqueued={review_id}", status_code=303)
     # Confirming needs to actually apply the escalation ladder, which needs
     # a live Discord connection the dashboard process doesn't have - so
@@ -2947,6 +3058,7 @@ async def moderationqueue_decide_route(request: Request, guild_id: int, review_i
     # _poll_queue_decisions), same bridge pattern as every other
     # WebUI->Discord action.
     db.queue_automod_decision(guild_id, review_id, "confirm", 0)
+    await _wake("automod")
     return RedirectResponse(f"/guild/{guild_id}/moderationqueue?confirmqueued={review_id}", status_code=303)
 
 
@@ -3047,6 +3159,7 @@ async def emergency_lockdown_route(request: Request, guild_id: int, confirm_text
     # actor 0: no per-admin dashboard login to attribute this to, same
     # sentinel used by every other dashboard-issued action in this codebase.
     db.queue_emergency_request(guild_id, "lockdown", {"started_by": 0})
+    await _wake("emergency")
     return RedirectResponse(f"/guild/{guild_id}/emergency?queued=lockdown", status_code=303)
 
 
@@ -3057,6 +3170,7 @@ async def emergency_unlock_route(request: Request, guild_id: int, confirm_text: 
     if not _check_confirm_phrase("unlock", confirm_text):
         return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
     db.queue_emergency_request(guild_id, "unlock", {})
+    await _wake("emergency")
     return RedirectResponse(f"/guild/{guild_id}/emergency?queued=unlock", status_code=303)
 
 
@@ -3067,6 +3181,7 @@ async def emergency_revoke_invites_route(request: Request, guild_id: int, confir
     if not _check_confirm_phrase("revoke_invites", confirm_text):
         return RedirectResponse(f"/guild/{guild_id}/emergency?error=confirm", status_code=303)
     db.queue_emergency_request(guild_id, "revoke_invites", {})
+    await _wake("emergency")
     return RedirectResponse(f"/guild/{guild_id}/emergency?queued=revoke_invites", status_code=303)
 
 
@@ -3084,6 +3199,7 @@ async def emergency_mass_timeout_route(
     db.queue_emergency_request(guild_id, "mass_timeout", {
         "role_id": role_id, "duration_seconds": duration_minutes * 60, "reason": reason.strip()[:500],
     })
+    await _wake("emergency")
     return RedirectResponse(f"/guild/{guild_id}/emergency?queued=mass_timeout", status_code=303)
 
 

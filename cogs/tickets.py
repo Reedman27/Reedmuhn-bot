@@ -85,6 +85,8 @@ class Tickets(commands.Cog, name="Tickets"):
         self.bot = bot
         self.poll_ticket_close_requests.start()
         self.poll_ticket_panel_requests.start()
+        self.bot.register_webui_wake("ticket_close", self.poll_ticket_close_requests)
+        self.bot.register_webui_wake("ticket_panel", self.poll_ticket_panel_requests)
 
     def cog_unload(self):
         self.poll_ticket_close_requests.cancel()
@@ -141,7 +143,7 @@ class Tickets(commands.Cog, name="Tickets"):
 
     @ticket.command(name="open", description="Open a private support ticket")
     @app_commands.describe(subject="What's this about?")
-    async def ticket(self, interaction: discord.Interaction, subject: str = ""):
+    async def open_ticket_command(self, interaction: discord.Interaction, subject: str = ""):
         await self.open_ticket(interaction, subject)
 
     async def open_ticket(self, interaction: discord.Interaction, subject: str) -> None:

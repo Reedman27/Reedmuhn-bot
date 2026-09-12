@@ -1179,6 +1179,9 @@ class Db:
         self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestion_config (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, enabled INTEGER NOT NULL DEFAULT 0, staff_role_id INTEGER)""")
         self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, message_id INTEGER NOT NULL, author_id INTEGER NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', staff_id INTEGER, staff_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_suggestions_guild ON suggestions(guild_id, id DESC)")
+        # Same table the bot process's voicelink.SQLiteMusicDB writes to
+        # (schema kept identical on purpose - see get_music_settings below).
+        self.conn.execute("CREATE TABLE IF NOT EXISTS vocard_settings (guild_id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
         self.conn.commit()
 
     # ---- scheduled events (generalized: tempban unbans + reminders both
@@ -5284,3 +5287,22 @@ class Db:
 
     def set_suggestion_status(self,suggestion_id:int,status:str,staff_id:int,reason:str=''):
         self.conn.execute("UPDATE suggestions SET status=?,staff_id=?,staff_reason=?,updated_at=? WHERE id=?",(status,staff_id,reason,int(time.time()),suggestion_id)); self.conn.commit()
+
+    # ---- music (vocard_settings is the bot process's per-guild music
+    # settings table, written directly by voicelink.SQLiteMusicDB - the
+    # webui reads/writes the same JSON blob shape here since it has no
+    # import path to voicelink, only the shared SQLite file) ----
+    def get_music_settings(self, guild_id: int) -> dict:
+        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        return json.loads(row[0]) if row else {"_id": guild_id}
+
+    def update_music_settings(self, guild_id: int, **fields) -> None:
+        settings = self.get_music_settings(guild_id)
+        settings.update(fields)
+        settings["_id"] = guild_id
+        self.conn.execute(
+            "INSERT INTO vocard_settings (guild_id, data) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET data = excluded.data",
+            (guild_id, json.dumps(settings)),
+        )
+        self.conn.commit()

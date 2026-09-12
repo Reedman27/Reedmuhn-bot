@@ -11,6 +11,7 @@ import scheduler
 import utils
 from db import Db
 from framework import Feature, FeatureStore
+from redis_client import RedisClient
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -86,6 +87,7 @@ DISCORD_COMMAND_WARN_THRESHOLD = 90
 INITIAL_COGS = [
     "cogs.fun",
     "cogs.extras",
+    "cogs.music",
     "cogs.moderation",
     "cogs.customcommands",
     "cogs.reminders",
@@ -133,6 +135,7 @@ FEATURES = FeatureStore([
     Feature("reactionroles", "cogs.reactionroles", "Reaction-based role assignment.", "community"),
     Feature("reminders", "cogs.reminders", "Scheduled reminders.", "utility"),
     Feature("fun", "cogs.fun", "Fun and lightweight community commands.", "fun"),
+    Feature("music", "cogs.music", "Vocard-derived music playback with queues, playlists, lyrics, effects, and Lavalink.", "utility"),
     Feature("verification", "cogs.verification", "Button-based member verification gate.", "moderation"),
     Feature("tickets", "cogs.tickets", "Private support ticket channels.", "utility"),
     Feature("polls", "cogs.polls", "Button-based polls with live results.", "fun"),
@@ -167,14 +170,63 @@ intents.moderation = True  # needed for on_audit_log_entry_create (anti-nuke)
 intents.invites = True  # needed for on_invite_create/on_invite_delete (invite tracking)
 
 
+class _NullMusicIPC:
+    """No-op IPC adapter used when ReedMuhn does not run Vocard's optional web controller."""
+
+    async def send(self, payload):
+        return None
+
+
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         db_path = os.environ.get("DB_PATH", "data/bot.db")
         configure_persistent_logging(db_path)
         self.db = Db(db_path)
+        # The Vocard-derived player can optionally publish controller events
+        # over IPC. ReedMuhn does not need that optional service, so provide a
+        # safe no-op adapter rather than letting player construction fail.
+        self.ipc_client = _NullMusicIPC()
+        # Fast/temporary state (cooldowns, rate limits, automod counters,
+        # future webui<->bot signaling) - see redis_client.py. SQLite (self.db
+        # above) remains the source of truth for anything permanent. Works
+        # with REDIS_URL unset or unreachable; it just falls back to an
+        # in-memory store for that run.
+        self.redis = RedisClient(os.environ.get("REDIS_URL"))
+        self.webui_wake_handlers: dict[str, list] = {}
+        self._webui_wake_task = None
+
+    def register_webui_wake(self, topic: str, handler) -> None:
+        """Register a one-shot poll handler for WebUI -> bot wakeups."""
+        self.webui_wake_handlers.setdefault(topic, []).append(handler)
+
+    async def _webui_wake_loop(self):
+        """Listen for WebUI queue notifications and run matching pollers."""
+        while not self.is_closed():
+            if not self.redis.enabled:
+                await self.redis.connect()
+                if not self.redis.enabled:
+                    await asyncio.sleep(5)
+                    continue
+            try:
+                async for payload in self.redis.listen("webui:wake"):
+                    topic = payload.get("topic")
+                    if not isinstance(topic, str):
+                        continue
+                    for handler in tuple(self.webui_wake_handlers.get(topic, ())):
+                        try:
+                            await handler()
+                        except Exception:
+                            logger.exception("WebUI wake handler failed for topic %s", topic)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("WebUI Redis wake listener failed; reconnecting in 2 seconds")
+                await self.redis.close()
+                await asyncio.sleep(2)
 
     async def setup_hook(self):
+        await self.redis.connect()
         self.db.record_bot_event("bot.startup", None, None, None, "process starting")
         for cog in INITIAL_COGS:
             try:
@@ -187,6 +239,13 @@ class MyBot(commands.Bot):
                 )
             except Exception:
                 logger.exception("Skipping %s: failed to load", cog)
+
+        # Always start the wake listener. The listener itself reconnects when
+        # Redis is unavailable, so a temporary Redis outage during bot startup
+        # does not permanently disable WebUI wakeups for the lifetime of the bot.
+        self._webui_wake_task = self.loop.create_task(
+            self._webui_wake_loop(), name="webui-redis-wake"
+        )
 
         # Discord hard-caps a bot at 100 top-level application commands
         # (global or per-guild). Subcommands/subcommand-groups inside a
@@ -386,6 +445,14 @@ class MyBot(commands.Bot):
         # process finally exits.
         self.db.record_bot_event("bot.shutdown", None, None, None, "process stopping")
         logger.info("Shutting down")
+        if self._webui_wake_task is not None:
+            self._webui_wake_task.cancel()
+            try:
+                await self._webui_wake_task
+            except asyncio.CancelledError:
+                pass
+            self._webui_wake_task = None
+        await self.redis.close()
         await super().close()
 
 

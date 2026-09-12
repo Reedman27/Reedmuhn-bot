@@ -10,7 +10,10 @@ resolved against the audit log so the log shows WHO did it and WHY (not
 just "member left"), gracefully falling back to a plain event if the bot
 lacks View Audit Log permission - never crashes for missing permissions.
 """
+import asyncio
+import datetime
 import io
+import json
 import logging
 
 import discord
@@ -32,11 +35,24 @@ CATEGORY_CHOICES = [
     app_commands.Choice(name="Reports (filed/resolved/dismissed)", value="reports"),
 ]
 
-# Name used for the WebUI's "Automatic - create/reuse" option. An existing
-# channel with this name is reused (same find-by-name-first approach as
-# /muterole's auto-created "Muted" role) so clicking Automatic for a second
-# category doesn't spawn a duplicate channel.
-AUTO_LOG_CHANNEL_NAME = "bot-logs"
+# Channel name used for each category's "Automatic - create/reuse" option
+# (both the WebUI's Automatic dropdown choice and /logging setup) - named
+# after what actually gets logged there ("member-logs", not a generic
+# shared "bot-logs") so a server with several categories set to Automatic
+# ends up with clearly-labelled channels instead of everything piling into
+# one. An existing channel with the matching name is reused (same
+# find-by-name-first approach as /muterole's auto-created "Muted" role) so
+# clicking Automatic twice for the same category doesn't spawn a duplicate.
+CATEGORY_LOG_CHANNEL_NAMES = {
+    "messages": "message-logs",
+    "members": "member-logs",
+    "moderation": "moderation-logs",
+    "server": "server-logs",
+    "voice": "voice-logs",
+    "automod": "automod-logs",
+    "tickets": "ticket-logs",
+    "reports": "report-logs",
+}
 
 # How recent an audit log entry has to be to count as "this is what caused
 # the event we just saw" - long enough to allow for normal API latency,
@@ -60,25 +76,27 @@ def _truncate(text: str, limit: int = 1024) -> str:
 class LoggingCog(commands.Cog, name="Logging"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("log_channel_create", self.poll_log_channel_create_requests)
         self.poll_log_channel_create_requests.start()
 
     def cog_unload(self):
         self.poll_log_channel_create_requests.cancel()
 
-    # ---- WebUI -> Discord: create/reuse the auto "bot-logs" channel ----
+    # ---- WebUI -> Discord: create/reuse a category's auto channel ----
     # The dashboard is a separate process with no bot token, so it can only
     # queue the request in SQLite; this loop is what actually talks to
     # Discord. Same queue/claim/complete shape as the muted-role sync in
     # cogs/dashboardmoderation.py.
 
-    async def get_or_create_log_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
-        """Return a private text channel for auto-created logs, creating it
-        if needed. An existing channel named "bot-logs" is reused (rather
-        than making a new one per category) so clicking Automatic for
-        several categories converges on a single shared channel, the same
-        way /muterole reuses an existing "Muted"-named role instead of
-        making a second one."""
-        existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name == AUTO_LOG_CHANNEL_NAME, guild.channels)
+    async def get_or_create_log_channel(self, guild: discord.Guild, category: str) -> discord.TextChannel | None:
+        """Return the private text channel for this category's auto-created
+        logs (e.g. "member-logs" for the members category), creating it if
+        needed. An existing channel with the matching name is reused so
+        clicking Automatic again for the same category doesn't spawn a
+        duplicate - the same way /muterole reuses an existing "Muted"-named
+        role instead of making a second one."""
+        channel_name = CATEGORY_LOG_CHANNEL_NAMES.get(category, f"{category}-logs")
+        existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name == channel_name, guild.channels)
         if existing is not None:
             return existing
 
@@ -89,7 +107,7 @@ class LoggingCog(commands.Cog, name="Logging"):
             overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True)
         try:
             return await guild.create_text_channel(
-                AUTO_LOG_CHANNEL_NAME,
+                channel_name,
                 overwrites=overwrites,
                 reason="Auto-created by WebUI logging setup",
             )
@@ -111,7 +129,7 @@ class LoggingCog(commands.Cog, name="Logging"):
                 if guild is None:
                     self.bot.db.complete_log_channel_create(request_id, "The bot is no longer in that server.")
                     continue
-                channel = await self.get_or_create_log_channel(guild)
+                channel = await self.get_or_create_log_channel(guild, category)
                 if channel is None:
                     self.bot.db.complete_log_channel_create(request_id, "Couldn't find or create the channel - the bot needs Manage Channels.")
                     continue
@@ -250,7 +268,7 @@ class LoggingCog(commands.Cog, name="Logging"):
                 continue
             try:
                 channel = await guild.create_text_channel(
-                    name=f"{key}-logs", category=under, overwrites=overwrites,
+                    name=CATEGORY_LOG_CHANNEL_NAMES.get(key, f"{key}-logs"), category=under, overwrites=overwrites,
                     reason=f"Automatic log channel setup by {interaction.user} (/logging setup)",
                 )
             except discord.Forbidden:
@@ -270,6 +288,202 @@ class LoggingCog(commands.Cog, name="Logging"):
         if failed:
             lines.append("Failed:\n" + "\n".join(failed))
         await interaction.followup.send("\n\n".join(lines) or "Nothing to do.", ephemeral=True)
+
+    @logging_group.command(name="import", description="Backfill a log channel with existing history for one category")
+    @app_commands.describe(
+        category="Which kind of history to import",
+        channel="Where to post it (defaults to that category's configured log channel)",
+        limit="Max number of past records to import (default 25, max 100)",
+    )
+    @app_commands.choices(category=CATEGORY_CHOICES)
+    @manager_or_permission("manage_guild")
+    async def logging_import(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str],
+        channel: discord.TextChannel = None,
+        limit: int = 25,
+    ):
+        """Not everything the bot logs going forward has history behind
+        it - message content and server-config changes were never stored
+        anywhere, so there's nothing to backfill for those. Moderation
+        cases, tickets, reports, and join/leave/voice activity DO have a
+        durable record already (member_history / tickets / reports /
+        bot_events), so this pulls from whichever table actually backs the
+        chosen category and posts it into the log channel as regular
+        embeds, oldest first - handy right after pointing a category at a
+        channel for the first time, so it isn't empty."""
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        guild = interaction.guild
+        cat = category.value
+        limit = max(1, min(int(limit), 100))
+
+        target = channel
+        if target is None:
+            configured_id = self.bot.db.get_log_channel(guild.id, cat)
+            target = guild.get_channel(configured_id) if configured_id else None
+        if target is None:
+            await interaction.response.send_message(
+                f"**{category.name}** has no log channel configured, and you didn't pick one. "
+                f"Run `/logging channel` first or pass a `channel` here.",
+                ephemeral=True,
+            )
+            return
+        me = guild.me
+        if me is not None and not target.permissions_for(me).send_messages:
+            await interaction.response.send_message(f"I can't send messages in {target.mention} - check my permissions there.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        embeds = self._build_import_embeds(guild, cat, limit)
+        if embeds is None:
+            await interaction.followup.send(
+                f"**{category.name}** doesn't have any stored history to import - the bot only started keeping "
+                f"a durable record for categories like moderation, tickets, reports, members, and voice. "
+                f"New {category.name.lower()} events will still log normally from now on.",
+                ephemeral=True,
+            )
+            return
+        if not embeds:
+            await interaction.followup.send(f"No past **{category.name}** records found to import.", ephemeral=True)
+            return
+
+        posted = 0
+        for embed in embeds:
+            try:
+                await target.send(embed=embed)
+                posted += 1
+            except discord.Forbidden:
+                await interaction.followup.send(f"Lost permission to post in {target.mention} partway through - stopped after {posted}.", ephemeral=True)
+                return
+            except discord.HTTPException:
+                continue
+            await asyncio.sleep(0.5)  # stay well clear of the channel-send rate limit for a batch like this
+
+        await interaction.followup.send(f"Imported {posted} past **{category.name}** record(s) into {target.mention}.", ephemeral=True)
+
+    def _build_import_embeds(self, guild: discord.Guild, category: str, limit: int) -> list[discord.Embed] | None:
+        """Returns embeds oldest-first for the given category, or None if
+        that category has no durable history to backfill from at all
+        (as opposed to an empty list, which means the source exists but is
+        currently empty)."""
+        if category == "moderation":
+            rows = list(reversed(self.bot.db.list_recent_cases(guild.id, limit)))
+            embeds = []
+            for case_number, user_id, event_type, actor_id, reason, created_at, voided in rows:
+                title = f"Case #{case_number} - {event_type}" + (" (voided)" if voided else "")
+                embed = discord.Embed(title=title, color=_COLOR_NEUTRAL, timestamp=datetime.datetime.fromtimestamp(created_at, tz=datetime.timezone.utc))
+                embed.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=True)
+                embed.add_field(name="Moderator", value=f"<@{actor_id}>" if actor_id else "*unknown*", inline=True)
+                embed.add_field(name="Reason", value=_truncate(reason or "*no reason given*", 512), inline=False)
+                embed.set_footer(text="Imported from existing case history")
+                embeds.append(embed)
+            return embeds
+
+        if category == "tickets":
+            rows = list(reversed(self.bot.db.list_tickets(guild.id, limit)))
+            embeds = []
+            for ticket_id, channel_id, opener_id, subject, status, created_at, closed_at, closed_by, close_reason in rows:
+                embed = discord.Embed(
+                    title=f"Ticket #{ticket_id} - {status}",
+                    color=_COLOR_NEUTRAL,
+                    timestamp=datetime.datetime.fromtimestamp(created_at, tz=datetime.timezone.utc),
+                )
+                embed.add_field(name="Opened by", value=f"<@{opener_id}>", inline=True)
+                embed.add_field(name="Subject", value=_truncate(subject or "*none*", 256), inline=False)
+                if status != "open":
+                    embed.add_field(name="Closed by", value=f"<@{closed_by}>" if closed_by else "*unknown*", inline=True)
+                    if close_reason:
+                        embed.add_field(name="Close reason", value=_truncate(close_reason, 256), inline=True)
+                embed.set_footer(text="Imported from existing ticket history")
+                embeds.append(embed)
+            return embeds
+
+        if category == "reports":
+            rows = list(reversed(self.bot.db.list_reports(guild.id, limit=limit)))
+            embeds = []
+            for r in rows:
+                embed = discord.Embed(
+                    title=f"Report #{r['id']} - {r['status']}",
+                    color=_COLOR_NEUTRAL,
+                    timestamp=datetime.datetime.fromtimestamp(r["created_at"], tz=datetime.timezone.utc),
+                )
+                embed.add_field(name="Reporter", value=f"<@{r['reporter_id']}>", inline=True)
+                embed.add_field(name="Target", value=f"<@{r['target_user_id']}>", inline=True)
+                embed.add_field(name="Reason", value=_truncate(r["reason"] or "*no reason given*", 512), inline=False)
+                if r["resolved_by"]:
+                    embed.add_field(name="Resolved by", value=f"<@{r['resolved_by']}>", inline=True)
+                    if r["resolution_note"]:
+                        embed.add_field(name="Resolution", value=_truncate(r["resolution_note"], 256), inline=True)
+                embed.set_footer(text="Imported from existing report history")
+                embeds.append(embed)
+            return embeds
+
+        if category == "automod":
+            rows = list(reversed(self.bot.db.list_automod_violations(guild.id, limit)))
+            embeds = []
+            for user_id, reason, created_at in rows:
+                embed = discord.Embed(
+                    description=f"**AutoMod violation:** <@{user_id}>",
+                    color=_COLOR_REMOVE,
+                    timestamp=datetime.datetime.fromtimestamp(created_at, tz=datetime.timezone.utc),
+                )
+                embed.add_field(name="Reason", value=_truncate(reason or "*no reason recorded*", 512), inline=False)
+                embed.set_footer(text=f"Imported from existing automod history - User ID: {user_id}")
+                embeds.append(embed)
+            return embeds
+
+        # members / voice / messages fall back to the generic durable
+        # bot_events audit trail - it doesn't carry message content or full
+        # embeds, just who/where/when, so the import is a plain summary line
+        # rather than a re-creation of the original log embed.
+        event_types_by_category = {
+            "members": ("member.join", "member.leave"),
+            "voice": ("voice.join", "voice.leave"),
+            "messages": ("message.edited", "message.deleted"),
+        }
+        event_types = event_types_by_category.get(category)
+        if event_types is None:
+            return None  # server: no durable history stored for this category at all
+
+        combined: list[tuple[int, str, int | None, int | None, str | None]] = []
+        for event_type in event_types:
+            for created_at, actor_id, target_id, details in self.bot.db.list_recent_events(guild.id, 0, event_type, limit):
+                combined.append((created_at, event_type, actor_id, target_id, details))
+        if not combined:
+            return []
+        combined.sort(key=lambda row: row[0])
+        combined = combined[-limit:]
+
+        _labels = {
+            "member.join": ("Member joined", _COLOR_ADD),
+            "member.leave": ("Member left", _COLOR_REMOVE),
+            "voice.join": ("Joined voice", _COLOR_ADD),
+            "voice.leave": ("Left voice", _COLOR_REMOVE),
+            "message.edited": ("Message edited", _COLOR_EDIT),
+            "message.deleted": ("Message deleted", _COLOR_REMOVE),
+        }
+        embeds = []
+        for created_at, event_type, actor_id, target_id, details in combined:
+            label, color = _labels.get(event_type, (event_type, _COLOR_NEUTRAL))
+            channel_id = None
+            if details:
+                try:
+                    channel_id = json.loads(details).get("channel_id")
+                except (ValueError, AttributeError):
+                    channel_id = None
+            description = f"**{label}**"
+            if actor_id:
+                description += f" - <@{actor_id}>"
+            if channel_id:
+                description += f" in <#{channel_id}>"
+            embed = discord.Embed(description=description, color=color, timestamp=datetime.datetime.fromtimestamp(created_at, tz=datetime.timezone.utc))
+            embed.set_footer(text="Imported from existing activity history - no message content is stored")
+            embeds.append(embed)
+        return embeds
 
     # ---- dispatch helper ----
 

@@ -38,8 +38,6 @@ class Extras(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self._xp_cooldowns = {}
-        self._work_cooldowns = {}
         self.counter_loop.start()
         self.notification_loop.start()
         self.giveaway_loop.start()
@@ -95,11 +93,12 @@ class Extras(commands.Cog):
             return
         if self.db.is_extras_noxp_channel(message.guild.id, message.channel.id):
             return
-        now = time.time()
-        key = (message.guild.id, message.author.id)
-        if now - self._xp_cooldowns.get(key, 0) < XP_COOLDOWN:
+        # Short per-message XP cooldown - fine to lose on a restart, so it
+        # lives in Redis (or the in-memory fallback) rather than SQLite.
+        cooldown_key = f"cooldown:xp:{message.guild.id}:{message.author.id}"
+        if await self.bot.redis.seconds_remaining(cooldown_key) > 0:
             return
-        self._xp_cooldowns[key] = now
+        await self.bot.redis.start_cooldown(cooldown_key, XP_COOLDOWN)
         row = self.db.conn.execute(
             "SELECT xp, level FROM extras_xp WHERE guild_id=? AND user_id=?",
             (message.guild.id, message.author.id),
@@ -231,14 +230,14 @@ class Extras(commands.Cog):
     @utils.toggleable("work")
     async def work(self, interaction: discord.Interaction):
         gid, uid = interaction.guild_id, interaction.user.id
-        now = int(time.time())
-        key = (gid, uid)
-        last = self._work_cooldowns.get(key, 0)
-        if now - last < WORK_COOLDOWN:
-            remaining = WORK_COOLDOWN - (now - last)
+        # Longer cooldown than XP, and worth surviving a restart / being
+        # shared if the bot ever runs sharded - same Redis-backed pattern.
+        cooldown_key = f"cooldown:work:{gid}:{uid}"
+        remaining = await self.bot.redis.seconds_remaining(cooldown_key)
+        if remaining > 0:
             m, s = divmod(remaining, 60)
             return await interaction.response.send_message(f"⏳ You're still on the clock. Try again in **{m}m {s}s**.")
-        self._work_cooldowns[key] = now
+        await self.bot.redis.start_cooldown(cooldown_key, WORK_COOLDOWN)
         bal, _, _ = self._balance(gid, uid)
         earned = random.randint(WORK_MIN, WORK_MAX)
         bal += earned

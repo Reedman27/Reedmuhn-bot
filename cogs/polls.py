@@ -82,6 +82,7 @@ class Polls(commands.Cog, name="Polls"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.poll_close_requests.start()
+        self.bot.register_webui_wake("poll_close", self.poll_close_requests)
 
     def cog_unload(self):
         self.poll_close_requests.cancel()

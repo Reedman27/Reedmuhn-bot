@@ -7,8 +7,47 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - DB_PATH=/app/data/bot.db
       - DEV_GUILD_ID=${DEV_GUILD_ID}
+      - LAVALINK_HOST=lavalink
+      - LAVALINK_PORT=2333
+      - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      - REDIS_URL=redis://redis:6379/0
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:Z
+    depends_on:
+      - lavalink
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: mybot-redis
+    restart: unless-stopped
+    # Cooldowns/rate-limits/automod counters only - nothing here is data you
+    # need to keep forever (that's SQLite's job), but AOF persistence means a
+    # restart doesn't reset everyone's cooldowns/rate limits for no reason.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data:Z
+    expose:
+      - "6379" # only reachable from other containers on this compose network - never publish this port to the host
+
+  lavalink:
+    image: ${LAVALINK_IMAGE:-docker.io/reedman27/reedmuhn-bot-lavalink:latest}
+    build: ./lavalink
+    # Docker/Podman can use the dedicated published image, or build the same
+    # image locally with --build when developing the Lavalink branch.
+    container_name: mybot-lavalink
+    restart: unless-stopped
+    environment:
+      - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      # Lavalink itself is a Java process - give it real headroom (default
+      # is 25% of container memory / 1GB, whichever is lower).
+      - _JAVA_OPTIONS=-Xmx1G
+    volumes:
+      # Persists downloaded plugin jars (youtube-source etc.) between
+      # restarts so they aren't re-fetched from Maven every boot.
+      - ./data/lavalink-plugins:/opt/Lavalink/plugins:Z
+    expose:
+      - "2333" # only reachable from other containers on this compose network - not published to the host
 
   webui:
     build: ./webui
@@ -18,7 +57,10 @@ services:
       - WEBUI_PASSWORD=${WEBUI_PASSWORD}
       - DB_PATH=/app/data/bot.db
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
+      - REDIS_URL=redis://redis:6379/0
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:Z
+    depends_on:
+      - redis
     ports:
       - "8490:8080"

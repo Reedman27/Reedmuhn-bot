@@ -1,0 +1,266 @@
+{
+    "common": {
+        "errors": {
+            "unknown": "⚠️ ¡Algo salió mal al ejecutar el comando! Por favor, intente de nuevo más tarde o únase a nuestro servidor de Discord para obtener más soporte.",
+            "missingIntents": "Lo siento, este comando no se puede ejecutar porque el bot carece de la intención de solicitud requerida: `({0})`."
+        },
+        "status": {
+            "enabled": "habilitado",
+            "disabled": "deshabilitado",
+            "live": "EN VIVO"
+        }
+    },
+    "player": {
+        "errors": {
+            "nodeReconnect": "¡Por favor, inténtelo de nuevo! Después de que el nodo se reconecte.",
+            "noPlaySource": "¡No se puede encontrar ninguna fuente reproducible!",
+            "noPlayer": "No se ha encontrado ningún reproductor en este servidor.",
+            "noTrackPlaying": "Actualmente no hay canciones reproduciéndose.",
+            "noTrackFound": "No se encontraron canciones con esa consulta. Proporcione una URL válida."
+        },
+        "dropdown": {
+            "trackSelect": "Seleccione una canción para saltar a ...",
+            "filterSelect": "Seleccione un filtro para aplicar ..."
+        },
+        "buttons": {
+            "back": "Atrás",
+            "pause": "Pausa",
+            "resume": "Reanudar",
+            "skip": "Saltar",
+            "leave": "Salir",
+            "loopOff": "Apagar",
+            "loopTrack": "Pista",
+            "loopQueue": "Cola",
+            "volumeUp": "Subir Volumen",
+            "volumeDown": "Bajar Volumen",
+            "volumeMute": "Silenciar",
+            "volumeUnmute": "Activar Sonido",
+            "autoPlay": "Reproducción Automática",
+            "shuffle": "Aleatorio",
+            "forward": "Adelante",
+            "rewind": "Atrás",
+            "lyrics": "Letras"
+        },
+        "playback": {
+            "nowplayingDesc": "**Reproduciendo ahora:**\n```{0}```",
+            "nowplayingField": "A continuación:",
+            "nowplayingLink": "Escucha en {0}",
+            "playlistLoad": " 🎶 Se agregó la lista de reproducción {0} con {1} canciones a la cola.",
+            "trackLoad": "Se agregó **[{0}](<{1}>)** de {2} ({3}) para comenzar a reproducir.\n",
+            "trackLoadPos": "Se agregó **[{0}](<{1}>)** de {2} ({3}) a la cola en la posición {4}\n"
+        },
+        "controls": {
+            "pause": {
+                "error": "El reproductor ya está en pausa.",
+                "vote": "{0} ha votado para pausar la canción. [{1}/{2}]",
+                "success": "`{0}` ha pausado el reproductor."
+            },
+            "resume": {
+                "error": "El reproductor no está en pausa.",
+                "vote": "{0} ha votado para reanudar la canción. [{1}/{2}]",
+                "success": "`{0}` ha reanudado el reproductor."
+            },
+            "shuffle": {
+                "error": "Agregue más canciones a la cola antes de barajar.",
+                "vote": "{0} ha votado para barajar la cola. [{1}/{2}]",
+                "success": "La cola ha sido barajada."
+            },
+            "skip": {
+                "error": "No hay canciones para saltar.",
+                "vote": "{0} ha votado para saltar la canción. [{1}/{2}]",
+                "success": "`{0}` ha saltado la canción."
+            },
+            "back": {
+                "vote": "{0} ha votado para volver a la canción anterior. [{1}/{2}]",
+                "success": "`{0}` ha vuelto a la canción anterior."
+            },
+            "leave": {
+                "vote": "{0} ha votado para detener el reproductor. [{1}/{2}]",
+                "success": "`{0}` ha detenido el reproductor."
+            },
+            "seek": "El reproductor se estableció en **{0}**",
+            "repeat": "El modo de repetición se ha establecido en `{0}`",
+            "forward": "Avanzar el reproductor a **{0}**",
+            "rewind": "Rebobinar el reproductor a **{0}**",
+            "replay": "Reproduciendo de nuevo la canción actual.",
+            "autoplay": "El modo de reproducción automática es ahora **{0}**"
+        }
+    },
+    "voice": {
+        "connection": {
+            "noChannel": "No hay canal de voz al que conectarse. Por favor, proporcione uno o únase a uno.",
+            "alreadyConnected": "Ya conectado a un canal de voz.",
+            "noPermission": "¡Lo siento! No tengo permisos para unirme o hablar en su canal de voz.",
+            "notInChannel": "{0}, debes estar en {1} para usar comandos de voz. ¡Vuelve a unirte si estás en voz!",
+            "connect": "Conectado a {0}"
+        },
+        "stageChannel": {
+            "setAnnounceTemplate": "¡Hecho! A partir de ahora, el estado de voz como el que tienes ahora se nombrará según tu plantilla. Deberías verlo actualizarse en unos segundos."
+        }
+    },
+    "permissions": {
+        "noCreatePermission": "¡Lo siento! No tengo permisos para crear un canal de solicitud de canciones.",
+        "missingPosition": "Solo el DJ o los administradores pueden cambiar la posición.",
+        "missingMode": "Solo el DJ o los administradores pueden cambiar el modo de bucle.",
+        "missingQueue": "Solo el DJ o los administradores pueden eliminar una canción de la cola.",
+        "missingAutoPlay": "¡Solo el DJ o los administradores pueden habilitar o deshabilitar el modo de reproducción automática!",
+        "missingFunction": "Solo el DJ o los administradores pueden usar esta función.",
+        "notDj": "No eres el DJ. El DJ actual es {0}.",
+        "djToSelf": "No puedes transferir el rol de DJ a ti mismo o a un bot.",
+        "djNotInChannel": "`{0}` no está en el canal de voz.",
+        "djSwapped": "Has transferido el rol de DJ a `{0}`."
+    },
+    "settings": {
+        "actions": {
+            "languageNotFound": "¡No se encontró paquete de idioma! por favor seleccione un paquete de idioma existente.",
+            "languageChanged": "Cambiado con éxito al paquete de idioma `{0}`.",
+            "prefixSet": "¡Listo! Mi prefijo en tu servidor ahora es `{0}`. Intenta ejecutar `{1}ping` para probarlo.",
+            "djSet": "Establecer el DJ a {0}.",
+            "queueModeSet": "Establecer el modo de cola en `{0}`.",
+            "mode247": "Ahora tienes `{0}` modo 24/7.",
+            "bypassVote": "Ahora tienes `{0}` sistema de votación.",
+            "volumeSet": "Ajustar el volumen a `{0}`%",
+            "controllerToggled": "Ahora tienes `{0}` el controlador de música.",
+            "duplicateTrackToggled": "Ahora tienes `{0}` para evitar que se agreguen pistas duplicadas a la cola.",
+            "controllerMsgToggled": "Ahora tiene `{0}` mensajes del controlador de música.",
+            "silentMsgToggled": "Tienes {0} mensajes silenciosos.",
+            "resetDone": "Reset `{0}` to server defaults.",
+            "resetNotFound": "Nombre de opción inválido. Por favor, use una de las siguientes opciones: {0}"
+        },
+        "menu": "Configuración del servidor | {0}",
+        "basic": {
+            "title": "❤️ Información básica:",
+            "value": "```Prefijo: {0}\nIdioma: {1}\nHabilitar controlador de música: {2}\nRol de DJ: @{3}\nBypass de votación: {4}\n24/7: {5}\nVolumen predeterminado: {6}%\nTiempo de reproducción: {7}```"
+        },
+        "queue": {
+            "title": "🔗 Información de la cola:",
+            "value": "```Modo de cola: {0}\nMáximo de canciones: {1}\nPermitir pistas duplicadas: {2}```"
+        },
+        "voice": {
+            "title": "🎤 Información del estado de voz:"
+        },
+        "permissions": {
+            "title": "✨ Permisos:",
+            "value": "```{0} Administrador\n{1} Administrar servidor\n{2} Administrar canal\n{3} Administrar mensajes```"
+        }
+    },
+    "ping": {
+        "title1": "Información del bot:",
+        "title2": "Información del reproductor:",
+        "field1": "```ID de fragmento: {0}/{1}\nLatencia de fragmento: {2:.3f}s {3}\nRegión: {4}```",
+        "field2": "```Nodo: {0} - {1:.3f}s\nReproductores: {2}\nRegión de voz: {3}```"
+    },
+    "effects": {
+        "added": "plica el efecto `{0}` filtro.",
+        "cleared": "¡Los efectos de sonido se han borrado!",
+        "tagInUse": "¡Este efecto de sonido ya está en uso! Utilice /cleareffect <Tag> para eliminarlo."
+    },
+    "playlist": {
+        "view": {
+            "title": "Todas las listas de reproducción de {0}",
+            "headers": "ID:,Tiempo:,Nombre:,Pistas:",
+            "footer": "Escriba /playlist play [playlist] para agregar la lista de reproducción a la cola.",
+            "detailTitle": "Visor de lista de reproducción",
+            "detailDesc": "```Nombre: {0} [{1}]\nTotal de pistas: {2}\nPropietario: {3}\nTipo: {4}\n```",
+            "permsValue": "📖 Leer: ✓ ✍🏽 Escribir: {0} 🗑️ Eliminar: {1}",
+            "permsValue2": "📖 Leer: {0}",
+            "trackList": "Pistas",
+            "footer2": "Duración total: {0}",
+            "playlistSelect": "Selecciona una lista de reproducción para ver ..."
+        },
+        "errors": {
+            "notFound": "Lista de reproducción [`{0}`] no encontrada. Escriba /playlist view para ver todas sus listas de reproducción.",
+            "noAccess": "¡Lo siento! No está autorizado para acceder a esta lista de reproducción.",
+            "noTrack": "¡Lo siento! No hay pistas en la lista de reproducción [`{0}`].",
+            "notAllowed": "Este comando no está permitido en listas de reproducción vinculadas y compartidas.",
+            "nameOverLimit": "¡Lo siento! El nombre de la lista de reproducción no puede superar los 10 caracteres.",
+            "sameName": "¡Lo siento! Este nombre no puede ser igual que su nuevo nombre.",
+            "deleteDefault": "No está autorizado para eliminar la lista de reproducción predeterminada.",
+            "limitReached": "¡No puede crear más de `{0}` listas de reproducción!",
+            "exists": "La lista de reproducción [`{0}`] ya existe.",
+            "invalidUrl": "Por favor, introduzca un enlace válido de lista de reproducción pública.",
+            "trackLimitReached": "¡Ha alcanzado el límite! Solo puede agregar `{0}` canciones a su lista de reproducción.",
+            "playlistLinkNotAllowed": "No está autorizado para usar enlaces de lista de reproducción.",
+            "streamNotAllowed": "No está autorizado para agregar videos de transmisión a su lista de reproducción.",
+            "positionNotFound": "No se puede encontrar la posición {0} en su lista de reproducción [`{1}`]!",
+            "streaming": "No está autorizado para agregar videos de transmisión a su lista de reproducción.",
+            "track": "Hubo un problema al agregar canciones a la lista de reproducción.",
+            "trackLimited": "¡Ha alcanzado el límite! Solo puede agregar {0} canciones a su lista de reproducción.",
+            "trackRepeated": "¡Ya hay una canción igual en su lista de reproducción!"
+        },
+        "actions": {
+            "play": "Se agregó la lista de reproducción [`{0}`] con `{1}` canciones a la cola.",
+            "removed": "Ha eliminado la lista de reproducción [`{0}`].",
+            "created": "Ha creado una lista de reproducción llamada `{0}`. Escriba /playlist view para obtener más información.",
+            "renamed": "Ha cambiado el nombre de `{0}` a `{1}`.",
+            "trackRemoved": "👋 Se quitó {0} de la lista de reproducción de {1} [`{2}`].",
+            "cleared": "Ha borrado con éxito su lista de reproducción [`{0}`].",
+            "trackAdded": "❤️ Agregado **{0}** a la lista de reproducción de {1} [`{2}`]!"
+        },
+        "sharing": {
+            "sendErrorPlayer": "Lo siento! No puede enviar una invitación a sí mismo.",
+            "sendErrorBot": "Lo siento! No puede enviar una invitación a un bot.",
+            "belongs": "Lo siento! Esta lista de reproducción pertenece a <@{0}>.",
+            "alreadyShared": "Lo siento! Esta lista de reproducción se ha compartido con `{0}`.",
+            "alreadySent": "Lo siento! Ya ha enviado una invitación antes.",
+            "noAccount": "`{0}` no ha creado una cuenta de lista de reproducción.",
+            "invitationSent": "Se ha enviado una invitación a {0}."
+        },
+        "inbox": {
+            "full": "¡Lo siento! La bandeja de entrada de {0} está llena.",
+            "noMessages": "No hay mensajes en su bandeja de entrada."
+        }
+    },
+    "search": {
+        "noLinkSupport": "¡El comando de búsqueda no admite enlaces!",
+        "title": "Consulta de búsqueda: {0}",
+        "desc": "➥ Plataforma: {0} **{1}**\n➥ Resultados: **{2}**\n\n{3}",
+        "wait": "Seleccione la canción que desea agregar a la cola.",
+        "success": "Canción agregada a la cola."
+    },
+    "voting": {
+        "voted": "¡Has votado!"
+    },
+    "time": {
+        "formatError": "Formato de tiempo incorrecto. Ejemplo: 2:42 o 12:39:31",
+        "invalidStartTime": "Tiempo de inicio inválido! El tiempo debe estar entre `00:00` y `{0}`.",
+        "invalidEndTime": "Tiempo de finalización inválido! El tiempo debe estar entre `00:00` y `{0}`."
+    },
+    "lyrics": {
+        "notFound": "No se encontraron letras. Escriba /lyrics <Nombre de la canción> <Autor> para buscar las letras."
+    },
+    "queue": {
+        "management": {
+            "title": "Cola de próximas canciones:",
+            "cleared": "Se borraron todas las canciones de `{0}`",
+            "removed": "Se eliminaron `{0}` canciones de la cola.",
+            "swapped": "Se intercambiaron `{0}` y `{1}`",
+            "moved": "Se movió `{0}` a `{1}`"
+        },
+        "view": {
+            "historyTitle": "Cola de historial:",
+            "title": "Cola de música",
+            "desc": "**Reproduciendo ahora: [Haga clic aquí]({0}) ⮯**\n{1}"
+        },
+        "errors": {
+            "queueFull": "Lo siento, ¡ha alcanzado el máximo de `{0}` canciones en la cola!",
+            "outOfList": "¡Proporcione un índice de pista válido!",
+            "duplicateTrack": "Lo siento, esta canción ya está en la cola."
+        }
+    },
+    "songRequest": {
+        "channelCreated": "¡Se ha creado un canal de solicitudes de canciones ({0})! Puedes empezar a solicitar cualquier canción por nombre o URL en ese canal, sin necesidad de usar el prefijo del bot."
+    },
+    "pagination": {
+        "prev": "Anterior",
+        "next": "Siguiente",
+        "play": "Reproducir",
+        "share": "Compartir",
+        "export": "Exportar",
+        "delete": "Eliminar",
+        "page": {
+            "title": "Ingrese el número de página",
+            "field": "Número de página"
+        }
+    }
+}

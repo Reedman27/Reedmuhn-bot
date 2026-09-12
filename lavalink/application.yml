@@ -1,0 +1,64 @@
+server: # REST and WS server
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  plugins:
+    # The built-in YouTube source in Lavalink is deprecated and no longer
+    # updated, so YouTube playback goes through this plugin instead.
+    # https://github.com/lavalink-devs/youtube-source
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      repository: "https://maven.lavalink.dev/releases"
+
+  server:
+    # Overridable at runtime via the LAVALINK_SERVER_PASSWORD env var - see
+    # docker-compose.yml. Change this from the default before exposing the
+    # port outside your own docker network.
+    password: "youshallnotpass"
+    sources:
+      youtube: false # handled by the youtube-source plugin above instead
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # These are the InnerTube clients youtube-source tries, in order, when
+    # loading a track. YouTube periodically breaks individual clients, so
+    # if playback starts failing, check
+    # https://github.com/lavalink-devs/youtube-source for the current
+    # recommended list before assuming something else is wrong.
+    # TVHTML5EMBEDDED was removed in youtube-plugin 1.18.0 (the version
+    # pinned above, via lavalink/Dockerfile's LAVALINK_VERSION build arg)
+    # and replaced with TVHTML5_SIMPLY - keeping the old name here would be
+    # silently ignored or rejected by the plugin depending on version, so
+    # it's dropped rather than carried forward. Client support shifts often
+    # as YouTube changes its API; check
+    # https://github.com/lavalink-devs/youtube-source for the current
+    # recommended list if playback starts failing.
+    clients:
+      - MUSIC
+      - WEB
+      - TVHTML5_SIMPLY
+
+metrics:
+  prometheus:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO

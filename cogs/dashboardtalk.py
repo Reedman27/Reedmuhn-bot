@@ -20,6 +20,8 @@ LEASE_SECONDS = 120
 class DashboardTalk(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bot.register_webui_wake("outbound_message", self.poll_outbound_messages)
+        bot.register_webui_wake("message_delete", self.poll_delete_requests)
         self.poll_outbound_messages.start()
         self.poll_delete_requests.start()
 
