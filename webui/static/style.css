@@ -24,6 +24,20 @@
    duplicating any color value in JS - see THEMES in theme.js for the
    id/label/group list (text only, no colors) that builds the menu. */
 
+[data-theme="reedmuhn-pink"], [data-theme-preview="reedmuhn-pink"] {
+    --bg: #181825;
+    --card: #313244;
+    --sidebar: #11111b;
+    --text: #cdd6f4;
+    --muted: #a6adc8;
+    --accent: #e879f9;
+    --accent-dim: #45475a;
+    --accent-contrast: #181825;
+    --danger: #f38ba8;
+    --border: #45475a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
 [data-theme="latte"], [data-theme-preview="latte"] {
     --bg: #eff1f5;
     --card: #ffffff;
@@ -729,6 +743,12 @@ main {
 }
 
 @media (max-width: 700px) {
+    /* Must match (or exceed) the specificity of the desktop
+       html[data-layout="..."] .shell rules above, or this mobile override
+       loses to them and the two-column desktop grid keeps rendering at any
+       screen width - which is exactly what was happening before this fix. */
+    html[data-layout="sidebar"] .shell,
+    html[data-layout="topnav"] .shell,
     .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
 
     .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }

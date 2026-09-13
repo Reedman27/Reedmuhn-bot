@@ -38,6 +38,9 @@
             { id: "frappe", label: "Catppuccin Frappé" },
             { id: "latte", label: "Catppuccin Latte" },
         ] },
+        { group: "ReedMuhn", items: [
+            { id: "reedmuhn-pink", label: "ReedMuhn Pink" },
+        ] },
         { group: "Adriatic", items: [
             { id: "adriatic", label: "Adriatic" },
             { id: "adriatic-light", label: "Adriatic Light" },
