@@ -173,6 +173,12 @@ intents.invites = True  # needed for on_invite_create/on_invite_delete (invite t
 class _NullMusicIPC:
     """No-op IPC adapter used when ReedMuhn does not run Vocard's optional web controller."""
 
+    def __init__(self):
+        # voicelink.Player.is_ipc_connected checks self._ipc_client._is_connected
+        # directly, so this stub needs the attribute even though it never
+        # actually connects anywhere.
+        self._is_connected = False
+
     async def send(self, payload):
         return None
 

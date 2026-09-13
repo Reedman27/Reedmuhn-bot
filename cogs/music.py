@@ -135,15 +135,37 @@ class Music(commands.Cog, name="Music"):
         NodePool._nodes.clear()
 
     async def _connect_node(self):
-        try:
-            await self.bot.wait_until_ready()
-            node_cfg = Config().nodes["DEFAULT"]
-            await NodePool.create_node(bot=self.bot, **node_cfg, logger=logging.getLogger("music.lavalink"))
-            logger.info("Connected to Lavalink node %s:%s", node_cfg["host"], node_cfg["port"])
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Unable to connect to Lavalink; /music will report the node as unavailable")
+        await self.bot.wait_until_ready()
+        node_cfg = Config().nodes["DEFAULT"]
+        # Lavalink (a separate container/process) can still be mid-boot when
+        # the bot comes up - Undertow doesn't open the port until a few
+        # seconds after the JVM starts. A single failed attempt here used to
+        # be permanent for the rest of the process's lifetime (/music would
+        # report "no nodes available" until the whole bot was restarted).
+        # Retry a handful of times with backoff to ride out that race.
+        max_attempts = 5
+        delay = 2
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await NodePool.create_node(bot=self.bot, **node_cfg, logger=logging.getLogger("music.lavalink"))
+                logger.info("Connected to Lavalink node %s:%s", node_cfg["host"], node_cfg["port"])
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if attempt == max_attempts:
+                    logger.exception(
+                        "Unable to connect to Lavalink after %d attempts; "
+                        "/music will report the node as unavailable until the bot restarts",
+                        max_attempts,
+                    )
+                    return
+                logger.warning(
+                    "Lavalink connection attempt %d/%d failed, retrying in %ds",
+                    attempt, max_attempts, delay,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
 
     @staticmethod
     def _guild(interaction: discord.Interaction) -> discord.Guild:
