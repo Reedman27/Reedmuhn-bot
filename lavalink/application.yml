@@ -51,8 +51,33 @@ plugins:
     # recommended list if playback starts failing.
     clients:
       - MUSIC
+      - TV
       - WEB
       - TVHTML5_SIMPLY
+    # WEB and TVHTML5_SIMPLY are the two clients YouTube's bot-detection has
+    # been hitting ("no supported audio streams" / "Sign in to confirm
+    # you're not a bot" - see the oauth block below for the actual fix).
+    # TV is the client that benefits from OAuth (see the table at
+    # https://github.com/lavalink-devs/youtube-source#available-clients),
+    # so it's added ahead of them - once oauth.enabled is true and a
+    # refreshToken is set below, TV should carry most playback.
+    oauth:
+      # Bare minimum to turn OAuth on. The first time this runs with no
+      # refreshToken set, youtube-source starts an OAuth device-code flow
+      # and prints a URL + code to THIS CONTAINER'S LOGS (not the bot's) -
+      # watch it with `podman logs -f mybot-lavalink` right after a
+      # redeploy. Open the URL on any device, sign in with a YouTube
+      # account (use a burner, not your main one - see the plugin's own
+      # warning at the link above), and enter the code.
+      #
+      # Once that succeeds, the SAME container logs will print a
+      # refreshToken. Copy it into the refreshToken line below, commit,
+      # and redeploy - that skips the device-code flow on every future
+      # restart. Until refreshToken is set here, every container restart
+      # will demand the flow be redone by hand, which is not something you
+      # want to rely on for an always-on bot.
+      enabled: true
+      # refreshToken: "paste the refresh token from the lavalink container logs here once you have it"
 
 metrics:
   prometheus:
@@ -62,3 +87,8 @@ logging:
   level:
     root: INFO
     lavalink: INFO
+    # root: INFO should already cover this, but the plugin's own docs call
+    # this out explicitly as needed to see the OAuth device-code URL/code
+    # and the refreshToken it prints afterwards, so it's set here too
+    # rather than relying on the root default.
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
