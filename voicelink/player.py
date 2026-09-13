@@ -86,7 +86,9 @@ async def connect_channel(ctx: Union[commands.Context, Interaction], channel: Vo
         cls=Player(
             ctx.bot if isinstance(ctx, commands.Context) else ctx.client,
             channel, ctx, settings
-        ))
+        ),
+        self_deaf=bool(settings.get("self_deaf", False)),
+    )
 
     if player.volume != 100:
         await player.set_volume(player.volume)
@@ -558,15 +560,55 @@ class Player(VoiceProtocol):
             
         return await self._node.get_tracks(query, requester=requester, search_type=search_type)
 
-    async def connect(self, *, timeout: float, reconnect: bool, self_deaf: bool = True, self_mute: bool = False):
+    async def connect(self, *, timeout: float, reconnect: bool, self_deaf: bool = False, self_mute: bool = False):
         """Connects the player to a voice channel."""
-        await self.guild.change_voice_state(channel=self.channel, self_deaf=True, self_mute=self_mute)
+        # Was previously hardcoded to self_deaf=True here regardless of what
+        # was passed in - self-deafening a music bot stops it from being
+        # heard by the rest of the channel, not just from hearing others, so
+        # this silently broke playback for anyone relying on the default.
+        # Now honors whatever the caller (see connect_channel below, which
+        # reads the guild's configured preference) actually asked for.
+        await self.guild.change_voice_state(channel=self.channel, self_deaf=self_deaf, self_mute=self_mute)
         self._node._players[self.guild.id] = self
         self._is_connected = True
 
         if self.channel:
             self._logger.debug(f"Player in {self.guild.name}({self.guild.id}) has been connected to {self.channel.name}({self.channel.id}).")
             
+    async def enforce_self_deaf_setting(self):
+        """Re-applies the guild's configured self-deafen preference to this
+        player's live voice connection.
+
+        Called on a periodic loop (see Music._voice_state_check_loop in
+        cogs/music.py) rather than only at connect time, so a stale
+        in-memory setting from before a webui change, a reconnect, or any
+        other drift can't silently leave the bot self-deafened (which stops
+        the rest of the channel from hearing playback) or leave it out of
+        sync with whatever the guild has configured.
+        """
+        if not self.channel or not self._is_connected:
+            return
+
+        # force_refresh: this player's own self.settings snapshot is loaded
+        # once at connect time and never updated afterwards, so a setting
+        # changed via the webui mid-session wouldn't otherwise be picked up
+        # until the bot reconnects to voice.
+        settings = await SQLiteMusicDB.get_settings(self.guild.id, deep_copy=False, force_refresh=True)
+        desired = bool(settings.get("self_deaf", False))
+        self.settings["self_deaf"] = desired
+
+        voice_state = self.guild.me.voice if self.guild.me else None
+        if voice_state is None:
+            return
+
+        if bool(voice_state.self_deaf) != desired:
+            await self.guild.change_voice_state(
+                channel=self.channel, self_deaf=desired, self_mute=bool(voice_state.self_mute)
+            )
+            self._logger.info(
+                f"Corrected self-deafen state for guild {self.guild.id} to {desired}."
+            )
+
     async def stop(self):
         """Stops the currently playing track."""
         self._current = None

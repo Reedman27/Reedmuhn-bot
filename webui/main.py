@@ -1331,6 +1331,7 @@ async def music_page(request: Request, guild_id: int):
         volume=settings.get("volume", 100),
         dj_role_id=settings.get("dj"),
         always_on=bool(settings.get("24/7", False)),
+        self_deaf=bool(settings.get("self_deaf", False)),
         roles=db.list_bot_roles(guild_id),
     )
 
@@ -1339,12 +1340,16 @@ async def music_page(request: Request, guild_id: int):
 async def music_save(
     request: Request, guild_id: int,
     volume: int = Form(100), dj_role_id: str = Form(""), always_on: str = Form(""),
+    self_deaf: str = Form(""),
 ):
     if (r := await require_auth(request)):
         return r
     volume = max(1, min(150, volume))
     dj_id = int(dj_role_id) if dj_role_id else None
-    db.update_music_settings(guild_id, volume=volume, dj=dj_id, **{"24/7": always_on == "on"})
+    db.update_music_settings(
+        guild_id, volume=volume, dj=dj_id,
+        **{"24/7": always_on == "on"}, self_deaf=(self_deaf == "on"),
+    )
     return RedirectResponse(f"/guild/{guild_id}/music", status_code=303)
 
 

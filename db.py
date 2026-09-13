@@ -34,6 +34,13 @@ class Db:
         self._create_tables()
 
     def _create_tables(self) -> None:
+        # Shared with voicelink.SQLiteMusicDB (same file, same JSON-blob
+        # format/table name) - the bot process normally creates this table
+        # itself on startup, but the webui process can read/write it too and
+        # may start up first, so it needs to be able to create it as well.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS vocard_settings (guild_id INTEGER PRIMARY KEY, data TEXT NOT NULL)"
+        )
         # Extras: XP/levels, economy, giveaways, live counters and notifications.
         self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_xp (
             guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
@@ -5248,6 +5255,25 @@ class Db:
         cur = self.conn.execute("DELETE FROM ai_channel_messages WHERE guild_id=?", (guild_id,))
         self.conn.commit()
         return int(cur.rowcount)
+
+    # ---- music (shared vocard_settings table/format with voicelink.SQLiteMusicDB) ----
+    # get_music_settings/update_music_settings didn't previously exist at
+    # all, even though the /guild/{id}/music webui page already called them
+    # - that page has been crashing with an AttributeError on every visit.
+    def get_music_settings(self, guild_id: int) -> dict:
+        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def update_music_settings(self, guild_id: int, **fields) -> None:
+        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        settings = json.loads(row[0]) if row else {"_id": guild_id}
+        settings.update(fields)
+        self.conn.execute(
+            "INSERT INTO vocard_settings (guild_id, data) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET data = excluded.data",
+            (guild_id, json.dumps(settings)),
+        )
+        self.conn.commit()
 
     # ---- per-command toggles ----
     def is_command_enabled(self, guild_id: int, command_name: str) -> bool:

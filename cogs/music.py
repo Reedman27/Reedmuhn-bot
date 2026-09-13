@@ -112,6 +112,7 @@ class Music(commands.Cog, name="Music"):
         cleanup_interval = Config().timer_settings.get("cache_cleanup", 43200)
         self._cache_cleanup_loop.change_interval(seconds=cleanup_interval)
         self._cache_cleanup_loop.start()
+        self._voice_state_check_loop.start()
         self._ready = True
 
     @tasks.loop(hours=12)
@@ -122,8 +123,28 @@ class Music(commands.Cog, name="Music"):
     async def _before_cache_cleanup_loop(self):
         await self.bot.wait_until_ready()
 
+    @tasks.loop(seconds=30)
+    async def _voice_state_check_loop(self):
+        # Continuously re-applies each guild's configured self-deafen
+        # preference to any active voice connection, so it can't silently
+        # drift out of sync - whether from a webui toggle after the player
+        # already connected, a voice reconnect, or anything else changing
+        # the bot's own voice state underneath it.
+        for node in list(NodePool._nodes.values()):
+            for player in list(node.players.values()):
+                try:
+                    await player.enforce_self_deaf_setting()
+                except Exception:
+                    guild_id = player.guild.id if player.guild else "?"
+                    logger.exception("Failed to enforce self-deafen setting for guild %s", guild_id)
+
+    @_voice_state_check_loop.before_loop
+    async def _before_voice_state_check_loop(self):
+        await self.bot.wait_until_ready()
+
     async def cog_unload(self):
         self._cache_cleanup_loop.cancel()
+        self._voice_state_check_loop.cancel()
         if self._node_task:
             self._node_task.cancel()
         for node in list(NodePool._nodes.values()):

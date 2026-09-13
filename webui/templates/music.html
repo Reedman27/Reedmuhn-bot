@@ -9,6 +9,8 @@
 <label>DJ role<select name="dj_role_id"><option value="">No DJ role (anyone can control playback)</option>{% for id,name,pos in roles %}<option value="{{ id }}" {% if id==dj_role_id %}selected{% endif %}>@{{ name }}</option>{% endfor %}</select></label>
 <p class="muted">When a DJ role is set, only members with that role (or Manage Server) can skip, stop, or change the queue for others.</p>
 <label><input type="checkbox" name="always_on" value="on" {% if always_on %}checked{% endif %}> Stay in voice 24/7 (don't leave when the queue empties or the channel is empty)</label>
+<label><input type="checkbox" name="self_deaf" value="on" {% if self_deaf %}checked{% endif %}> Self-deafen in voice</label>
+<p class="muted">Off by default. When on, the bot re-applies this on a short interval, so nothing (a reconnect, a Discord voice-state change, etc.) can silently leave it stuck deafened or un-deafened out of sync with this setting.</p>
 <button type="submit">Save Music Settings</button>
 </form>
 </section>
