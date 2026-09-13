@@ -240,6 +240,53 @@ defaults are set via optional environment variables in `.env`:
 | `MUSIC_MAX_TRACKS` | `500` | Max tracks per saved playlist |
 | `MUSIC_INACTIVE_CLEANUP` | `600` | Seconds of inactivity before the bot leaves an idle voice channel |
 
+Self-deafen (whether the bot joins voice channels deafened) is **off by
+default** and is toggled per-server from the same Music dashboard page, not
+from `.env`. A background loop re-applies the saved setting every 30 seconds,
+so it self-corrects if something else changes the bot's voice state.
+
+### Troubleshooting: no audio / "Sign in to confirm you're not a bot"
+
+YouTube periodically tightens its bot detection, and Lavalink's
+[`youtube-source`](https://github.com/lavalink-devs/youtube-source) plugin
+(configured in `lavalink/application.yml`) is what has to keep up. If
+`/music play` connects to voice fine but nothing plays, check the Lavalink
+container's logs for errors like `AllClientsFailedException`, `Sign in to
+confirm you're not a bot`, or `No supported audio streams available`:
+
+```bash
+podman logs mybot-lavalink        # or: docker compose logs lavalink
+```
+
+That's this issue, not a bug in ReedMuhn's own code. Fixes, roughly in order
+of effort:
+
+1. **Update the client list.** YouTube breaks individual InnerTube clients
+   over time; check the plugin's own
+   [client table](https://github.com/lavalink-devs/youtube-source#available-clients)
+   for the current recommended set and update `plugins.youtube.clients` in
+   `lavalink/application.yml`.
+2. **Enable OAuth** — the most reliable fix once client-list updates alone
+   stop helping. Under `plugins.youtube` in `lavalink/application.yml`:
+   ```yaml
+   oauth:
+     enabled: true
+     # refreshToken: ""   # add this once you have one - see below
+   ```
+   Redeploy, then watch `podman logs -f mybot-lavalink` for a Google
+   device-login URL and a short code (this needs
+   `logging.level.dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO`,
+   already set in the shipped config). Open that URL, sign in with a **burner
+   YouTube account, not your main one** — the plugin's own docs warn this can
+   get an account rate-limited or banned — and enter the code. The same log
+   stream then prints a `refreshToken`; paste it into the `refreshToken:`
+   line above and redeploy once more. Without a saved `refreshToken`, every
+   container restart demands the device flow be redone by hand.
+3. **poToken** is a lighter, no-login alternative that only helps the
+   `WEB`/`WEBEMBEDDED` clients and needs periodic regeneration — see the
+   plugin's [poToken docs](https://github.com/lavalink-devs/youtube-source#using-a-potoken)
+   if OAuth isn't an option for you.
+
 ### Credit
 
 The project gives explicit credit to Vocard Development / ChocoMeow (MIT) and
@@ -258,6 +305,26 @@ The GitHub Actions workflow `.github/workflows/lavalink-publish.yml` is intended
 for a dedicated `lavalink` branch. Changes under `lavalink/` on that branch
 publish only the Lavalink image. The normal `main` workflow publishes the bot
 and WebUI images.
+
+`lavalink/application.yml` and `lavalink/Dockerfile` are baked into the image
+at build time — there's no config file sitting on the host to hot-edit. Two
+ways to change it:
+
+- **Test locally first, without publishing anything.** From your clone, with
+  your edit already made to `lavalink/application.yml`:
+  ```bash
+  podman build -t docker.io/<your-dockerhub-user>/reedmuhn-bot:lavalink ./lavalink
+  podman-compose up -d lavalink   # or: docker compose up -d lavalink
+  ```
+  This only replaces your local image cache — nothing is pushed to Docker Hub
+  or Git, so it can't affect anyone else. Just don't re-run your normal
+  update script/`compose pull` afterwards, since that will pull the published
+  image and overwrite your local one.
+- **Publish for real, once you're confident.** Push the change to the
+  `lavalink` branch (it doesn't need to be merged into `main`) to trigger the
+  workflow above. This rebuilds only the `:lavalink` tag — the `:bot` and
+  `:webui` images are untouched — but it's still the one shared `:lavalink`
+  tag, so anyone else pulling it will get your change on their next update.
 
 # ⚡ Redis (fast/temporary state)
 
