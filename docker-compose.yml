@@ -1,5 +1,6 @@
 services:
   discord-bot:
+    image: ${DOCKERHUB_USERNAME:-reedman27}/reedmuhn-bot:bot
     build: .
     container_name: mybot
     restart: unless-stopped
@@ -51,6 +52,7 @@ services:
       - "2333" # only reachable from other containers on this compose network - not published to the host
 
   webui:
+    image: ${DOCKERHUB_USERNAME:-reedman27}/reedmuhn-bot:webui
     build: ./webui
     container_name: mybot-webui
     restart: unless-stopped

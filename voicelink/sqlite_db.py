@@ -173,7 +173,12 @@ class SQLiteMusicDB:
 
     @classmethod
     async def get_settings(cls, guild_id: int, *, deep_copy: bool = True, force_refresh: bool = False) -> Dict[str, Any]:
-        if force_refresh or guild_id not in cls._settings_buffer:
+        now = time.time()
+        cache_fresh = (
+            guild_id in cls._settings_buffer
+            and now - cls._last_access.get(guild_id, 0) <= cls._CACHE_TTL
+        )
+        if force_refresh or not cache_fresh:
             row = cls._conn.execute("SELECT data FROM vocard_settings WHERE guild_id = ?", (guild_id,)).fetchone()
             if row is None:
                 settings = {"_id": guild_id}
@@ -212,7 +217,12 @@ class SQLiteMusicDB:
 
     @classmethod
     async def get_user(cls, user_id: int, *, d_type: Optional[str] = None, need_copy: bool = True, force_refresh: bool = False) -> Dict[str, Any]:
-        if force_refresh or user_id not in cls._users_buffer:
+        now = time.time()
+        cache_fresh = (
+            user_id in cls._users_buffer
+            and now - cls._last_access.get(user_id, 0) <= cls._CACHE_TTL
+        )
+        if force_refresh or not cache_fresh:
             row = cls._conn.execute("SELECT data FROM vocard_users WHERE user_id = ?", (user_id,)).fetchone()
             if row is None:
                 user = {**copy.deepcopy(cls._user_base), "_id": user_id}
