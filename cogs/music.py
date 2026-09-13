@@ -94,7 +94,14 @@ class Music(commands.Cog, name="Music"):
             },
         }
         Config(settings)
-        if not NodePool.nodes:
+        # NodePool.nodes is an instance @property (see voicelink/pool.py) -
+        # accessed on the class itself like this, it returns the property
+        # descriptor object, not the actual dict, and a property object is
+        # always truthy. That made this check permanently False, so the
+        # Lavalink connection below was never actually attempted on any
+        # startup. NodePool._nodes is the real underlying dict and correctly
+        # reflects whether a node has been registered yet.
+        if not NodePool._nodes:
             self._node_task = asyncio.create_task(self._connect_node())
         # timer_settings.cache_cleanup was already exposed by Config but
         # nothing ever called SQLiteMusicDB.cleanup_cache() on a schedule -
@@ -119,7 +126,7 @@ class Music(commands.Cog, name="Music"):
         self._cache_cleanup_loop.cancel()
         if self._node_task:
             self._node_task.cancel()
-        for node in list(NodePool.nodes.values()):
+        for node in list(NodePool._nodes.values()):
             for player in list(node.players.values()):
                 try:
                     await player.destroy()
