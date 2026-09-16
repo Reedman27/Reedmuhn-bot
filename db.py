@@ -12,6 +12,16 @@ from typing import Optional
 
 logger = logging.getLogger("db")
 
+# Default counting milestone reaction emoji, ported from the reference
+# count-bot's specialEmojis dict. Per-guild copies of this live in the
+# counting.milestone_emojis JSON column and can be edited via the WebUI.
+DEFAULT_MILESTONE_EMOJIS = {
+    "67": "😒",
+    "100": "💯",
+    "1234": "🔢",
+    "2024": "🐋",
+}
+
 
 class Db:
     def __init__(self, path: str = "bot.db"):
@@ -940,8 +950,10 @@ class Db:
                 last_user_id INTEGER,
                 high_score INTEGER NOT NULL DEFAULT 0,
                 save_milestone INTEGER NOT NULL DEFAULT 50,
-                max_saves INTEGER NOT NULL DEFAULT 3
-            )"""
+                max_saves INTEGER NOT NULL DEFAULT 3,
+                high_score_alerts INTEGER NOT NULL DEFAULT 0,
+                milestone_emojis TEXT NOT NULL DEFAULT ('{default_emojis}')
+            )""".format(default_emojis=json.dumps(DEFAULT_MILESTONE_EMOJIS))
         )
         # counting predates save_milestone/max_saves - add them for anyone
         # upgrading from an older db without wiping their data.
@@ -952,6 +964,19 @@ class Db:
             self.conn.execute("ALTER TABLE counting ADD COLUMN max_saves INTEGER NOT NULL DEFAULT 3")
         if "high_score_alerts" not in counting_cols:
             self.conn.execute("ALTER TABLE counting ADD COLUMN high_score_alerts INTEGER NOT NULL DEFAULT 0")
+        if "milestone_emojis" not in counting_cols:
+            # Bonus reaction emoji on specific numbers, ported from the
+            # reference count-bot's specialEmojis dict (67/100/1234/2024) -
+            # purely cosmetic/fun, doesn't affect saves or high score.
+            # Stored as a JSON object {"67": "😒", ...} so it's editable
+            # per-guild from the WebUI instead of being hardcoded.
+            self.conn.execute(
+                "ALTER TABLE counting ADD COLUMN milestone_emojis TEXT NOT NULL DEFAULT '{}'"
+            )
+            self.conn.execute(
+                "UPDATE counting SET milestone_emojis = ? WHERE milestone_emojis = '{}'",
+                (json.dumps(DEFAULT_MILESTONE_EMOJIS),),
+            )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS counting_users (
                 guild_id INTEGER NOT NULL,
@@ -2556,13 +2581,17 @@ class Db:
     def get_counting(self, guild_id: int) -> Optional[dict]:
         cur = self.conn.execute(
             """SELECT channel_id, current_number, last_user_id, high_score, save_milestone, max_saves,
-                      high_score_alerts
+                      high_score_alerts, milestone_emojis
                FROM counting WHERE guild_id = ?""",
             (guild_id,),
         )
         row = cur.fetchone()
         if row is None:
             return None
+        try:
+            milestone_emojis = json.loads(row[7]) if row[7] else {}
+        except (TypeError, ValueError):
+            milestone_emojis = {}
         return {
             "channel_id": row[0],
             "current_number": row[1],
@@ -2571,7 +2600,26 @@ class Db:
             "save_milestone": row[4],
             "max_saves": row[5],
             "high_score_alerts": bool(row[6]),
+            "milestone_emojis": milestone_emojis,
         }
+
+    def set_milestone_emoji(self, guild_id: int, number: int, emoji: Optional[str]) -> dict:
+        """Adds/updates a milestone reaction emoji, or removes it if emoji is
+        None/empty. Returns the resulting milestone_emojis dict."""
+        state = self.get_counting(guild_id)
+        milestones = dict(state["milestone_emojis"]) if state else {}
+        key = str(number)
+        if emoji:
+            milestones[key] = emoji
+        else:
+            milestones.pop(key, None)
+        self.conn.execute(
+            """INSERT INTO counting (guild_id, channel_id, milestone_emojis) VALUES (?, 0, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET milestone_emojis = excluded.milestone_emojis""",
+            (guild_id, json.dumps(milestones)),
+        )
+        self.conn.commit()
+        return milestones
 
     def set_high_score_alerts(self, guild_id: int, enabled: bool) -> None:
         self.conn.execute(

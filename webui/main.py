@@ -685,7 +685,12 @@ async def delete_birthday(request: Request, guild_id: int, user_id: int = Form(.
 async def counting_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
-    return render(request, "counting.html", guild_id, "counting", counting=db.get_counting(guild_id),
+    counting = db.get_counting(guild_id)
+    sorted_milestones = (
+        sorted(counting["milestone_emojis"].items(), key=lambda kv: int(kv[0])) if counting else []
+    )
+    return render(request, "counting.html", guild_id, "counting", counting=counting,
+                  sorted_milestones=sorted_milestones,
                   text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
 
 
@@ -714,6 +719,29 @@ async def save_counting_highscorealerts(request: Request, guild_id: int, enabled
     if (r := await require_auth(request)):
         return r
     db.set_high_score_alerts(guild_id, enabled == "on")
+    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
+
+
+@app.post("/guild/{guild_id}/counting/milestones/add")
+async def add_counting_milestone(request: Request, guild_id: int, number: int = Form(...), emoji: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    emoji = emoji.strip()
+    if not 1 <= number <= 1_000_000_000 or not emoji:
+        return RedirectResponse(f"/guild/{guild_id}/counting?error=invalid", status_code=303)
+    db.set_milestone_emoji(guild_id, number, emoji)
+    db.record_bot_event("counting.milestone_emoji", guild_id, None, None,
+                         f"number={number} emoji={emoji!r}", source="dashboard_counting")
+    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
+
+
+@app.post("/guild/{guild_id}/counting/milestones/remove")
+async def remove_counting_milestone(request: Request, guild_id: int, number: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.set_milestone_emoji(guild_id, number, None)
+    db.record_bot_event("counting.milestone_emoji", guild_id, None, None,
+                         f"number={number} emoji=None", source="dashboard_counting")
     return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
 
 
