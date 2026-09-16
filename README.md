@@ -291,8 +291,9 @@ of effort:
 
 The project gives explicit credit to Vocard Development / ChocoMeow (MIT) and
 keeps the original Vocard license. DingoLingo is credited as a historical GPLv3
-reference for music-bot design; it is not a runtime dependency. See
-`THIRD_PARTY_NOTICES.md`.
+reference for music-bot design; it is not a runtime dependency. The counting
+game (`/counting`) is modeled on count-bot (AGPL-3.0); ReedMuhn is itself
+AGPL-3.0, so no relicensing is needed. See `THIRD_PARTY_NOTICES.md`.
 
 ### Lavalink image
 

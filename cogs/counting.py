@@ -5,11 +5,18 @@ and it resets to 0. Tracks each guild's all-time high score.
 Numbers can be plain integers or arithmetic expressions (e.g. '7*6' for
 42) - both go through utils.safe_eval so nothing unsafe ever runs.
 
-Saves: post the wrong number and, if you've banked a save (earned by
-hitting a personal correct-count milestone), it's spent automatically to
-forgive the mistake instead of resetting the count. Saves only cover
-wrong numbers, not counting twice in a row - that's a distinct rule and
-resets regardless of saves, same as the reference bot this was modeled on.
+Saves: post the wrong number, or count twice in a row, and if you've
+banked a save (earned by hitting a personal correct-count milestone) it's
+spent automatically to forgive the mistake instead of resetting the
+count. Both miscount types go through the same save-eligible path - the
+reference count-bot's on_message/fail() doesn't special-case counting
+twice in a row either, it's just another way to fail the "value != the
+expected next number" check (see THIRD_PARTY_NOTICES.md).
+
+Milestone emoji: certain numbers (67/100/1234/2024 by default, ported
+from the reference count-bot) get a bonus reaction on top of the usual
+✅ when someone hits them - purely cosmetic, configurable per-guild via
+/counting milestones or the WebUI.
 """
 import asyncio
 
@@ -123,6 +130,32 @@ class Counting(commands.Cog):
             f"Saves are now earned every **{milestone}** correct counts, capped at **{max_saves}** banked."
         )
 
+    @counting.command(name="milestones", description="Set or clear a bonus reaction emoji for a specific count")
+    @app_commands.describe(
+        number="The count to react to (e.g. 100)",
+        emoji="Emoji to react with, or leave blank to remove this milestone",
+    )
+    @manager_or_permission("manage_guild")
+    async def milestones(self, interaction: discord.Interaction, number: int, emoji: str = None):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        if number < 1:
+            await interaction.response.send_message("Number must be at least 1.", ephemeral=True)
+            return
+
+        result = self.bot.db.set_milestone_emoji(interaction.guild.id, number, emoji)
+        if emoji:
+            await interaction.response.send_message(
+                f"Hitting **{number}** will now also get a {emoji} reaction."
+            )
+        else:
+            await interaction.response.send_message(f"Removed the bonus reaction for **{number}**.")
+        self.bot.db.record_bot_event(
+            "counting.milestone_emoji", interaction.guild.id, interaction.user.id, None,
+            f"number={number} emoji={emoji!r} total={len(result)}",
+        )
+
     @counting.command(name="highscorealerts", description="Toggle the '🏆 new high score!' announcement")
     @app_commands.describe(enabled="Whether to announce it in the counting channel when a new high score is hit")
     @manager_or_permission("manage_guild")
@@ -174,48 +207,69 @@ class Counting(commands.Cog):
 
             expected = state["current_number"] + 1
 
-            if message.author.id == state["last_user_id"]:
-                # Saves deliberately don't cover this - counting twice in a row
-                # is a distinct rule violation, not a miscount.
-                await message.add_reaction("❌")
+            # count-bot rule: posting again right after your own last
+            # correct count - even if the number you post IS the right
+            # one - counts as a miscount. The reference bot checks this
+            # before it even looks at whether the value is correct, so a
+            # double-post never reaches the success path below.
+            double_post = message.author.id == state["last_user_id"]
+
+            if not double_post and value == expected:
+                await message.add_reaction("✅")
+                self.bot.db.advance_count(message.guild.id, expected, message.author.id)
+
+                # Bonus cosmetic reaction on configured milestone numbers -
+                # doesn't affect saves/high score, just a fun extra, ported
+                # from the reference count-bot's specialEmojis.
+                milestone_emoji = state["milestone_emojis"].get(str(expected))
+                if milestone_emoji:
+                    try:
+                        await message.add_reaction(milestone_emoji)
+                    except discord.HTTPException:
+                        pass  # invalid/unavailable emoji (e.g. a custom emoji from another server) - skip silently
+
+                _, _, earned_save = self.bot.db.record_correct_count(
+                    message.guild.id, message.author.id, state["save_milestone"], state["max_saves"]
+                )
+                if earned_save:
+                    await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
+
+                # Off by default (it used to fire on every single count once past
+                # the old record, which got noisy fast) - opt back in per-server
+                # with /highscorealerts on, or via the WebUI toggle.
+                if state["high_score_alerts"] and expected > state["high_score"] > 0:
+                    await message.channel.send(f"🏆 New high score: **{expected}**!")
+                return
+
+            # Miscount - either a wrong number, or a double-post (see above).
+            # count-bot special-cases a miscount at 0: nothing to lose yet,
+            # so it's just a nudge, not a "reset" and no save is spent.
+            if state["current_number"] == 0:
+                await message.add_reaction("⚠️")
+                await message.channel.send("The next number is **1**.")
+                return
+
+            user_stats = self.bot.db.get_user_counting_stats(message.guild.id, message.author.id)
+            if user_stats["saves"] > 0:
+                remaining = self.bot.db.use_save(message.guild.id, message.author.id)
+                await message.add_reaction("🛡️")
+                reason = "counting twice in a row" if double_post else f"wrong number (expected **{expected}**)"
+                await message.channel.send(
+                    f"Save used! You have {remaining} save(s) left. "
+                    f"({reason.capitalize()}) Still on **{state['current_number']}** - next up: **{expected}**."
+                )
+                return
+
+            await message.add_reaction("❌")
+            if double_post:
                 await message.channel.send(
                     f"{message.author.mention} you can't count twice in a row! Back to **0**. Next up: **1**."
                 )
-                self.bot.db.reset_count(message.guild.id)
-                return
-
-            if value != expected:
-                user_stats = self.bot.db.get_user_counting_stats(message.guild.id, message.author.id)
-                if user_stats["saves"] > 0:
-                    remaining = self.bot.db.use_save(message.guild.id, message.author.id)
-                    await message.add_reaction("🛡️")
-                    await message.channel.send(
-                        f"Save used! You have {remaining} save(s) left. "
-                        f"Still on **{state['current_number']}** - next up: **{expected}**."
-                    )
-                    return
-
-                await message.add_reaction("❌")
+            else:
                 await message.channel.send(
                     f"{message.author.mention} wrong number! Expected **{expected}**. Back to **0**. Next up: **1**."
                 )
-                self.bot.db.reset_count(message.guild.id)
-                return
-
-            await message.add_reaction("✅")
-            self.bot.db.advance_count(message.guild.id, expected, message.author.id)
-
-            _, _, earned_save = self.bot.db.record_correct_count(
-                message.guild.id, message.author.id, state["save_milestone"], state["max_saves"]
-            )
-            if earned_save:
-                await message.channel.send(f"🛡️ {message.author.mention} earned a save for counting accuracy!")
-
-            # Off by default (it used to fire on every single count once past
-            # the old record, which got noisy fast) - opt back in per-server
-            # with /highscorealerts on, or via the WebUI toggle.
-            if state["high_score_alerts"] and expected > state["high_score"] > 0:
-                await message.channel.send(f"🏆 New high score: **{expected}**!")
+            self.bot.db.reset_count(message.guild.id)
 
 
 async def setup(bot: commands.Bot):
