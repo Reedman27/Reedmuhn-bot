@@ -50,9 +50,17 @@ class _MemoryFallback:
         entry = self._store.get(key)
         return entry[0] if entry is not None else None
 
-    async def set(self, key: str, value: str, ex: Optional[int] = None) -> None:
+    async def set(self, key: str, value: str, ex: Optional[int] = None, nx: bool = False) -> bool:
+        """Returns True when the value was stored. With nx=True the write only
+        happens if the key doesn't already exist - the whole check-and-set runs
+        without an await in between, so on the single-threaded event loop it is
+        as atomic as Redis' own SET NX."""
+        self._purge_expired(key)
+        if nx and key in self._store:
+            return False
         expires_at = time.monotonic() + ex if ex is not None else None
         self._store[key] = (str(value), expires_at)
+        return True
 
     async def incr(self, key: str) -> int:
         self._purge_expired(key)
@@ -137,12 +145,15 @@ class RedisClient:
             logger.exception("Redis GET failed; falling back to memory")
             return await self._fallback().get(key)
 
-    async def set(self, key: str, value: str, ex: Optional[int] = None) -> None:
+    async def set(self, key: str, value: str, ex: Optional[int] = None, nx: bool = False) -> bool:
+        """Returns True when the value was stored. With nx=True a False return
+        means the key already existed (real Redis answers SET NX with None)."""
         try:
-            await self._client.set(key, value, ex=ex)
+            result = await self._client.set(key, value, ex=ex, nx=nx)
         except Exception:
             logger.exception("Redis SET failed; falling back to memory")
-            await self._fallback().set(key, value, ex=ex)
+            result = await self._fallback().set(key, value, ex=ex, nx=nx)
+        return bool(result) if nx else True
 
     async def incr(self, key: str) -> int:
         try:
@@ -225,5 +236,24 @@ class RedisClient:
         return max(0, ttl)
 
     async def start_cooldown(self, key: str, seconds: int) -> None:
-        """Set a cooldown marker that expires on its own after `seconds`."""
+        """Set a cooldown marker that expires on its own after `seconds`.
+
+        Unconditional - use `acquire_cooldown` when the caller is gating a
+        reward on the cooldown, since a separate check-then-set can let two
+        near-simultaneous events both pass the check."""
         await self.set(key, "1", ex=seconds)
+
+    async def acquire_cooldown(self, key: str, seconds: int) -> int:
+        """Atomically claim a cooldown slot (SET key 1 NX EX seconds).
+
+        Returns 0 when the caller won the slot and may proceed, otherwise the
+        seconds left on the existing cooldown. This is a single round trip, so
+        unlike seconds_remaining() + start_cooldown() two concurrent callers
+        can never both be told the cooldown is clear."""
+        if await self.set(key, "1", ex=seconds, nx=True):
+            return 0
+        remaining = await self.seconds_remaining(key)
+        # The key can expire between the SET NX and the TTL read. Report a
+        # second rather than 0 so the caller still treats this as "on
+        # cooldown" - granting the reward here is the failure we're avoiding.
+        return remaining if remaining > 0 else 1

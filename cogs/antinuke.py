@@ -109,8 +109,11 @@ class AntiNuke(commands.Cog):
             return
 
         await self._punish(guild, member, action_key, cfg)
+        recovery_result = None
         if cfg["auto_recovery"] and action_key in ("channel_delete", "role_delete"):
-            await self._attempt_recovery(guild, entry, action_key)
+            recovery_result = await self._attempt_recovery(guild, entry, action_key)
+        if recovery_result is not None:
+            await self._log_recovery(guild, action_key, recovery_result, cfg)
 
     async def _punish(self, guild: discord.Guild, member: discord.Member, action_key: str, cfg: dict) -> None:
         me = guild.me
@@ -146,15 +149,23 @@ class AntiNuke(commands.Cog):
         self.bot.db.record_antinuke_incident(guild.id, member.id, action_key, applied, cfg["threshold"])
         await self._log(guild, member, action_key, applied, cfg)
 
-    async def _attempt_recovery(self, guild: discord.Guild, entry: discord.AuditLogEntry, action_key: str) -> None:
+    async def _attempt_recovery(self, guild: discord.Guild, entry: discord.AuditLogEntry, action_key: str) -> str:
         """Best-effort recreation of what the burst just destroyed, using
         the 'before' state the audit log entry already carries for delete
-        actions - no separate delete listener needed to remember it."""
+        actions - no separate delete listener needed to remember it.
+
+        This is explicitly *basic* recovery, not a full restore, and the
+        string it returns says so: Discord's audit-log delete diff only
+        exposes a handful of a channel's properties (name, type, topic,
+        nsfw, slowmode, bitrate/user limit for voice) - not permission
+        overwrites, category, or exact position - so those aren't
+        reconstructed. Earlier wording ("auto-recovery") implied more than
+        that; callers should show this string rather than a bare "recovered".
+        """
         before = entry.before
         try:
             if action_key == "channel_delete":
-                name = getattr(before, "name", None) or "recovered-channel"
-                await guild.create_text_channel(name=name, reason="Anti-nuke auto-recovery")
+                return await self._recover_channel(guild, before)
             elif action_key == "role_delete":
                 name = getattr(before, "name", None) or "recovered-role"
                 await guild.create_role(
@@ -165,8 +176,58 @@ class AntiNuke(commands.Cog):
                     permissions=getattr(before, "permissions", discord.Permissions.none()),
                     reason="Anti-nuke auto-recovery",
                 )
+                return f"recreated role **{name}** (permissions restored; role position may differ)"
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("antinuke: auto-recovery failed for %s in guild %s", action_key, guild.id)
+            return "recovery attempted but failed - check the bot's permissions"
+        return "nothing to recover"
+
+    async def _recover_channel(self, guild: discord.Guild, before) -> str:
+        """Recreates a deleted channel using whatever the audit log's before-
+        state exposes for its type. Type is checked first since text, voice,
+        and forum channels expose different recoverable fields."""
+        name = getattr(before, "name", None) or "recovered-channel"
+        channel_type = getattr(before, "type", None)
+        kwargs = {"reason": "Anti-nuke auto-recovery"}
+
+        if channel_type == discord.ChannelType.voice:
+            if getattr(before, "bitrate", None):
+                kwargs["bitrate"] = before.bitrate
+            if getattr(before, "user_limit", None):
+                kwargs["user_limit"] = before.user_limit
+            await guild.create_voice_channel(name=name, **kwargs)
+        elif channel_type == discord.ChannelType.forum:
+            if getattr(before, "topic", None):
+                kwargs["topic"] = before.topic
+            if getattr(before, "nsfw", None):
+                kwargs["nsfw"] = before.nsfw
+            await guild.create_forum(name=name, **kwargs)
+        else:
+            # Text (and anything else recognizable) falls back to a text
+            # channel - the same behavior as before this fix, just carrying
+            # over more of the recoverable fields when the audit log has them.
+            if getattr(before, "topic", None):
+                kwargs["topic"] = before.topic
+            if getattr(before, "nsfw", None):
+                kwargs["nsfw"] = before.nsfw
+            if getattr(before, "slowmode_delay", None):
+                kwargs["slowmode_delay"] = before.slowmode_delay
+            await guild.create_text_channel(name=name, **kwargs)
+
+        return f"recreated channel **{name}** (basic recovery - permissions, category, and exact position not restored)"
+
+    async def _log_recovery(self, guild: discord.Guild, action_key: str, result: str, cfg: dict) -> None:
+        """Separate from _log's punishment embed since recovery happens after
+        it and can fail or succeed independently. Says exactly what came back
+        (including "basic recovery" wording) rather than a bare on/off toggle,
+        so nobody reads "Auto-Recovery: On" as "fully restored"."""
+        channel = guild.get_channel(cfg["log_channel_id"]) if cfg["log_channel_id"] else None
+        if channel is None:
+            return
+        try:
+            await channel.send(f"🛠️ Anti-nuke auto-recovery ({action_key.replace('_', ' ')}): {result}")
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("antinuke: couldn't post recovery result in guild %s", guild.id)
 
     async def _log(self, guild: discord.Guild, member: discord.Member, action_key: str, applied: str, cfg: dict) -> None:
         embed = discord.Embed(
@@ -180,7 +241,7 @@ class AntiNuke(commands.Cog):
         )
         embed.add_field(name="Actor", value=f"{member.mention} ({member.id})", inline=True)
         embed.add_field(name="Punishment Applied", value=applied, inline=True)
-        embed.add_field(name="Auto-Recovery", value="On" if cfg["auto_recovery"] else "Off", inline=True)
+        embed.add_field(name="Auto-Recovery (basic)", value="On" if cfg["auto_recovery"] else "Off", inline=True)
 
         channel = None
         if cfg["log_channel_id"]:
@@ -242,7 +303,7 @@ class AntiNuke(commands.Cog):
         self.bot.db.set_antinuke_enabled(interaction.guild.id, False)
         await interaction.response.send_message("Anti-nuke protection is now **disabled**.", ephemeral=True)
 
-    @antinuke.command(name="autorecovery", description="Toggle automatic recreation of deleted channels/roles")
+    @antinuke.command(name="autorecovery", description="Toggle basic auto-recreation of deleted channels/roles (name/type only, not permissions or position)")
     @app_commands.describe(enabled="Whether auto-recovery should be on")
     @manager_or_permission("manage_guild")
     async def antinuke_autorecovery(self, interaction: discord.Interaction, enabled: bool):

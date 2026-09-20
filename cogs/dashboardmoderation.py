@@ -5,10 +5,12 @@ from the WebUI are queued in SQLite and executed by the bot process. This keeps
 Discord API access and permission checks in the bot while still making the
 feature fully usable from the dashboard.
 """
+import asyncio
 import datetime
 import logging
 import time
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -35,6 +37,32 @@ MOD_ACTION_LABELS = {
 # Actions that take a duration_seconds value.
 TIMED_MOD_ACTIONS = {"tempban", "mute_role", "timeout"}
 MAX_TIMEOUT_SECONDS = 28 * 86400
+
+
+# A Discord failure that will probably work on a second attempt. These are
+# re-queued with backoff instead of being marked failed - a 429 or a Discord
+# 5xx used to permanently lose a queued ban/kick/mute from the dashboard.
+MAX_MOD_ACTION_ATTEMPTS = 6
+MOD_ACTION_RETRY_BASE_SECONDS = 30
+MOD_ACTION_RETRY_MAX_SECONDS = 900
+
+
+def _is_transient_discord_error(exc: Exception) -> bool:
+    if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, discord.HTTPException):
+        status = getattr(exc, "status", None)
+        return status == 429 or (status is not None and status >= 500)
+    return False
+
+
+class TransientModActionError(Exception):
+    """Raised out of an action helper when the failure is worth retrying."""
+
+
+def _raise_if_transient(exc: discord.HTTPException) -> None:
+    if _is_transient_discord_error(exc):
+        raise TransientModActionError(str(exc)) from exc
 
 
 class DashboardModeration(commands.Cog):
@@ -219,6 +247,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return None, "The bot can't look up members in that server."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return None, f"Discord could not resolve the member: {exc}"
         return member, None
 
@@ -250,6 +279,27 @@ class DashboardModeration(commands.Cog):
                     logger.warning("WebUI mod action %s (%s on %s in %s) failed: %s", request_id, action, user_id, guild_id, error)
                 else:
                     logger.info("WebUI mod action %s (%s) applied to %s in %s", request_id, action, user_id, guild_id)
+            except (TransientModActionError, aiohttp.ClientError, asyncio.TimeoutError, discord.HTTPException) as exc:
+                if isinstance(exc, discord.HTTPException) and not _is_transient_discord_error(exc):
+                    logger.warning("WebUI mod action %s failed permanently: %s", request_id, exc)
+                    self.bot.db.complete_mod_action(request_id, str(exc)[:500])
+                    continue
+                attempts = self.bot.db.mod_action_attempts(request_id)
+                if attempts + 1 >= MAX_MOD_ACTION_ATTEMPTS:
+                    logger.error(
+                        "WebUI mod action %s (%s on %s in %s) gave up after %s attempts: %s",
+                        request_id, action, user_id, guild_id, attempts + 1, exc,
+                    )
+                    self.bot.db.complete_mod_action(
+                        request_id, f"Gave up after {attempts + 1} attempts: {exc}"[:500],
+                    )
+                    continue
+                delay = min(MOD_ACTION_RETRY_MAX_SECONDS, MOD_ACTION_RETRY_BASE_SECONDS * (2 ** min(attempts, 5)))
+                logger.warning(
+                    "WebUI mod action %s hit a transient Discord failure (%s) - retrying in %ss",
+                    request_id, exc, delay,
+                )
+                self.bot.db.retry_mod_action(request_id, str(exc)[:500], int(time.time()) + delay)
             except Exception as exc:
                 logger.exception("WebUI mod action %s failed", request_id)
                 self.bot.db.complete_mod_action(request_id, str(exc)[:500])
@@ -299,6 +349,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't ban that user - check its role and Ban Members permission."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the ban: {exc}"
         self._history(guild.id, user_id, "ban", reason)
         await self._log(guild, "ban", user_id, reason)
@@ -312,6 +363,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't ban that user - check its role and Ban Members permission."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the ban: {exc}"
         run_at = int(time.time()) + duration_seconds
         scheduler.schedule_unban(self.bot.db, guild.id, user_id, run_at)
@@ -327,6 +379,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't unban that user - check its Ban Members permission."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the unban: {exc}"
         self._history(guild.id, user_id, "unban", reason)
         await self._log(guild, "unban", user_id, reason)
@@ -338,6 +391,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't kick that member - check its role is above theirs."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the kick: {exc}"
         self._history(guild.id, member.id, "kick", reason)
         await self._log(guild, "kick", member.id, reason)
@@ -353,6 +407,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't time out that member - check its role is above theirs."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the timeout: {exc}"
         self._history(guild.id, member.id, "timeout", reason, f"duration_seconds={duration_seconds}")
         await self._log(guild, f"timeout ({format_duration(duration_seconds)})", member.id, reason)
@@ -364,6 +419,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't remove that member's timeout - check its role is above theirs."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the request: {exc}"
         self._history(guild.id, member.id, "untimeout", reason)
         await self._log(guild, "timeout removed", member.id, reason)
@@ -392,6 +448,7 @@ class DashboardModeration(commands.Cog):
         except discord.Forbidden:
             return "The bot can't remove that member's Muted role - check its role is above theirs."
         except discord.HTTPException as exc:
+            _raise_if_transient(exc)
             return f"Discord rejected the request: {exc}"
         await restore_stripped_roles(self.bot.db, guild, member, reason=reason)
         self._history(guild.id, member.id, "unmute", reason)

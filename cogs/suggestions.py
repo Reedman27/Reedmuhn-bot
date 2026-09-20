@@ -27,7 +27,11 @@ class SuggestionView(discord.ui.View):
         if not row:
             await interaction.response.send_message("That suggestion no longer exists.",ephemeral=True); return
         sid,content,author_id=row
-        interaction.client.db.set_suggestion_status(sid,status,member.id)
+        # Atomic pending -> final transition: only the staff member whose click
+        # actually changed the row gets to edit the message. Disabled buttons
+        # don't stop two clicks that are already in flight.
+        if not interaction.client.db.claim_suggestion_status(sid,status,member.id):
+            await interaction.response.send_message("That suggestion has already been reviewed.",ephemeral=True); return
         embed=interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(description=content)
         embed.set_field_at(0,name="Status",value=status.title(),inline=True) if embed.fields else embed.add_field(name="Status",value=status.title(),inline=True)
         embed.color=discord.Color.green() if status=="approved" else discord.Color.red()

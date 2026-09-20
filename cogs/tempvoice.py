@@ -34,17 +34,28 @@ class TempVoice(commands.Cog):
     @tasks.loop(seconds=2)
     async def _delete_request_worker(self):
         for guild in self.bot.guilds:
-            for _request_id, channel_id in self.bot.db.pop_temp_voice_delete_requests(guild.id):
-                channel = guild.get_channel(channel_id)
-                if channel is None:
-                    # Discord channel was deleted externally; clean stale DB state.
-                    self.bot.db.remove_temp_voice_channel(channel_id)
-                    continue
-                if isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id):
-                    if not await self._delete_temp_channel(channel):
-                        # Keep the request queued if Discord temporarily refuses
-                        # the deletion; the worker will retry on its next pass.
-                        self.bot.db.request_temp_voice_delete(guild.id, channel_id)
+            try:
+                requests = self.bot.db.pop_temp_voice_delete_requests(guild.id)
+            except Exception:
+                logger.exception("failed to pop temp voice delete requests for guild %s", guild.id)
+                continue
+            for _request_id, channel_id in requests:
+                try:
+                    channel = guild.get_channel(channel_id)
+                    if channel is None:
+                        # Discord channel was deleted externally; clean stale DB state.
+                        self.bot.db.remove_temp_voice_channel(channel_id)
+                        continue
+                    if isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id):
+                        if not await self._delete_temp_channel(channel):
+                            # Keep the request queued if Discord temporarily refuses
+                            # the deletion; the worker will retry on its next pass.
+                            self.bot.db.request_temp_voice_delete(guild.id, channel_id)
+                except Exception:
+                    # One bad request must not stop the rest of this guild's
+                    # queue, or every later guild's, from being processed - and
+                    # must not kill the tasks.Loop for the rest of the process.
+                    logger.exception("failed to process temp voice delete request for channel %s", channel_id)
 
     @_delete_request_worker.before_loop
     async def _before_delete_request_worker(self):
@@ -56,23 +67,31 @@ class TempVoice(commands.Cog):
         # made from the WebUI is queued here and applied by the bot - same
         # pattern as _delete_request_worker above.
         for guild in self.bot.guilds:
-            for channel_id, user_limit in self.bot.db.pop_temp_voice_limit_requests(guild.id):
-                channel = guild.get_channel(channel_id)
-                if channel is None:
-                    self.bot.db.remove_temp_voice_channel(channel_id)
-                    continue
-                if not (isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id)):
-                    continue
+            try:
+                requests = self.bot.db.pop_temp_voice_limit_requests(guild.id)
+            except Exception:
+                logger.exception("failed to pop temp voice limit requests for guild %s", guild.id)
+                continue
+            for channel_id, user_limit in requests:
                 try:
-                    await channel.edit(user_limit=user_limit, reason="Dashboard-requested channel limit change")
-                except discord.NotFound:
-                    self.bot.db.remove_temp_voice_channel(channel_id)
-                except discord.HTTPException:
-                    logger.exception("failed to apply dashboard user-limit change to temp voice channel %s", channel_id)
-                    # Keep it queued so the worker retries on its next pass.
-                    self.bot.db.request_temp_voice_limit(guild.id, channel_id, user_limit)
-                else:
-                    self.bot.db.update_temp_voice_channel_limit(channel_id, user_limit)
+                    channel = guild.get_channel(channel_id)
+                    if channel is None:
+                        self.bot.db.remove_temp_voice_channel(channel_id)
+                        continue
+                    if not (isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id)):
+                        continue
+                    try:
+                        await channel.edit(user_limit=user_limit, reason="Dashboard-requested channel limit change")
+                    except discord.NotFound:
+                        self.bot.db.remove_temp_voice_channel(channel_id)
+                    except discord.HTTPException:
+                        logger.exception("failed to apply dashboard user-limit change to temp voice channel %s", channel_id)
+                        # Keep it queued so the worker retries on its next pass.
+                        self.bot.db.request_temp_voice_limit(guild.id, channel_id, user_limit)
+                    else:
+                        self.bot.db.update_temp_voice_channel_limit(channel_id, user_limit)
+                except Exception:
+                    logger.exception("failed to process temp voice limit request for channel %s", channel_id)
 
     @_limit_request_worker.before_loop
     async def _before_limit_request_worker(self):
@@ -191,6 +210,20 @@ class TempVoice(commands.Cog):
         hub_limit = self.bot.db.get_voice_hub_limit(member.guild.id, hub.id)
         try:
             temp_channel = await member.guild.create_voice_channel(name=name, category=hub.category, user_limit=hub_limit)
+        except discord.Forbidden:
+            logger.warning("missing permissions to create temp voice channel in guild %s", member.guild.id)
+            return
+        except discord.HTTPException:
+            logger.exception("failed to create temp voice channel for %s", member.id)
+            return
+
+        # Record the channel the moment it exists. Anything that fails after
+        # this point leaves a row the startup sweep can find - previously the
+        # row was only written at the very end, so a failed permission edit or
+        # move left an untracked, permanently orphaned voice channel in Discord.
+        self.bot.db.add_temp_voice_channel(member.guild.id, temp_channel.id, member.id, hub_limit)
+
+        try:
             await temp_channel.set_permissions(
                 member,
                 manage_channels=True,
@@ -199,14 +232,16 @@ class TempVoice(commands.Cog):
                 deafen_members=True,
             )
             await member.move_to(temp_channel)
-        except discord.Forbidden:
-            logger.warning("missing permissions to create/move into temp voice channel in guild %s", member.guild.id)
-            return
-        except discord.HTTPException:
-            logger.exception("failed to create temp voice channel for %s", member.id)
-            return
-
-        self.bot.db.add_temp_voice_channel(member.guild.id, temp_channel.id, member.id, hub_limit)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "temp voice: setup failed after creating channel %s in guild %s (%s) - removing it",
+                temp_channel.id, member.guild.id, exc,
+            )
+            # Nobody is in it and the member never got moved, so take it back
+            # down rather than leaving an empty stray channel behind. If the
+            # delete itself fails, the DB row (written above) means the startup
+            # sweep will clear it later.
+            await self._delete_temp_channel(temp_channel)
 
     async def _delete_temp_channel(self, channel: discord.VoiceChannel) -> bool:
         try:

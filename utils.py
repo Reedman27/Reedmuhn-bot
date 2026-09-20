@@ -125,8 +125,21 @@ async def restore_stripped_roles(db, guild, member, reason: str) -> None:
     role_ids = db.get_stripped_roles(guild.id, member.id)
     if not role_ids:
         return
+    me = guild.me
+    top_position = me.top_role.position if me else None
     roles = [guild.get_role(rid) for rid in role_ids]
-    roles = [r for r in roles if r is not None and r not in member.roles]
+    # Never hand back a deleted role, a managed/integration role, a role that
+    # has since moved above the bot (it couldn't be applied anyway, and doing
+    # so would be an unintended privilege grant), or one the member already
+    # has - e.g. because sticky roles restored it first on a rejoin.
+    roles = [
+        r for r in roles
+        if r is not None
+        and r != guild.default_role
+        and not r.managed
+        and r not in member.roles
+        and (top_position is None or r.position < top_position)
+    ]
     # Roles can legitimately disappear while somebody is muted. Treat those
     # as already-restored, but keep any still-existing roles until Discord
     # confirms the add succeeded. This prevents a transient 403/5xx from
@@ -139,6 +152,169 @@ async def restore_stripped_roles(db, guild, member, reason: str) -> None:
     except (discord.Forbidden, discord.HTTPException):
         return
     db.clear_stripped_roles(guild.id, member.id)
+
+
+# ---- earned role rewards (level roles, invite milestones) ----
+# These are granted once, at the moment they're earned. If Discord refuses the
+# grant there is usually no second chance: the member already has the level /
+# invite count, so nothing will ever trigger the grant again. Anything that
+# fails therefore goes into db.pending_role_rewards and is retried by
+# retry_pending_role_rewards() below instead of being logged and forgotten.
+
+ROLE_REWARD_TRANSIENT_DELAY = 60      # 429/5xx - likely to work shortly
+ROLE_REWARD_PERMISSION_DELAY = 3600   # hierarchy/permission - needs an admin fix
+ROLE_REWARD_MAX_DELAY = 6 * 3600
+ROLE_REWARD_MAX_ATTEMPTS = 24         # ~ a day of hourly retries before giving up
+
+
+def _role_reward_delay(exc, attempts: int) -> int:
+    """Backoff for a failed role grant. Permission/hierarchy problems back off
+    slowly (they need a human to fix the role order), rate limits and server
+    errors retry quickly."""
+    import discord
+
+    status = getattr(exc, "status", None)
+    base = ROLE_REWARD_TRANSIENT_DELAY
+    if isinstance(exc, discord.Forbidden) or status == 403:
+        base = ROLE_REWARD_PERMISSION_DELAY
+    elif status is not None and 400 <= status < 500 and status != 429:
+        base = ROLE_REWARD_PERMISSION_DELAY
+    return min(ROLE_REWARD_MAX_DELAY, base * (2 ** min(attempts, 6)))
+
+
+async def grant_role_reward(db, member, role, reason: str, kind: str, logger=None) -> bool:
+    """Grant one earned reward role. On failure the reward is queued for retry
+    (and visible in the dashboard) rather than silently dropped. Returns True
+    when the member ends up holding the role."""
+    import time as _time
+
+    import discord
+
+    if role in member.roles:
+        db.resolve_role_reward_for(member.guild.id, member.id, role.id)
+        return True
+    try:
+        await member.add_roles(role, reason=reason)
+    except discord.HTTPException as exc:
+        if logger is not None:
+            logger.warning(
+                "%s reward: couldn't grant role %s to %s in guild %s: %s",
+                kind, role.id, member.id, member.guild.id, exc,
+            )
+        db.queue_role_reward(
+            member.guild.id, member.id, role.id, kind, reason,
+            next_attempt_at=int(_time.time()) + _role_reward_delay(exc, 0),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    db.resolve_role_reward_for(member.guild.id, member.id, role.id)
+    return True
+
+
+async def retry_pending_role_rewards(bot, db, logger=None, limit: int = 50) -> None:
+    """Re-attempt role rewards Discord previously refused. Safe to call on a
+    timer: every step is idempotent, and rewards whose role/member/guild no
+    longer exists are dropped instead of retried forever."""
+    import time as _time
+
+    import discord
+
+    now = int(_time.time())
+    for reward_id, guild_id, user_id, role_id, kind, reason, attempts in db.list_due_role_rewards(now, limit):
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            continue  # bot may just not be connected to it right now
+        role = guild.get_role(role_id)
+        if role is None:
+            if logger is not None:
+                logger.warning("%s reward: role %s no longer exists in guild %s - dropping", kind, role_id, guild_id)
+            db.resolve_role_reward(reward_id)
+            continue
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                db.resolve_role_reward(reward_id)  # they left
+                continue
+            except discord.HTTPException as exc:
+                db.defer_role_reward(reward_id, now + _role_reward_delay(exc, attempts), str(exc))
+                continue
+        if role in member.roles:
+            db.resolve_role_reward(reward_id)
+            continue
+        if attempts >= ROLE_REWARD_MAX_ATTEMPTS:
+            if logger is not None:
+                logger.error(
+                    "%s reward: giving up on role %s for %s in guild %s after %s attempts",
+                    kind, role_id, user_id, guild_id, attempts,
+                )
+            db.resolve_role_reward(reward_id)
+            continue
+        try:
+            await member.add_roles(role, reason=reason or f"Retrying {kind} reward")
+        except discord.HTTPException as exc:
+            db.defer_role_reward(reward_id, now + _role_reward_delay(exc, attempts), f"{type(exc).__name__}: {exc}")
+            continue
+        db.resolve_role_reward(reward_id)
+        if logger is not None:
+            logger.info("%s reward: repaired role %s for %s in guild %s", kind, role_id, user_id, guild_id)
+
+
+async def retry_pending_role_ops(bot, db, logger=None, limit: int = 50) -> None:
+    """Re-attempt reaction-role adds/removes Discord refused.
+
+    Same shape as retry_pending_role_rewards, but direction-aware: a queued
+    'add' is satisfied once the member holds the role, a queued 'remove' once
+    they don't, so a member who un-reacted before the retry ran doesn't end up
+    with a role they no longer asked for.
+    """
+    import time as _time
+
+    import discord
+
+    now = int(_time.time())
+    for op_id, guild_id, user_id, role_id, action, reason, attempts in db.list_due_role_ops(now, limit):
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            continue
+        role = guild.get_role(role_id)
+        if role is None:
+            db.resolve_role_op(op_id)  # binding's role was deleted
+            continue
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                db.resolve_role_op(op_id)
+                continue
+            except discord.HTTPException as exc:
+                db.defer_role_op(op_id, now + _role_reward_delay(exc, attempts), str(exc))
+                continue
+        has_role = role in member.roles
+        if (action == "add" and has_role) or (action == "remove" and not has_role):
+            db.resolve_role_op(op_id)
+            continue
+        if attempts >= ROLE_REWARD_MAX_ATTEMPTS:
+            if logger is not None:
+                logger.error(
+                    "reaction role: giving up on %s of role %s for %s in guild %s after %s attempts",
+                    action, role_id, user_id, guild_id, attempts,
+                )
+            db.resolve_role_op(op_id)
+            continue
+        try:
+            if action == "add":
+                await member.add_roles(role, reason=reason or "Reaction role (retry)")
+            else:
+                await member.remove_roles(role, reason=reason or "Reaction role removed (retry)")
+        except discord.HTTPException as exc:
+            db.defer_role_op(op_id, now + _role_reward_delay(exc, attempts), f"{type(exc).__name__}: {exc}")
+            continue
+        db.resolve_role_op(op_id)
+        if logger is not None:
+            logger.info("reaction role: repaired %s of role %s for %s in guild %s", action, role_id, user_id, guild_id)
 
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}

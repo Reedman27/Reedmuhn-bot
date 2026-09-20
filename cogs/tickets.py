@@ -13,6 +13,7 @@ up (same queue/claim/complete pattern as dashboardmoderation.py).
 """
 import asyncio
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -204,7 +205,24 @@ class Tickets(commands.Cog, name="Tickets"):
             await interaction.followup.send(f"Discord rejected that: {exc}", ephemeral=True)
             return
 
-        ticket_id = self.bot.db.create_ticket(interaction.guild.id, channel.id, interaction.user.id, subject)
+        # The database has the final say on "one open ticket per member": the
+        # read-then-insert above can be passed by two clicks in the same
+        # instant, and the loser of that race cleans up the channel it just
+        # created rather than leaving a second live ticket channel behind.
+        ticket_id = self.bot.db.try_create_ticket(interaction.guild.id, channel.id, interaction.user.id, subject)
+        if ticket_id is None:
+            try:
+                await channel.delete(reason="Duplicate ticket open - member already has one")
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                logger.warning("ticket: couldn't remove duplicate ticket channel %s", channel.id)
+            existing = self.bot.db.get_open_ticket_by_opener(interaction.guild.id, interaction.user.id)
+            existing_channel = interaction.guild.get_channel(existing[1]) if existing else None
+            await interaction.followup.send(
+                f"You already have an open ticket: {existing_channel.mention}" if existing_channel
+                else "You already have an open ticket.",
+                ephemeral=True,
+            )
+            return
         try:
             await channel.edit(name=f"ticket-{ticket_id}-{_channel_safe_name(interaction.user.name)}"[:100])
         except (discord.Forbidden, discord.HTTPException):
@@ -294,18 +312,41 @@ class Tickets(commands.Cog, name="Tickets"):
                         await channel.set_permissions(opener, view_channel=True, send_messages=False, reason="Ticket closed")
                     if not channel.name.startswith("closed-"):
                         await channel.edit(name=f"closed-{channel.name}"[:100], reason="Ticket closed")
-                except (discord.Forbidden, discord.HTTPException):
-                    logger.warning("ticket %s: couldn't fully lock/rename channel %s", ticket_id, channel_id)
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    # The DB says closed but Discord didn't lock the channel, so
+                    # it would otherwise stay fully usable. Queue the lock as a
+                    # scheduled event: durable across restarts and retried with
+                    # the scheduler's backoff rather than logged and forgotten.
+                    logger.warning(
+                        "ticket %s: couldn't lock/rename channel %s (%s) - queued for retry",
+                        ticket_id, channel_id, exc,
+                    )
+                    self.bot.db.insert_scheduled_event(
+                        "ticket_channel_lock", guild.id, int(time.time()) + 30,
+                        {"ticket_id": ticket_id, "channel_id": channel_id, "opener_id": opener_id},
+                    )
 
         await self._log(guild, f"ticket #{ticket_id} closed", closed_by, channel, reason=reason)
         return None
 
     async def _delete_ticket_channel(self, channel: discord.TextChannel, delay: int, ticket_id: int) -> None:
+        # A durable backstop is queued up front: if the bot restarts during the
+        # delay, or the delete below fails, the scheduler still takes the
+        # channel down. Deleting an already-deleted channel is a no-op there.
+        self.bot.db.insert_scheduled_event(
+            "ticket_channel_delete", channel.guild.id, int(time.time()) + delay + 30,
+            {"ticket_id": ticket_id, "channel_id": channel.id},
+        )
         await asyncio.sleep(delay)
         try:
             await channel.delete(reason=f"Ticket #{ticket_id} closed (auto-delete)")
-        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-            logger.warning("ticket %s: couldn't delete channel %s after close", ticket_id, channel.id)
+        except discord.NotFound:
+            pass
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "ticket %s: couldn't delete channel %s after close (%s) - the scheduled retry will try again",
+                ticket_id, channel.id, exc,
+            )
 
     async def _post_or_update_panel(self, guild_id: int) -> str | None:
         """Posts the ticket-panel embed+button, or edits the existing one

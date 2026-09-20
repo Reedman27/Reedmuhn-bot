@@ -235,10 +235,22 @@ class VoteKick(commands.Cog, name="VoteKick"):
 
     @tasks.loop(seconds=5)
     async def expire_votes(self):
+        # Same class of bug as the automod/birthday loops: one bad vote (a
+        # Discord error while resolving it) used to be able to kill this
+        # entire tasks.Loop, after which no votekick would ever expire again
+        # for the rest of the process's life.
         now = int(time.time())
-        for vote in self.bot.db.list_open_votekicks():
+        try:
+            votes = self.bot.db.list_open_votekicks()
+        except Exception:
+            logger.exception("failed to list open votekicks")
+            return
+        for vote in votes:
             if now >= vote["expires_at"]:
-                await self._resolve_vote(vote, "expired")
+                try:
+                    await self._resolve_vote(vote, "expired")
+                except Exception:
+                    logger.exception("failed to expire votekick %s", vote.get("id"))
 
     @expire_votes.before_loop
     async def before_expire_votes(self):

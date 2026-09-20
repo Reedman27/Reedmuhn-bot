@@ -19,6 +19,16 @@ logger = logging.getLogger("scheduler")
 
 CHECK_INTERVAL_SECONDS = 30
 
+# Retry policy for scheduled events whose handler raised. A scheduled
+# moderation action (unban, unmute, tempnick revert) is supposed to survive
+# restarts and eventually execute, so a failure reschedules the event instead
+# of deleting it - see _handle_event_failure.
+RETRY_BASE_DELAY = 60          # transient failures: network, 429, Discord 5xx
+PERMANENT_RETRY_DELAY = 600    # permission/config failures: needs a human
+MAX_RETRY_DELAY = 3600
+MAX_RETRY_ATTEMPTS = 10        # transient budget (~hours with backoff)
+MAX_PERMANENT_ATTEMPTS = 5     # permanent budget, then give up loudly
+
 
 def schedule_unban(db, guild_id: int, user_id: int, run_at: int) -> None:
     db.insert_scheduled_event("unban", guild_id, run_at, {"user_id": user_id})
@@ -59,30 +69,72 @@ async def run_loop(bot: discord.Client, db) -> None:
             logger.exception("failed to fetch due scheduled events")
             continue
 
-        for event_id, event_name, guild_id, data_json in due:
-            retry_at = None
+        for event_id, event_name, guild_id, data_json, attempts in due:
             try:
                 await _process_event(bot, db, event_id, event_name, guild_id, json.loads(data_json))
             except Exception as exc:
                 logger.exception("scheduled event %s (%s) failed", event_id, event_name)
-                status = getattr(exc, "status", None)
-                # Don't silently lose work on transient Discord/API failures.
-                # Permanent 4xx errors (bad permissions, deleted resources,
-                # invalid configuration) still get removed so they don't loop.
-                if isinstance(exc, aiohttp.ClientError) or (
-                    isinstance(exc, discord.HTTPException)
-                    and (status == 429 or (status is not None and status >= 500))
-                ):
-                    retry_at = int(time.time()) + 60
-            finally:
-                try:
-                    db.delete_scheduled_event(event_id)
-                    if retry_at is not None:
-                        db.insert_scheduled_event(
-                            event_name, guild_id, retry_at, json.loads(data_json)
-                        )
-                except Exception:
-                    logger.exception("failed to finalize scheduled event %s", event_id)
+                _handle_event_failure(db, event_id, event_name, guild_id, attempts, exc)
+                continue
+            # Success - and only success - removes the event.
+            try:
+                db.delete_scheduled_event(event_id)
+            except Exception:
+                logger.exception("failed to delete completed scheduled event %s", event_id)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Network blips, rate limits and Discord 5xx are worth retrying.
+    Everything else (missing permissions, deleted channel/role, bad config)
+    won't get better on its own."""
+    if isinstance(exc, aiohttp.ClientError) or isinstance(exc, asyncio.TimeoutError):
+        return True
+    if isinstance(exc, discord.HTTPException):
+        status = getattr(exc, "status", None)
+        return status == 429 or (status is not None and status >= 500)
+    return False
+
+
+def _handle_event_failure(db, event_id: int, event_name: str, guild_id: int, attempts: int, exc: Exception) -> None:
+    """Decide what happens to a scheduled event whose handler raised.
+
+    TRANSIENT  -> keep the row, retry with a growing backoff.
+    PERMANENT  -> keep retrying a few times anyway (a 403 is often a role
+                  hierarchy an admin is about to fix), then give up loudly.
+    Nothing is deleted just because the handler raised - the old
+    delete-in-a-finally-block meant a temporary Discord error could silently
+    lose a scheduled unban/unmute/tempnick revert forever.
+    """
+    transient = _is_transient(exc)
+    budget = MAX_RETRY_ATTEMPTS if transient else MAX_PERMANENT_ATTEMPTS
+    detail = f"{type(exc).__name__}: {exc}"
+    if attempts + 1 >= budget:
+        logger.error(
+            "giving up on scheduled event %s (%s) for guild %s after %s attempts: %s",
+            event_id, event_name, guild_id, attempts + 1, detail,
+        )
+        try:
+            db.record_bot_event(
+                "scheduler.event_failed", guild_id, None, None,
+                f"event={event_name};attempts={attempts + 1};error={detail}", status="failure",
+            )
+        except Exception:
+            logger.exception("failed to record scheduler failure for event %s", event_id)
+        try:
+            db.delete_scheduled_event(event_id)
+        except Exception:
+            logger.exception("failed to delete exhausted scheduled event %s", event_id)
+        return
+    delay = min(MAX_RETRY_DELAY, (RETRY_BASE_DELAY if transient else PERMANENT_RETRY_DELAY) * (2 ** min(attempts, 6)))
+    try:
+        db.reschedule_scheduled_event(event_id, int(time.time()) + delay, detail)
+    except Exception:
+        logger.exception("failed to reschedule scheduled event %s", event_id)
+    else:
+        logger.warning(
+            "scheduled event %s (%s) failed (%s attempt %s) - retrying in %ss: %s",
+            event_id, event_name, "transient" if transient else "permanent", attempts + 1, delay, detail,
+        )
 
 
 async def _process_event(bot: discord.Client, db, event_id: int, event_name: str, guild_id: int, data: dict) -> None:
@@ -104,6 +156,12 @@ async def _process_event(bot: discord.Client, db, event_id: int, event_name: str
         await _handle_close_poll(bot, db, guild_id, data)
     elif event_name == "end_giveaway":
         await _handle_end_giveaway(bot, data)
+    elif event_name == "sync_level_rewards":
+        await _handle_sync_level_rewards(bot, guild_id, data)
+    elif event_name == "ticket_channel_delete":
+        await _handle_ticket_channel_delete(bot, guild_id, data)
+    elif event_name == "ticket_channel_lock":
+        await _handle_ticket_channel_lock(bot, guild_id, data)
     else:
         logger.warning("unknown scheduled event kind: %s", event_name)
 
@@ -142,11 +200,12 @@ async def _handle_unmute_role(bot: discord.Client, db, event_id: int, guild_id: 
     except discord.NotFound:
         return  # they left - nothing to unmute
     role = guild.get_role(data["role_id"])
-    if role is not None:
-        try:
-            await member.remove_roles(role, reason="Mute duration expired")
-        except discord.Forbidden:
-            logger.warning("couldn't remove muted role from %s in guild %s - missing permission or role hierarchy", data["user_id"], guild_id)
+    if role is not None and role in member.roles:
+        # Deliberately not caught here: letting the error reach the scheduler
+        # is what keeps the event alive for a retry. Swallowing a Forbidden
+        # (or a 429) meant the event was then deleted and the member stayed
+        # muted forever with only a log line to show for it.
+        await member.remove_roles(role, reason="Mute duration expired")
     await restore_stripped_roles(db, guild, member, reason="Mute duration expired")
 
 
@@ -261,6 +320,69 @@ async def _handle_close_poll(bot: discord.Client, db, guild_id: int, data: dict)
         return
     guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
     await cog._close_poll(guild, data["poll_id"])
+
+
+async def _handle_ticket_channel_delete(bot: discord.Client, guild_id: int, data: dict) -> None:
+    """Durable half of ticket delete-on-close.
+
+    The cog deletes the channel itself after its countdown; this event is the
+    backstop for the cases that used to lose the deletion entirely - the bot
+    restarting mid-countdown, or Discord refusing the delete. Anything that
+    isn't already gone and isn't deletable raises, so the scheduler retries.
+    """
+    guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+    channel = guild.get_channel(data["channel_id"])
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(data["channel_id"])
+        except discord.NotFound:
+            return  # already deleted - nothing to do
+    try:
+        await channel.delete(reason=f"Ticket #{data.get('ticket_id')} closed (auto-delete)")
+    except discord.NotFound:
+        return
+
+
+async def _handle_ticket_channel_lock(bot: discord.Client, guild_id: int, data: dict) -> None:
+    """Retries locking/renaming a closed ticket channel. Without this, a
+    Discord failure at close time left the database saying closed while the
+    channel stayed fully usable."""
+    guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+    channel = guild.get_channel(data["channel_id"])
+    if channel is None:
+        return  # channel is gone; nothing left to lock
+    opener_id = data.get("opener_id")
+    if opener_id:
+        opener = guild.get_member(int(opener_id))
+        if opener is not None:
+            await channel.set_permissions(opener, view_channel=True, send_messages=False, reason="Ticket closed")
+    if not channel.name.startswith("closed-"):
+        await channel.edit(name=f"closed-{channel.name}"[:100], reason="Ticket closed")
+
+
+async def _handle_sync_level_rewards(bot: discord.Client, guild_id: int, data: dict) -> None:
+    """Applies level-role rewards after the WebUI changed someone's XP.
+
+    The dashboard process has no Discord connection, so it can only write the
+    new XP/level to SQLite and queue this. Without it, an admin setting a
+    member from level 4 to level 10 left the database saying level 10 while
+    the member never received the level 5-10 reward roles - normal message XP
+    applied them, the dashboard path didn't. Both now end up in the same
+    Extras cog code path.
+    """
+    cog = bot.get_cog("Extras")
+    if cog is None:
+        logger.warning("level reward sync: Extras cog isn't loaded")
+        return
+    guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+    user_id = int(data["user_id"])
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            return  # they left the server
+    await cog.sync_level_state(member)
 
 
 async def _handle_end_giveaway(bot: discord.Client, data: dict) -> None:

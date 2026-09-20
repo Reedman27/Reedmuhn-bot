@@ -22,6 +22,10 @@ DAILY_STREAK_BONUS = 25       # extra coins per consecutive daily streak day, ca
 DAILY_STREAK_BONUS_CAP = 500  # streak bonus never adds more than this on top of DAILY_AMOUNT
 DAILY_STREAK_GRACE = 48 * 3600  # claim again within this long to keep the streak alive
 WORK_COOLDOWN = 3600
+# Upper bound on how many unseen RSS/Atom entries one poll will announce, so a
+# feed that republishes its whole history can't spam a channel. Exceeding it is
+# logged rather than silently skipped.
+FEED_MAX_BACKLOG = 50
 WORK_MIN, WORK_MAX = 20, 80
 WORK_FLAVOR = [
     "🛠️ You fixed some bugs for a local business.",
@@ -41,11 +45,13 @@ class Extras(commands.Cog):
         self.counter_loop.start()
         self.notification_loop.start()
         self.giveaway_loop.start()
+        self.role_reward_retry_loop.start()
 
     def cog_unload(self):
         self.counter_loop.cancel()
         self.notification_loop.cancel()
         self.giveaway_loop.cancel()
+        self.role_reward_retry_loop.cancel()
 
     @property
     def db(self):
@@ -70,7 +76,13 @@ class Extras(commands.Cog):
 
     async def _apply_level_role_rewards(self, member: discord.Member, new_level: int):
         """Stacking role rewards: grant every reward role at or below
-        new_level that the member doesn't already have."""
+        new_level that the member doesn't already have.
+
+        A reward is earned exactly once - the member already has the level, so
+        nothing will trigger this again if Discord refuses the grant. Failures
+        are therefore queued for retry (utils.grant_role_reward) instead of
+        being swallowed, and a configured role that no longer exists is logged
+        as the configuration problem it is."""
         rewards = self.db.list_extras_level_roles(member.guild.id)
         if not rewards:
             return
@@ -79,13 +91,86 @@ class Extras(commands.Cog):
             if level > new_level:
                 continue
             role = member.guild.get_role(role_id)
-            if role and role not in member.roles:
+            if role is None:
+                logger.warning(
+                    "level reward: role %s configured for level %s no longer exists in guild %s",
+                    role_id, level, member.guild.id,
+                )
+                continue
+            if role not in member.roles:
                 to_add.append(role)
-        if to_add:
-            try:
-                await member.add_roles(*to_add, reason=f"Reached level {new_level}")
-            except discord.HTTPException:
-                pass
+        if not to_add:
+            return
+        reason = f"Reached level {new_level}"
+        try:
+            # Fast path: one API call for the whole set.
+            await member.add_roles(*to_add, reason=reason)
+        except discord.HTTPException as exc:
+            logger.warning(
+                "level reward: batch grant of %s role(s) failed for %s in guild %s (%s); retrying individually",
+                len(to_add), member.id, member.guild.id, exc,
+            )
+            for role in to_add:
+                await utils.grant_role_reward(self.db, member, role, reason, "level", logger)
+            return
+        for role in to_add:
+            self.db.resolve_role_reward_for(member.guild.id, member.id, role.id)
+
+    async def _announce_level_up(self, member: discord.Member, new_level: int, fallback_channel=None):
+        """Post the configured level-up message. Failures are logged with
+        enough detail to act on (guild/member/level/channel/error) rather than
+        disappearing, but never block XP processing."""
+        config = self.db.get_extras_level_config(member.guild.id)
+        if not config["enabled"]:
+            return
+        channel = fallback_channel
+        if config["channel_id"]:
+            channel = member.guild.get_channel(config["channel_id"]) or fallback_channel
+        if channel is None:
+            logger.warning(
+                "level announcement: no usable channel for member %s level %s in guild %s (configured=%s)",
+                member.id, new_level, member.guild.id, config["channel_id"],
+            )
+            return
+        text = (
+            config["message"]
+            .replace("{user}", member.mention)
+            .replace("{level}", str(new_level))
+            .replace("{server}", member.guild.name)
+        )
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=[member]))
+        except discord.HTTPException as exc:
+            logger.warning(
+                "level announcement failed: guild=%s member=%s level=%s channel=%s error=%s",
+                member.guild.id, member.id, new_level, getattr(channel, "id", None), exc,
+            )
+
+    async def _handle_xp_result(self, member: discord.Member, result: dict, fallback_channel=None):
+        """The one place a level change turns into side effects.
+
+        Every XP change - message XP, and WebUI set/add/subtract by way of the
+        `sync_level_rewards` scheduled event - ends up here, so crossed level
+        rewards and the announcement can't be applied by one path and skipped
+        by the other."""
+        if result["new_level"] <= result["old_level"]:
+            return
+        await self._apply_level_role_rewards(member, result["new_level"])
+        await self._announce_level_up(member, result["new_level"], fallback_channel)
+
+    async def sync_level_state(self, member: discord.Member, announce: bool = True):
+        """Re-apply level side effects for a member's current stored XP.
+
+        Used by the scheduler after the dashboard edits someone's XP: the
+        WebUI process has no Discord connection, so it queues the sync and the
+        bot performs the crossed-level role grants here."""
+        row = self.db.conn.execute(
+            "SELECT xp, level FROM extras_xp WHERE guild_id=? AND user_id=?",
+            (member.guild.id, member.id),
+        ).fetchone()
+        level = int(row[1]) if row else 0
+        await self._apply_level_role_rewards(member, level)
+        return level
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -95,15 +180,12 @@ class Extras(commands.Cog):
             return
         # Short per-message XP cooldown - fine to lose on a restart, so it
         # lives in Redis (or the in-memory fallback) rather than SQLite.
+        # acquire_cooldown claims the slot atomically (SET NX EX): checking
+        # the TTL and then setting it separately let two messages sent in the
+        # same instant both pass the check and both earn XP.
         cooldown_key = f"cooldown:xp:{message.guild.id}:{message.author.id}"
-        if await self.bot.redis.seconds_remaining(cooldown_key) > 0:
+        if await self.bot.redis.acquire_cooldown(cooldown_key, XP_COOLDOWN) > 0:
             return
-        await self.bot.redis.start_cooldown(cooldown_key, XP_COOLDOWN)
-        row = self.db.conn.execute(
-            "SELECT xp, level FROM extras_xp WHERE guild_id=? AND user_id=?",
-            (message.guild.id, message.author.id),
-        ).fetchone()
-        old_level = int(row[1]) if row else 0
         gained = random.randint(XP_PER_MESSAGE, XP_PER_MESSAGE + 5)
         multiplier = 1.0
         member_role_ids = {r.id for r in message.author.roles}
@@ -111,31 +193,11 @@ class Extras(commands.Cog):
             if role_id in member_role_ids:
                 multiplier = max(multiplier, mult)
         gained = round(gained * multiplier)
-        xp = (int(row[0]) if row else 0) + gained
-        new_level = self._level_from_xp(xp)
-        self.db.conn.execute(
-            """INSERT INTO extras_xp(guild_id,user_id,xp,level) VALUES(?,?,?,?)
-               ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=excluded.xp,level=excluded.level""",
-            (message.guild.id, message.author.id, xp, new_level),
-        )
-        self.db.conn.commit()
-        if new_level > old_level:
-            await self._apply_level_role_rewards(message.author, new_level)
-            config = self.db.get_extras_level_config(message.guild.id)
-            if config["enabled"]:
-                channel = message.channel
-                if config["channel_id"]:
-                    channel = message.guild.get_channel(config["channel_id"]) or channel
-                text = (
-                    config["message"]
-                    .replace("{user}", message.author.mention)
-                    .replace("{level}", str(new_level))
-                    .replace("{server}", message.guild.name)
-                )
-                try:
-                    await channel.send(text, allowed_mentions=discord.AllowedMentions(users=[message.author]))
-                except discord.HTTPException:
-                    pass
+        # Read-modify-write in one transaction so concurrent messages can't
+        # clobber each other's XP, and the level is computed from the value
+        # that was actually stored.
+        result = self.db.add_extras_xp(message.guild.id, message.author.id, gained)
+        await self._handle_xp_result(message.author, result, message.channel)
 
 
     extras = app_commands.Group(name="extras", description="XP, economy, giveaways, counters, and notifications")
@@ -205,24 +267,18 @@ class Extras(commands.Cog):
     @utils.toggleable("daily")
     async def daily(self, interaction: discord.Interaction):
         gid, uid = interaction.guild_id, interaction.user.id
-        bal, last, streak = self._balance(gid, uid)
         now = int(time.time())
-        if last and now - int(last) < 86400:
-            remaining = 86400 - (now - int(last))
-            h, rem = divmod(remaining, 3600)
+        # Cooldown check and payout happen inside one SQLite transaction, so
+        # two simultaneous claims can't both read the old timestamp and both
+        # pay out. Streak maths lives in db.claim_extras_daily with it.
+        result = self.db.claim_extras_daily(
+            gid, uid, now, DAILY_AMOUNT, DAILY_STREAK_BONUS, DAILY_STREAK_BONUS_CAP, DAILY_STREAK_GRACE,
+        )
+        if not result["claimed"]:
+            h, rem = divmod(result["remaining"], 3600)
             m = rem // 60
             return await interaction.response.send_message(f"⏳ Your daily is on cooldown for **{h}h {m}m**.")
-        # Streak continues if claimed again within the grace window; otherwise it resets to 1.
-        streak = streak + 1 if last and now - int(last) < DAILY_STREAK_GRACE else 1
-        bonus = min(DAILY_STREAK_BONUS_CAP, DAILY_STREAK_BONUS * (streak - 1))
-        reward = DAILY_AMOUNT + bonus
-        bal += reward
-        self.db.conn.execute(
-            """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,?,?)
-               ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance,last_daily=excluded.last_daily,daily_streak=excluded.daily_streak""",
-            (gid, uid, bal, now, streak),
-        )
-        self.db.conn.commit()
+        bonus, reward, streak, bal = result["bonus"], result["reward"], result["streak"], result["balance"]
         bonus_note = f" (base {DAILY_AMOUNT:,} + 🔥{streak}-day streak bonus {bonus:,})" if bonus else ""
         await interaction.response.send_message(f"🎁 You claimed **{reward:,} coins**{bonus_note}. Balance: **{bal:,}**.")
 
@@ -233,20 +289,12 @@ class Extras(commands.Cog):
         # Longer cooldown than XP, and worth surviving a restart / being
         # shared if the bot ever runs sharded - same Redis-backed pattern.
         cooldown_key = f"cooldown:work:{gid}:{uid}"
-        remaining = await self.bot.redis.seconds_remaining(cooldown_key)
+        remaining = await self.bot.redis.acquire_cooldown(cooldown_key, WORK_COOLDOWN)
         if remaining > 0:
             m, s = divmod(remaining, 60)
             return await interaction.response.send_message(f"⏳ You're still on the clock. Try again in **{m}m {s}s**.")
-        await self.bot.redis.start_cooldown(cooldown_key, WORK_COOLDOWN)
-        bal, _, _ = self._balance(gid, uid)
         earned = random.randint(WORK_MIN, WORK_MAX)
-        bal += earned
-        self.db.conn.execute(
-            "INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,NULL,0) "
-            "ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance",
-            (gid, uid, bal),
-        )
-        self.db.conn.commit()
+        bal = self.db.add_extras_balance(gid, uid, earned)
         flavor = random.choice(WORK_FLAVOR)
         await interaction.response.send_message(f"{flavor} You earned **{earned:,} coins**. Balance: **{bal:,}**.")
 
@@ -257,19 +305,11 @@ class Extras(commands.Cog):
         if member.bot or member.id == interaction.user.id:
             return await interaction.response.send_message("You can only pay another human member.", ephemeral=True)
         gid, uid = interaction.guild_id, interaction.user.id
-        sender, _, _ = self._balance(gid, uid)
-        if sender < amount:
+        # The debit is a conditional UPDATE (... AND balance >= amount) inside
+        # a transaction, and the recipient is credited only if it matched a
+        # row - so two payments racing can't spend the same coins twice.
+        if not self.db.transfer_extras_balance(gid, uid, member.id, amount):
             return await interaction.response.send_message("You don't have enough coins.", ephemeral=True)
-        receiver, _, _ = self._balance(gid, member.id)
-        self.db.conn.execute(
-            "INSERT INTO extras_economy(guild_id,user_id,balance,last_daily) VALUES(?,?,?,NULL) ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance",
-            (gid, uid, sender - amount),
-        )
-        self.db.conn.execute(
-            "INSERT INTO extras_economy(guild_id,user_id,balance,last_daily) VALUES(?,?,?,NULL) ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance",
-            (gid, member.id, receiver + amount),
-        )
-        self.db.conn.commit()
         await interaction.response.send_message(f"💸 Paid **{amount:,} coins** to {member.mention}.", allowed_mentions=discord.AllowedMentions(users=[member]))
 
     @extras.command(name="richest", description="Show the richest members")
@@ -444,19 +484,42 @@ class Extras(commands.Cog):
         await interaction.response.send_message("Removed." if cur.rowcount else "Not found.", ephemeral=True)
 
     async def _end_giveaway(self, message_id):
+        # Claim the giveaway atomically before doing any Discord work. The
+        # slash command and the minute loop can both reach this function at the
+        # same moment; with a plain "read ended, then later write ended=1" both
+        # callers passed the check, picked winners independently, and announced
+        # twice - sometimes with different winners.
+        claimed = self.db.conn.execute(
+            "UPDATE extras_giveaways SET ended=1 WHERE message_id=? AND ended=0", (message_id,)
+        )
+        self.db.conn.commit()
+        if claimed.rowcount == 0:
+            return False  # already ended, or being ended by the other caller
         row = self.db.conn.execute(
-            "SELECT guild_id,channel_id,message_id,prize,winners,ended FROM extras_giveaways WHERE message_id=?",
+            "SELECT guild_id,channel_id,message_id,prize,winners FROM extras_giveaways WHERE message_id=?",
             (message_id,),
         ).fetchone()
-        if not row or row[5]:
+        if not row:
             return False
+
+        def unclaim():
+            """Put the giveaway back so a later attempt can end it properly -
+            used when Discord wouldn't let us read the entries at all, so no
+            winners were drawn and nothing was announced."""
+            self.db.conn.execute("UPDATE extras_giveaways SET ended=0 WHERE message_id=?", (message_id,))
+            self.db.conn.commit()
+
         guild = self.bot.get_guild(row[0])
         channel = guild.get_channel(row[1]) if guild else None
         if not channel:
+            unclaim()
             return False
         try:
             msg = await channel.fetch_message(row[2])
+        except discord.NotFound:
+            return False  # message deleted - stays ended, nothing to announce
         except discord.HTTPException:
+            unclaim()
             return False
         reaction = discord.utils.get(msg.reactions, emoji="🎉")
         users = []
@@ -464,11 +527,10 @@ class Extras(commands.Cog):
             try:
                 users = [u async for u in reaction.users() if not u.bot]
             except discord.HTTPException:
-                users = []
+                unclaim()
+                return False
         random.shuffle(users)
         winners = users[:int(row[4])]
-        self.db.conn.execute("UPDATE extras_giveaways SET ended=1 WHERE message_id=?", (message_id,))
-        self.db.conn.commit()
         if winners:
             mentions = " ".join(u.mention for u in winners)
             await channel.send(f"🎉 Giveaway ended! Prize: **{row[3]}**\nWinner(s): {mentions}", allowed_mentions=discord.AllowedMentions(users=winners))
@@ -486,6 +548,17 @@ class Extras(commands.Cog):
                 await self._end_giveaway(mid)
             except Exception:
                 logger.exception("Failed ending giveaway %s", mid)
+
+    @tasks.loop(minutes=5)
+    async def role_reward_retry_loop(self):
+        """Re-attempts level-role and invite-milestone grants Discord refused.
+        Both kinds of reward are earned once, so without this a single 429 or
+        a momentarily wrong role hierarchy loses the reward permanently."""
+        await self.bot.wait_until_ready()
+        try:
+            await utils.retry_pending_role_rewards(self.bot, self.db, logger)
+        except Exception:
+            logger.exception("Pending role reward retry pass failed")
 
     @tasks.loop(minutes=1)
     async def counter_loop(self):
@@ -512,8 +585,18 @@ class Extras(commands.Cog):
     @tasks.loop(minutes=5)
     async def notification_loop(self):
         await self.bot.wait_until_ready()
-        await self._poll_twitch()
-        await self._poll_feeds()
+        # Isolated from each other and guarded as a whole: a DB error while
+        # reading the subscription list (which sits outside the per-row guards)
+        # would otherwise stop this loop for the life of the process, and a
+        # Twitch failure shouldn't skip the RSS pass either.
+        try:
+            await self._poll_twitch()
+        except Exception:
+            logger.exception("Twitch poll pass failed")
+        try:
+            await self._poll_feeds()
+        except Exception:
+            logger.exception("Feed poll pass failed")
 
     async def _poll_twitch(self):
         client_id = os.getenv("TWITCH_CLIENT_ID")
@@ -530,17 +613,29 @@ class Extras(commands.Cog):
                     return
                 token = (await token_resp.json()).get("access_token")
                 for gid, username, cid, old_live in rows:
-                    resp = await session.get("https://api.twitch.tv/helix/streams", params={"user_login": username}, headers={"Client-ID": client_id, "Authorization": f"Bearer {token}"}, timeout=10)
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json()
-                    live = bool(data.get("data"))
-                    if live and not old_live:
-                        d = data["data"][0]
-                        guild = self.bot.get_guild(gid); channel = guild.get_channel(cid) if guild else None
-                        if channel:
+                    # Each subscription is isolated: one bad API response or one
+                    # failed Discord send used to abort the whole poll cycle and
+                    # delay every other configured channel's notification.
+                    try:
+                        resp = await session.get("https://api.twitch.tv/helix/streams", params={"user_login": username}, headers={"Client-ID": client_id, "Authorization": f"Bearer {token}"}, timeout=10)
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        live = bool(data.get("data"))
+                        if live and not old_live:
+                            d = data["data"][0]
+                            guild = self.bot.get_guild(gid); channel = guild.get_channel(cid) if guild else None
+                            if channel is None:
+                                # Same rule as the RSS poller: an unavailable
+                                # channel is a failed delivery, so don't record
+                                # the stream as announced - retry next poll.
+                                continue
                             await channel.send(f"🟣 **{username}** is live on Twitch: {d.get('title','')}")
-                    self.db.conn.execute("UPDATE extras_twitch SET last_live=? WHERE guild_id=? AND username=?", (int(live), gid, username))
+                        self.db.conn.execute("UPDATE extras_twitch SET last_live=? WHERE guild_id=? AND username=?", (int(live), gid, username))
+                        self.db.conn.commit()
+                    except Exception:
+                        logger.exception("Twitch polling failed for %s (guild %s)", username, gid)
+                        continue
         except Exception:
             logger.exception("Twitch polling failed")
         self.db.conn.commit()
@@ -559,21 +654,49 @@ class Extras(commands.Cog):
                 if not last_id:
                     self.db.conn.execute("UPDATE extras_feeds SET last_id=? WHERE guild_id=? AND url=?", (newest_id, gid, url))
                     continue
+                # Walk the whole feed rather than a fixed slice: a burst of
+                # posts between polls used to push older unseen entries past
+                # the 20-entry window, and the cursor then jumped to the newest
+                # one, skipping them permanently.
                 new_entries = []
-                for entry in entries[:20]:
+                for entry in entries[:FEED_MAX_BACKLOG]:
                     eid = entry.get("id") or entry.get("guid") or entry.get("link") or entry.get("title","")
                     if eid == last_id:
                         break
                     new_entries.append(entry)
+                else:
+                    if len(entries) > FEED_MAX_BACKLOG:
+                        logger.warning(
+                            "feed %s (guild %s) has more than %s unseen entries - announcing the newest %s",
+                            url, gid, FEED_MAX_BACKLOG, FEED_MAX_BACKLOG,
+                        )
                 guild = self.bot.get_guild(gid); channel = guild.get_channel(cid) if guild else None
+                if not new_entries:
+                    continue
+                if channel is None:
+                    # Guild/channel unavailable (deleted, bot removed, cache not
+                    # ready). Treat it as a failed delivery: leave the cursor
+                    # alone so the entries are announced once the channel is
+                    # back, instead of being marked as sent when nothing was.
+                    logger.warning("feed %s: channel %s unavailable in guild %s - will retry next poll", url, cid, gid)
+                    continue
+                # Oldest first, and the cursor only advances past an entry that
+                # was actually delivered, so a failed send is retried next poll
+                # instead of being skipped.
+                delivered = None
                 for entry in reversed(new_entries):
-                    if channel:
-                        title = entry.get("title", "New post")
-                        link = entry.get("link", "")
+                    title = entry.get("title", "New post")
+                    link = entry.get("link", "")
+                    try:
                         await channel.send(f"📰 **{title}**\n{link}" if link else f"📰 **{title}**")
-                if new_entries:
-                    newest_id = new_entries[0].get("id") or new_entries[0].get("guid") or new_entries[0].get("link") or new_entries[0].get("title","")
+                    except discord.HTTPException as exc:
+                        logger.warning("feed %s: couldn't post entry in guild %s: %s", url, gid, exc)
+                        break
+                    delivered = entry
+                if delivered is not None:
+                    newest_id = delivered.get("id") or delivered.get("guid") or delivered.get("link") or delivered.get("title","")
                     self.db.conn.execute("UPDATE extras_feeds SET last_id=? WHERE guild_id=? AND url=?", (newest_id, gid, url))
+                    self.db.conn.commit()
             except Exception:
                 logger.exception("Feed polling failed for %s", url)
         self.db.conn.commit()

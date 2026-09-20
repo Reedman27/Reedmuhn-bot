@@ -19,6 +19,10 @@ logger = logging.getLogger("youtube")
 
 FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 CHECK_INTERVAL_MINUTES = 10
+# Most announcements one channel can produce in a single poll. The feed only
+# carries ~15 entries anyway; this is a guard against a channel that
+# republishes its back catalogue.
+MAX_BACKLOG_PER_CHECK = 10
 
 CHANNEL_ID_RE = re.compile(r"^UC[\w-]{20,}$")
 CHANNEL_ID_IN_HTML_RE = re.compile(r'"channelId":"(UC[\w-]{20,})"')
@@ -132,17 +136,9 @@ async def is_live_now(session: aiohttp.ClientSession, video_id: str) -> bool:
     return bool(_is_live_pattern(video_id).search(html))
 
 
-def extract_latest_video(feed_text: str):
-    """Parses feed XML text and returns (video_id, title, author, url) for
-    the newest entry, or None if the feed has no entries / didn't parse.
-    Pulled out as a standalone function so it's testable against a fixed
-    XML string without needing a live network call.
-    """
-    feed = feedparser.parse(feed_text)
-    if not feed.entries:
-        return None
-    entry = feed.entries[0]
-
+def _entry_to_video(entry):
+    """(video_id, title, author, url) for one feed entry, or None if the entry
+    has no usable video ID."""
     video_id = entry.get("yt_videoid")
     if not video_id:
         # fall back to parsing "yt:video:VIDEO_ID" out of the entry id
@@ -155,6 +151,49 @@ def extract_latest_video(feed_text: str):
     author = entry.get("author", "the channel")
     url = f"https://www.youtube.com/watch?v={video_id}"
     return video_id, title, author, url
+
+
+def extract_latest_video(feed_text: str):
+    """Parses feed XML text and returns (video_id, title, author, url) for
+    the newest entry, or None if the feed has no entries / didn't parse.
+    Pulled out as a standalone function so it's testable against a fixed
+    XML string without needing a live network call.
+    """
+    feed = feedparser.parse(feed_text)
+    if not feed.entries:
+        return None
+    return _entry_to_video(feed.entries[0])
+
+
+def extract_new_videos(feed_text: str, last_video_id, limit: int = MAX_BACKLOG_PER_CHECK):
+    """Every entry newer than `last_video_id`, oldest first.
+
+    The feed carries roughly the 15 most recent uploads, so when a channel
+    posts several videos between polls the older ones are still available -
+    the previous code only ever looked at entries[0] and then moved the cursor
+    straight to it, permanently skipping everything in between.
+
+    If `last_video_id` isn't in the feed at all (the channel uploaded more than
+    a feed's worth since the last check, or the video was deleted) only the
+    newest entries up to `limit` are returned, which is the most that can be
+    recovered from this feed.
+    """
+    feed = feedparser.parse(feed_text)
+    entries = list(feed.entries or [])
+    if not entries:
+        return []
+    newer = []
+    for entry in entries:  # feed order is newest first
+        video = _entry_to_video(entry)
+        if video is None:
+            continue
+        if video[0] == last_video_id:
+            break
+        newer.append(video)
+        if len(newer) >= limit:
+            break
+    newer.reverse()  # oldest unseen first, so the cursor moves forward in order
+    return newer
 
 
 from utils import manager_or_permission
@@ -285,49 +324,60 @@ class YouTube(commands.Cog):
                 return
             text = await resp.text()
 
-        result = extract_latest_video(text)
-        if result is None:
-            return
-        video_id, title, author, url = result
-
-        if video_id == last_video_id:
-            return  # nothing new since last check
-
         if last_video_id is None:
             # First time watching this channel - establish a baseline only.
+            latest = extract_latest_video(text)
+            if latest is None:
+                return
+            self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, latest[0])
+            self.bot.db.record_bot_event("youtube.baseline", guild_id, None, None, f"channel={yt_channel_id} video={latest[0]}")
+            return
+
+        pending = extract_new_videos(text, last_video_id)
+        if not pending:
+            return  # nothing new since last check
+
+        # Oldest unseen first. The cursor advances one video at a time and only
+        # after that video has been handled, so a failure part-way through
+        # leaves the rest to be picked up on the next poll rather than skipping
+        # them the way a single jump to the newest entry did.
+        for video_id, title, author, url in pending:
+            is_live = await is_live_now(self.session, video_id)
+            wanted = notify_lives if is_live else notify_videos
+            if not wanted:
+                # This kind of upload is toggled off for this watch - still
+                # advance the cursor so it isn't re-checked (and re-scraped for
+                # live status) every poll from here on.
+                self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
+                continue
+
+            target_channel_id = announce_channel_id
+            if is_live and live_announce_channel_id:
+                target_channel_id = live_announce_channel_id
+            channel = self.bot.get_channel(target_channel_id)
+            if channel is None:
+                logger.warning("youtube announcement channel %s is unavailable for guild %s", target_channel_id, guild_id)
+                return  # keep the cursor where it is and retry next poll
+
+            role_mention = f"<@&{role_id}> " if role_id else ""
+            if is_live:
+                content = f"{role_mention}🔴 **{author}** is live now: {title}\n{url}"
+            else:
+                content = f"{role_mention}📺 New video from **{author}**: {title}\n{url}"
+
+            # Only advance the cursor after Discord accepts the announcement. A
+            # transient Discord outage must not permanently lose a notification.
+            try:
+                await channel.send(content, allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True))
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "youtube: couldn't announce %s in guild %s channel %s: %s",
+                    video_id, guild_id, target_channel_id, exc,
+                )
+                return  # cursor unchanged - this video is retried next poll
             self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
-            self.bot.db.record_bot_event("youtube.baseline", guild_id, None, None, f"channel={yt_channel_id} video={video_id}")
-            return
-
-        is_live = await is_live_now(self.session, video_id)
-        wanted = notify_lives if is_live else notify_videos
-        if not wanted:
-            # This kind of upload is toggled off for this watch - still
-            # advance the cursor so it isn't re-checked (and re-scraped for
-            # live status) every poll from here on.
-            self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
-            return
-
-        target_channel_id = announce_channel_id
-        if is_live and live_announce_channel_id:
-            target_channel_id = live_announce_channel_id
-        channel = self.bot.get_channel(target_channel_id)
-        if channel is None:
-            logger.warning("youtube announcement channel %s is unavailable for guild %s", target_channel_id, guild_id)
-            return
-
-        role_mention = f"<@&{role_id}> " if role_id else ""
-        if is_live:
-            content = f"{role_mention}🔴 **{author}** is live now: {title}\n{url}"
-        else:
-            content = f"{role_mention}📺 New video from **{author}**: {title}\n{url}"
-
-        # Only advance the cursor after Discord accepts the announcement. A
-        # transient Discord outage must not permanently lose a notification.
-        await channel.send(content, allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True))
-        self.bot.db.set_youtube_last_video(guild_id, yt_channel_id, video_id)
-        event_type = "youtube.live_announced" if is_live else "youtube.announced"
-        self.bot.db.record_bot_event(event_type, guild_id, None, target_channel_id, f"channel={yt_channel_id} video={video_id}")
+            event_type = "youtube.live_announced" if is_live else "youtube.announced"
+            self.bot.db.record_bot_event(event_type, guild_id, None, target_channel_id, f"channel={yt_channel_id} video={video_id}")
 
     @check_feeds.before_loop
     async def before_check_feeds(self):

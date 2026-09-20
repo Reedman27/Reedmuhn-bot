@@ -116,10 +116,11 @@ class Emergency(commands.Cog):
             return {"unlocked": 0, "failed": 0, "note": "No lockdown was active."}
         everyone = guild.default_role
         unlocked, failed = 0, 0
+        still_locked: dict[str, bool | None] = {}
         for channel_id_str, prior in state["channel_overwrites"].items():
             channel = guild.get_channel(int(channel_id_str))
             if channel is None:
-                continue
+                continue  # channel is gone - nothing left to restore for it
             overwrite = channel.overwrites_for(everyone)
             overwrite.send_messages = prior
             try:
@@ -130,8 +131,16 @@ class Emergency(commands.Cog):
                 unlocked += 1
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
-        self.bot.db.clear_lockdown_state(guild.id)
-        return {"unlocked": unlocked, "failed": failed}
+                # Keep this channel in the lockdown record - clearing it here
+                # would make the bot forget it's still restricted, and a
+                # partial unlock would be reported (and remembered) as
+                # complete even though some channels never actually reopened.
+                still_locked[channel_id_str] = prior
+        self.bot.db.update_lockdown_state(guild.id, still_locked)
+        result = {"unlocked": unlocked, "failed": failed}
+        if still_locked:
+            result["note"] = f"{len(still_locked)} channel(s) remain locked - re-run Unlock to retry them."
+        return result
 
     # ---- revoke all invites ----
 

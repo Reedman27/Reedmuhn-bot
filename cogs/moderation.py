@@ -1,9 +1,10 @@
 import json
+import logging
 import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import scheduler
 from utils import format_duration, parse_duration, tempnick_self_allowed, can_moderate, removable_roles_for_strip, restore_stripped_roles
@@ -11,9 +12,15 @@ from utils import format_duration, parse_duration, tempnick_self_allowed, can_mo
 
 from utils import manager_or_permission
 
+logger = logging.getLogger("moderation")
+
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.muted_sync_retry_loop.start()
+
+    def cog_unload(self):
+        self.muted_sync_retry_loop.cancel()
 
     # Moderation commands live under a single /moderation group (with
     # /moderation muterole as a nested subgroup) instead of 11 separate
@@ -469,36 +476,137 @@ class Moderation(commands.Cog):
         await self.apply_muted_role_overwrites(guild, role)
         return role
 
+    async def _apply_muted_policy_to_channel(self, channel, role: discord.Role, cfg: dict, reason: str) -> None:
+        """Writes the configured Muted-role denies onto one channel. Only the
+        role's own overwrite is touched, so unrelated permissions are left
+        exactly as they are."""
+        overwrite = channel.overwrites_for(role)
+        overwrite.view_channel = False if cfg["muted_deny_view_channel"] else None
+        if isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel)):
+            overwrite.send_messages = False if cfg["muted_deny_send_messages"] else None
+            overwrite.add_reactions = False if cfg["muted_deny_reactions"] else None
+            overwrite.create_public_threads = False if cfg["muted_deny_threads"] else None
+            overwrite.create_private_threads = False if cfg["muted_deny_threads"] else None
+        if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            overwrite.connect = False if cfg["muted_deny_connect"] else None
+            overwrite.speak = False if cfg["muted_deny_speak"] else None
+            overwrite.stream = False if cfg["muted_deny_stream"] else None
+        # An overwrite with every field left at None is a no-op -
+        # writing it anyway would leave a pointless empty entry for
+        # this role in every channel's permission list (visible,
+        # confusing clutter in Discord's own UI). Remove it outright
+        # instead, same as Emergency lockdown's Unlock does.
+        if overwrite.is_empty():
+            await channel.set_permissions(role, overwrite=None, reason=reason)
+        else:
+            await channel.set_permissions(role, overwrite=overwrite, reason=reason)
+
     async def apply_muted_role_overwrites(self, guild: discord.Guild, role: discord.Role) -> tuple[int, int]:
         cfg = self.bot.db.get_guild_config(guild.id)
         changed = 0
         failed = 0
         for channel in guild.channels:
             try:
-                overwrite = channel.overwrites_for(role)
-                overwrite.view_channel = False if cfg["muted_deny_view_channel"] else None
-                if isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel)):
-                    overwrite.send_messages = False if cfg["muted_deny_send_messages"] else None
-                    overwrite.add_reactions = False if cfg["muted_deny_reactions"] else None
-                    overwrite.create_public_threads = False if cfg["muted_deny_threads"] else None
-                    overwrite.create_private_threads = False if cfg["muted_deny_threads"] else None
-                if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
-                    overwrite.connect = False if cfg["muted_deny_connect"] else None
-                    overwrite.speak = False if cfg["muted_deny_speak"] else None
-                    overwrite.stream = False if cfg["muted_deny_stream"] else None
-                # An overwrite with every field left at None is a no-op -
-                # writing it anyway would leave a pointless empty entry for
-                # this role in every channel's permission list (visible,
-                # confusing clutter in Discord's own UI). Remove it outright
-                # instead, same as Emergency lockdown's Unlock does.
-                if overwrite.is_empty():
-                    await channel.set_permissions(role, overwrite=None, reason="Updated Muted role configuration")
-                else:
-                    await channel.set_permissions(role, overwrite=overwrite, reason="Updated Muted role configuration")
+                await self._apply_muted_policy_to_channel(channel, role, cfg, "Updated Muted role configuration")
                 changed += 1
-            except (discord.Forbidden, discord.HTTPException):
+            except (discord.Forbidden, discord.HTTPException) as exc:
                 failed += 1
+                # Remember the channels that didn't take, so a rate limit or a
+                # momentary permission problem doesn't quietly leave holes in
+                # the mute policy until somebody re-runs the command by hand.
+                self.bot.db.queue_muted_channel_sync(
+                    guild.id, channel.id, role.id, error=f"{type(exc).__name__}: {exc}",
+                )
         return changed, failed
+
+    @tasks.loop(minutes=10)
+    async def muted_sync_retry_loop(self):
+        """Retries Muted-role overwrites that failed during a policy sweep."""
+        await self.bot.wait_until_ready()
+        # A tasks.Loop dies permanently on an uncaught non-network exception
+        # (e.g. a DB error), so the pass is guarded as a whole.
+        try:
+            await self._run_muted_sync_retry()
+        except Exception:
+            logger.exception("muted role sync retry pass failed")
+
+    async def _run_muted_sync_retry(self) -> None:
+        now = int(time.time())
+        for row_id, guild_id, channel_id, role_id, attempts in self.bot.db.list_due_muted_channel_syncs(now):
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            role = guild.get_role(role_id)
+            channel = guild.get_channel(channel_id)
+            if role is None or channel is None:
+                self.bot.db.resolve_muted_channel_sync(row_id)
+                continue
+            if attempts >= 10:
+                logger.error(
+                    "muted role policy: giving up on channel %s in guild %s after %s attempts",
+                    channel_id, guild_id, attempts,
+                )
+                self.bot.db.resolve_muted_channel_sync(row_id)
+                continue
+            try:
+                await self._apply_muted_policy_to_channel(
+                    channel, role, self.bot.db.get_guild_config(guild_id), "Retrying Muted role configuration",
+                )
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                self.bot.db.defer_muted_channel_sync(row_id, now + min(3600, 120 * (2 ** min(attempts, 5))), str(exc))
+                continue
+            self.bot.db.resolve_muted_channel_sync(row_id)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Reconciles a strip-mute role stash when somebody rejoins.
+
+        If a member left while strip-muted, the scheduled unmute fired against
+        a member who wasn't there, so their stashed roles stayed in the
+        database indefinitely. On rejoin: if their mute is still pending, leave
+        the stash alone (the scheduler will restore it at expiry); if it has
+        already expired, give the roles back now. restore_stripped_roles does
+        the filtering - deleted roles, managed roles, roles that have moved
+        above the bot, and roles sticky-roles already restored are all skipped.
+        """
+        if not self.bot.db.get_stripped_roles(member.guild.id, member.id):
+            return
+        if self.bot.db.has_pending_unmute(member.guild.id, member.id):
+            return  # still muted - the scheduled unmute owns the restore
+        await restore_stripped_roles(
+            self.bot.db, member.guild, member, reason="Restoring roles stripped by an expired mute",
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel):
+        """Applies the configured Muted-role policy to channels created after
+        the policy was set.
+
+        Without this, the sweep only ever covered channels that existed at
+        configuration time: any channel made afterwards had no Muted overwrite,
+        so a muted member could talk or join there depending on the server's
+        normal permissions. Only the Muted role's own overwrite is written,
+        and a channel that inherits from a category the policy already covers
+        still gets its own explicit deny, which is what makes it robust
+        against later category changes.
+        """
+        guild = channel.guild
+        role_id = self.bot.db.get_guild_config(guild.id).get("muted_role_id")
+        if not role_id:
+            return
+        role = guild.get_role(role_id)
+        if role is None:
+            return
+        try:
+            await self._apply_muted_policy_to_channel(
+                channel, role, self.bot.db.get_guild_config(guild.id), "Applying Muted role policy to new channel",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "muted role policy: couldn't apply to new channel %s in guild %s (%s) - queued for retry",
+                channel.id, guild.id, exc,
+            )
+            self.bot.db.queue_muted_channel_sync(guild.id, channel.id, role.id, error=str(exc))
 
     @muterole.command(name="set", description="Assign an existing role as the server's Muted role")
     @app_commands.describe(role="The role to use for mutes")

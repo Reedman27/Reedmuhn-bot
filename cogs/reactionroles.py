@@ -8,10 +8,13 @@ reaction-role-like.
 """
 import logging
 import re
+import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+import utils
 
 logger = logging.getLogger("reactionroles")
 
@@ -91,6 +94,21 @@ from utils import manager_or_permission
 class ReactionRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.role_op_retry_loop.start()
+
+    def cog_unload(self):
+        self.role_op_retry_loop.cancel()
+
+    @tasks.loop(minutes=5)
+    async def role_op_retry_loop(self):
+        """Re-attempts reaction-role changes Discord refused. A reaction fires
+        once; without this a transient 429 or a temporarily wrong role
+        hierarchy meant the member simply never got (or never lost) the role."""
+        await self.bot.wait_until_ready()
+        try:
+            await utils.retry_pending_role_ops(self.bot, self.bot.db, logger)
+        except Exception:
+            logger.exception("pending reaction-role retry pass failed")
 
     async def _fetch_target_message(
         self, interaction: discord.Interaction, channel: discord.TextChannel | None, message_id: int
@@ -174,14 +192,59 @@ class ReactionRoles(commands.Cog):
         )
         try:
             message = await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-            for emoji_key, role in valid:
-                await message.add_reaction(emoji_key)
-                self.bot.db.add_reaction_role(interaction.guild.id, message.id, target.id, emoji_key, role.id)
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to send messages or add reactions there.", ephemeral=True)
+            await interaction.response.send_message("I don't have permission to send messages there.", ephemeral=True)
             return
         except discord.HTTPException:
-            await interaction.response.send_message("Discord rejected the reaction-role menu. Check the emojis and channel permissions.", ephemeral=True)
+            await interaction.response.send_message("Discord rejected the reaction-role menu. Check the channel permissions.", ephemeral=True)
+            return
+
+        # Each entry is attempted independently and only bound once its
+        # reaction actually landed. A failure part-way used to abort the loop
+        # and leave a menu whose embed advertised roles that were never bound.
+        bound, failed = [], []
+        for emoji_key, role in valid:
+            try:
+                await message.add_reaction(emoji_key)
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "reaction-role menu: couldn't react with %s in guild %s: %s",
+                    emoji_key, interaction.guild.id, exc,
+                )
+                failed.append((emoji_key, role))
+                continue
+            self.bot.db.add_reaction_role(interaction.guild.id, message.id, target.id, emoji_key, role.id)
+            bound.append((emoji_key, role))
+
+        if not bound:
+            # Nothing works - take the misleading message back down entirely.
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+            await interaction.response.send_message(
+                "Couldn't add any of those reactions, so no menu was created. Check the emojis and my permissions.",
+                ephemeral=True,
+            )
+            return
+
+        if failed:
+            # Rewrite the embed so it only advertises the roles that are really
+            # bound, then say exactly which ones didn't make it.
+            embed.set_field_at(
+                0, name="Roles",
+                value="\n".join(f"{emoji}  <@&{role.id}>" for emoji, role in bound), inline=False,
+            )
+            try:
+                await message.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+            await interaction.response.send_message(
+                f"Created the reaction-role menu: {message.jump_url}\n"
+                "These entries couldn't be added and were left out: "
+                + ", ".join(f"{emoji} → <@&{role.id}>" for emoji, role in failed),
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
 
         await interaction.response.send_message(f"Created the reaction-role menu: {message.jump_url}")
@@ -350,13 +413,27 @@ class ReactionRoles(commands.Cog):
                 await member.add_roles(role, reason="Reaction role")
             else:
                 await member.remove_roles(role, reason="Reaction role removed")
-        except discord.Forbidden:
-            logger.warning(
-                "missing permissions to change role %s for %s in guild %s (reaction role)",
-                role_id, member.id, guild.id,
+        except discord.HTTPException as exc:
+            if isinstance(exc, discord.Forbidden):
+                logger.warning(
+                    "missing permissions to change role %s for %s in guild %s (reaction role)",
+                    role_id, member.id, guild.id,
+                )
+            else:
+                logger.warning(
+                    "failed to change reaction role %s for %s in guild %s: %s",
+                    role_id, member.id, guild.id, exc,
+                )
+            # Queued rather than dropped: the member isn't going to react a
+            # second time, so this is the only chance to get it right.
+            self.bot.db.queue_role_op(
+                guild.id, member.id, role.id, "add" if giving else "remove",
+                "Reaction role", next_attempt_at=int(time.time()) + 60,
+                error=f"{type(exc).__name__}: {exc}",
             )
-        except discord.HTTPException:
-            logger.exception("failed to change reaction role for %s in guild %s", member.id, guild.id)
+            return
+        # Any earlier queued attempt for this member/role is now satisfied.
+        self.bot.db.resolve_role_op_for(guild.id, member.id, role.id)
 
 
 async def setup(bot: commands.Bot):

@@ -23,6 +23,30 @@ DEFAULT_MILESTONE_EMOJIS = {
 }
 
 
+class _DeferredCommitConn:
+    """Wraps a sqlite3.Connection so commit() is a no-op while everything
+    else (execute, rollback, ...) passes straight through.
+
+    Used only by Db.restore_config_snapshot_data to make a multi-step restore
+    atomic even though it's built from public setter methods that each call
+    self.conn.commit() individually. A sqlite3.Connection's own methods can't
+    be reassigned directly (attribute assignment on the C-level object raises
+    AttributeError), so this stands in for the whole connection instead -
+    self.conn is swapped to point at one of these for the duration, then
+    swapped back, and it's the swapped-back real connection's commit()/
+    rollback() that actually ends the transaction.
+    """
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+
+    def commit(self):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 class Db:
     def __init__(self, path: str = "bot.db"):
         # Make sure the parent directory exists - matters when path points
@@ -120,6 +144,72 @@ class Db:
                 data TEXT NOT NULL
             )"""
         )
+        # Retry bookkeeping for scheduled events. A transient Discord/API
+        # failure must not silently drop a scheduled moderation action, so a
+        # failed event is rescheduled with a growing backoff and only given
+        # up on once its attempts run out (see scheduler.run_loop).
+        sched_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(scheduled_events)")}
+        if "attempts" not in sched_cols:
+            self.conn.execute("ALTER TABLE scheduled_events ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "last_error" not in sched_cols:
+            self.conn.execute("ALTER TABLE scheduled_events ADD COLUMN last_error TEXT")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_events_due ON scheduled_events(run_at)")
+        # Role rewards (level roles, invite milestones) Discord refused at the
+        # moment they were earned. Each reward is earned exactly once, so a
+        # failed grant has to be retried from here - waiting for another
+        # level-up or milestone crossing may mean waiting forever.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS pending_role_rewards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(guild_id, user_id, role_id)
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_role_rewards_due ON pending_role_rewards(next_attempt_at)")
+        # Reaction-role adds/removes Discord refused. Separate from
+        # pending_role_rewards because these carry a direction (add vs remove)
+        # and are keyed to a reaction that will never fire again.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS pending_role_ops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(guild_id, user_id, role_id)
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_role_ops_due ON pending_role_ops(next_attempt_at)")
+        # Channels whose Muted-role overwrite couldn't be written (rate limit,
+        # momentary permission problem). Without this the policy sweep just
+        # reported a failure count and left silent holes in the mute policy.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS pending_muted_channel_syncs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(guild_id, channel_id)
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_muted_syncs_due ON pending_muted_channel_syncs(next_attempt_at)")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS custom_commands (
                 guild_id INTEGER NOT NULL,
@@ -1212,7 +1302,44 @@ class Db:
         self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestion_config (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, enabled INTEGER NOT NULL DEFAULT 0, staff_role_id INTEGER)""")
         self.conn.execute("""CREATE TABLE IF NOT EXISTS suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, message_id INTEGER NOT NULL, author_id INTEGER NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', staff_id INTEGER, staff_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_suggestions_guild ON suggestions(guild_id, id DESC)")
+        # One open ticket per person per guild, enforced by the database rather
+        # than by an application-level "check then insert", which two
+        # simultaneous ticket opens could both pass. Wrapped because an older
+        # database may already contain duplicate open tickets from before this
+        # rule existed - in that case the rule simply isn't enforced until they
+        # are closed, which is better than refusing to start.
+        # Retry bookkeeping for WebUI-queued moderation actions (see
+        # retry_mod_action). Placed here so it runs after the table exists.
+        mod_action_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(dashboard_mod_actions)")}
+        if "attempts" not in mod_action_cols:
+            self.conn.execute("ALTER TABLE dashboard_mod_actions ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "retry_at" not in mod_action_cols:
+            self.conn.execute("ALTER TABLE dashboard_mod_actions ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0")
+        self._ensure_one_open_ticket_index()
         self.conn.commit()
+
+    def _ensure_one_open_ticket_index(self) -> bool:
+        """Creates the one-open-ticket-per-member unique index if it can be.
+
+        A database that already holds duplicate open tickets can't get the index
+        until those are closed. Rather than requiring a restart afterwards,
+        close_ticket() calls this again, so the protection switches on by itself
+        as soon as the last duplicate is closed."""
+        if getattr(self, "_ticket_index_ok", False):
+            return True
+        try:
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_one_open_per_opener "
+                "ON tickets(guild_id, opener_id) WHERE status='open'"
+            )
+            self._ticket_index_ok = True
+        except sqlite3.IntegrityError:
+            self._ticket_index_ok = False
+            logger.warning(
+                "couldn't create the one-open-ticket-per-member index: existing duplicate open "
+                "tickets. It will be created automatically once they are closed."
+            )
+        return self._ticket_index_ok
 
     # ---- scheduled events (generalized: tempban unbans + reminders both
     # live here, same shape as yagpdb's real ScheduledEvents table) ----
@@ -1225,12 +1352,26 @@ class Db:
 
         self.conn.commit()
 
-    def due_events(self, now: int) -> list[tuple[int, str, int, str]]:
+    def due_events(self, now: int) -> list[tuple[int, str, int, str, int]]:
+        """Returns (id, event_name, guild_id, data, attempts) for every event
+        that is due. `attempts` lets the scheduler apply a backoff and stop
+        retrying an event that keeps failing instead of looping forever."""
         cur = self.conn.execute(
-            "SELECT id, event_name, guild_id, data FROM scheduled_events WHERE run_at <= ?",
+            "SELECT id, event_name, guild_id, data, attempts FROM scheduled_events WHERE run_at <= ?",
             (now,),
         )
         return cur.fetchall()
+
+    def reschedule_scheduled_event(self, event_id: int, run_at: int, error: Optional[str] = None) -> bool:
+        """Push a failed scheduled event into the future instead of deleting
+        it, bumping its attempt counter. Keeping the same row (rather than
+        delete + re-insert) is what makes the retry budget meaningful."""
+        cur = self.conn.execute(
+            "UPDATE scheduled_events SET run_at = ?, attempts = attempts + 1, last_error = ? WHERE id = ?",
+            (int(run_at), (error or None) and str(error)[:500], event_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def list_scheduled_events(self, guild_id: int, event_name: Optional[str] = None) -> list[tuple[int, str, int, str]]:
         """Returns (id, event_name, run_at, data) for every scheduled event
@@ -1463,6 +1604,68 @@ class Db:
             (guild_id, user_id, ",".join(str(rid) for rid in role_ids), int(time.time())),
         )
         self.conn.commit()
+
+
+    # ---- muted-role channel policy retry queue ----
+
+    def queue_muted_channel_sync(self, guild_id: int, channel_id: int, role_id: int,
+                                 next_attempt_at=None, error=None) -> None:
+        now = int(time.time())
+        self.conn.execute(
+            """INSERT INTO pending_muted_channel_syncs(guild_id,channel_id,role_id,attempts,next_attempt_at,last_error,created_at)
+               VALUES(?,?,?,0,?,?,?)
+               ON CONFLICT(guild_id,channel_id) DO UPDATE SET role_id=excluded.role_id,
+                   next_attempt_at=excluded.next_attempt_at, last_error=excluded.last_error""",
+            (guild_id, channel_id, role_id,
+             int(next_attempt_at if next_attempt_at is not None else now + 120),
+             (error or None) and str(error)[:500], now),
+        )
+        self.conn.commit()
+
+    def list_due_muted_channel_syncs(self, now: int, limit: int = 50) -> list[tuple]:
+        """(id, guild_id, channel_id, role_id, attempts)."""
+        return self.conn.execute(
+            """SELECT id, guild_id, channel_id, role_id, attempts FROM pending_muted_channel_syncs
+               WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?""",
+            (int(now), int(limit)),
+        ).fetchall()
+
+    def list_pending_muted_channel_syncs(self, guild_id: int, limit: int = 100) -> list[tuple]:
+        return self.conn.execute(
+            """SELECT id, channel_id, role_id, attempts, next_attempt_at, last_error
+               FROM pending_muted_channel_syncs WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, int(limit)),
+        ).fetchall()
+
+    def resolve_muted_channel_sync(self, row_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM pending_muted_channel_syncs WHERE id = ?", (row_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def defer_muted_channel_sync(self, row_id: int, next_attempt_at: int, error=None) -> None:
+        self.conn.execute(
+            "UPDATE pending_muted_channel_syncs SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ?",
+            (int(next_attempt_at), (error or None) and str(error)[:500], row_id),
+        )
+        self.conn.commit()
+
+    def has_pending_unmute(self, guild_id: int, user_id: int) -> bool:
+        """True if a scheduled unmute is still waiting for this member.
+
+        Used when someone rejoins with a strip-mute role stash: if their mute
+        hasn't expired yet the stash has to stay put, and if it has, their
+        roles can be handed back immediately rather than sitting stashed
+        forever because the scheduled unmute fired while they were gone."""
+        for (raw,) in self.conn.execute(
+            "SELECT data FROM scheduled_events WHERE guild_id=? AND event_name='unmute_role'", (guild_id,)
+        ):
+            try:
+                data = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if int(data.get("user_id", -1)) == int(user_id):
+                return True
+        return False
 
     def get_stripped_roles(self, guild_id: int, user_id: int) -> list[int]:
         """Read the roles stashed by a strip-roles mute without clearing them."""
@@ -2745,16 +2948,267 @@ class Db:
 
     def set_extras_xp(self, guild_id: int, user_id: int, xp: int) -> int:
         """Sets a member's XP to an absolute value (clamped to >= 0) and
-        recomputes their level to match. Returns the resulting level."""
-        xp = max(0, xp)
-        level = self._extras_level_from_xp(xp)
+        recomputes their level to match. Returns the resulting level.
+
+        Kept for callers that only care about the new level;
+        `set_extras_xp_detailed` is the one to use when the caller also has to
+        apply the level-up side effects (role rewards / announcement)."""
+        return self.set_extras_xp_detailed(guild_id, user_id, xp)["new_level"]
+
+    def set_extras_xp_detailed(self, guild_id: int, user_id: int, xp: int) -> dict:
+        """Absolute XP write inside one transaction. Returns
+        {"xp", "old_xp", "old_level", "new_level"} so the caller can tell
+        whether the change crossed any level boundaries - every XP write
+        (bot or WebUI) goes through here or `add_extras_xp` so the level
+        maths lives in exactly one place."""
+        return self._write_extras_xp(guild_id, user_id, max(0, int(xp)), absolute=True)
+
+    def add_extras_xp(self, guild_id: int, user_id: int, gained: int) -> dict:
+        """Atomic relative XP change (read + write in one transaction), so two
+        near-simultaneous messages can't both read the same starting XP and
+        clobber each other. Same return shape as set_extras_xp_detailed."""
+        return self._write_extras_xp(guild_id, user_id, int(gained), absolute=False)
+
+    def _write_extras_xp(self, guild_id: int, user_id: int, value: int, absolute: bool) -> dict:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT xp, level FROM extras_xp WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+            ).fetchone()
+            old_xp = int(row[0]) if row else 0
+            old_level = int(row[1]) if row else 0
+            xp = max(0, value if absolute else old_xp + value)
+            new_level = self._extras_level_from_xp(xp)
+            self.conn.execute(
+                """INSERT INTO extras_xp(guild_id,user_id,xp,level) VALUES(?,?,?,?)
+                   ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=excluded.xp,level=excluded.level""",
+                (guild_id, user_id, xp, new_level),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"xp": xp, "old_xp": old_xp, "old_level": old_level, "new_level": new_level}
+
+    # ---- extras economy: atomic money operations ----
+    # Every balance change below does its read and its write inside a single
+    # BEGIN IMMEDIATE transaction. Bot and WebUI are separate processes on the
+    # same SQLite file, so an application-level read/check/write sequence is
+    # genuinely racy here - not just theoretically.
+
+    def claim_extras_daily(
+        self, guild_id: int, user_id: int, now: int, amount: int,
+        streak_bonus: int, streak_bonus_cap: int, grace_seconds: int, cooldown_seconds: int = 86400,
+    ) -> dict:
+        """Atomically claim a daily reward.
+
+        Returns {"claimed": True, "reward", "bonus", "balance", "streak"} or
+        {"claimed": False, "remaining", "balance"} when still on cooldown. The
+        cooldown check and the payout are one transaction, so two simultaneous
+        claims can't both pass the check and pay out twice."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT balance, last_daily, daily_streak FROM extras_economy WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            ).fetchone()
+            balance = int(row[0]) if row else 0
+            last = int(row[1]) if row and row[1] is not None else None
+            streak = int(row[2]) if row else 0
+            if last is not None and now - last < cooldown_seconds:
+                self.conn.commit()
+                return {"claimed": False, "remaining": cooldown_seconds - (now - last), "balance": balance}
+            streak = streak + 1 if last is not None and now - last < grace_seconds else 1
+            bonus = min(streak_bonus_cap, streak_bonus * (streak - 1))
+            reward = amount + bonus
+            balance += reward
+            self.conn.execute(
+                """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,?,?)
+                   ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=excluded.balance,
+                       last_daily=excluded.last_daily, daily_streak=excluded.daily_streak""",
+                (guild_id, user_id, balance, now, streak),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"claimed": True, "reward": reward, "bonus": bonus, "balance": balance, "streak": streak}
+
+    def add_extras_balance(self, guild_id: int, user_id: int, delta: int) -> int:
+        """Atomic balance increment/decrement (never below 0). Returns the new
+        balance. Preserves last_daily/daily_streak."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,0,NULL,0)",
+                (guild_id, user_id),
+            )
+            self.conn.execute(
+                "UPDATE extras_economy SET balance = MAX(0, balance + ?) WHERE guild_id=? AND user_id=?",
+                (int(delta), guild_id, user_id),
+            )
+            row = self.conn.execute(
+                "SELECT balance FROM extras_economy WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+            ).fetchone()
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return int(row[0]) if row else 0
+
+    def transfer_extras_balance(self, guild_id: int, sender_id: int, recipient_id: int, amount: int) -> bool:
+        """Atomic coin transfer. The debit is a conditional UPDATE guarded on
+        `balance >= amount`, so two simultaneous payments can never overspend;
+        the recipient is credited only if that UPDATE actually matched a row.
+        Returns False when the sender couldn't cover the amount."""
+        amount = int(amount)
+        if amount <= 0:
+            return False
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE extras_economy SET balance = balance - ? WHERE guild_id=? AND user_id=? AND balance >= ?",
+                (amount, guild_id, sender_id, amount),
+            )
+            if cur.rowcount == 0:
+                self.conn.commit()
+                return False
+            self.conn.execute(
+                """INSERT INTO extras_economy(guild_id,user_id,balance,last_daily,daily_streak) VALUES(?,?,?,NULL,0)
+                   ON CONFLICT(guild_id,user_id) DO UPDATE SET balance = balance + ?""",
+                (guild_id, recipient_id, amount, amount),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return True
+
+    # ---- role rewards that Discord refused (retry/repair queue) ----
+
+    def queue_role_reward(
+        self, guild_id: int, user_id: int, role_id: int, kind: str,
+        reason: str = "", next_attempt_at: Optional[int] = None, error: Optional[str] = None,
+    ) -> None:
+        """Remember a role reward that was earned but not successfully granted
+        so it can be retried later (or repaired by hand from the dashboard)."""
+        now = int(time.time())
         self.conn.execute(
-            """INSERT INTO extras_xp(guild_id,user_id,xp,level) VALUES(?,?,?,?)
-               ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=excluded.xp,level=excluded.level""",
-            (guild_id, user_id, xp, level),
+            """INSERT INTO pending_role_rewards(guild_id,user_id,role_id,kind,reason,attempts,next_attempt_at,last_error,created_at)
+               VALUES(?,?,?,?,?,0,?,?,?)
+               ON CONFLICT(guild_id,user_id,role_id) DO UPDATE SET
+                   kind=excluded.kind, reason=excluded.reason, last_error=excluded.last_error""",
+            (guild_id, user_id, role_id, kind, reason,
+             int(next_attempt_at if next_attempt_at is not None else now), (error or None) and str(error)[:500], now),
         )
         self.conn.commit()
-        return level
+        logger.warning(
+            "queued failed role reward for retry: guild=%s user=%s role=%s kind=%s error=%s",
+            guild_id, user_id, role_id, kind, error,
+        )
+
+    def list_due_role_rewards(self, now: int, limit: int = 50) -> list[tuple]:
+        """(id, guild_id, user_id, role_id, kind, reason, attempts) for every
+        queued reward whose backoff has elapsed."""
+        return self.conn.execute(
+            """SELECT id, guild_id, user_id, role_id, kind, reason, attempts FROM pending_role_rewards
+               WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?""",
+            (int(now), int(limit)),
+        ).fetchall()
+
+    def list_pending_role_rewards(self, guild_id: int, limit: int = 100) -> list[tuple]:
+        """Same rows as above, per guild and regardless of backoff - for the
+        dashboard, so a failed reward is visible instead of invisible."""
+        return self.conn.execute(
+            """SELECT id, user_id, role_id, kind, reason, attempts, next_attempt_at, last_error
+               FROM pending_role_rewards WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, int(limit)),
+        ).fetchall()
+
+
+    # ---- pending reaction-role operations (add/remove that Discord refused) ----
+
+    def queue_role_op(self, guild_id: int, user_id: int, role_id: int, action: str,
+                      reason: str = "", next_attempt_at=None, error=None) -> None:
+        """Remember a reaction-role add/remove Discord rejected. A reaction is a
+        one-shot event - the member won't react again - so without this queue a
+        429 or a momentary hierarchy problem meant the role was never applied."""
+        now = int(time.time())
+        self.conn.execute(
+            """INSERT INTO pending_role_ops(guild_id,user_id,role_id,action,reason,attempts,next_attempt_at,last_error,created_at)
+               VALUES(?,?,?,?,?,0,?,?,?)
+               ON CONFLICT(guild_id,user_id,role_id) DO UPDATE SET
+                   action=excluded.action, reason=excluded.reason,
+                   next_attempt_at=excluded.next_attempt_at, last_error=excluded.last_error""",
+            (guild_id, user_id, role_id, action, reason,
+             int(next_attempt_at if next_attempt_at is not None else now),
+             (error or None) and str(error)[:500], now),
+        )
+        self.conn.commit()
+        logger.warning(
+            "queued failed reaction-role %s for retry: guild=%s user=%s role=%s error=%s",
+            action, guild_id, user_id, role_id, error,
+        )
+
+    def list_due_role_ops(self, now: int, limit: int = 50) -> list[tuple]:
+        """(id, guild_id, user_id, role_id, action, reason, attempts)."""
+        return self.conn.execute(
+            """SELECT id, guild_id, user_id, role_id, action, reason, attempts FROM pending_role_ops
+               WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?""",
+            (int(now), int(limit)),
+        ).fetchall()
+
+    def list_pending_role_ops(self, guild_id: int, limit: int = 100) -> list[tuple]:
+        """Per-guild view for the dashboard, so a permanently failing binding is
+        visible instead of invisible."""
+        return self.conn.execute(
+            """SELECT id, user_id, role_id, action, attempts, next_attempt_at, last_error
+               FROM pending_role_ops WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, int(limit)),
+        ).fetchall()
+
+    def resolve_role_op_for(self, guild_id: int, user_id: int, role_id: int) -> bool:
+        """Clear any queued retry once the member's role state is correct."""
+        cur = self.conn.execute(
+            "DELETE FROM pending_role_ops WHERE guild_id = ? AND user_id = ? AND role_id = ?",
+            (guild_id, user_id, role_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def resolve_role_op(self, op_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM pending_role_ops WHERE id = ?", (op_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def defer_role_op(self, op_id: int, next_attempt_at: int, error=None) -> None:
+        self.conn.execute(
+            "UPDATE pending_role_ops SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ?",
+            (int(next_attempt_at), (error or None) and str(error)[:500], op_id),
+        )
+        self.conn.commit()
+
+    def resolve_role_reward(self, reward_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM pending_role_rewards WHERE id = ?", (reward_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def resolve_role_reward_for(self, guild_id: int, user_id: int, role_id: int) -> bool:
+        """Clear any queued retry for this exact reward - used once the member
+        actually holds the role, however they got it."""
+        cur = self.conn.execute(
+            "DELETE FROM pending_role_rewards WHERE guild_id = ? AND user_id = ? AND role_id = ?",
+            (guild_id, user_id, role_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def defer_role_reward(self, reward_id: int, next_attempt_at: int, error: Optional[str] = None) -> None:
+        self.conn.execute(
+            "UPDATE pending_role_rewards SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ?",
+            (int(next_attempt_at), (error or None) and str(error)[:500], reward_id),
+        )
+        self.conn.commit()
 
     def get_extras_balance(self, guild_id: int, user_id: int) -> int:
         row = self.conn.execute(
@@ -3147,9 +3601,12 @@ class Db:
         limit = max(1, min(int(limit), 100))
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            # retry_at gates re-queued actions so a transient Discord failure
+            # backs off instead of spinning on the next poll.
             rows = self.conn.execute(
-                "SELECT id, guild_id, user_id, action, duration_seconds, reason FROM dashboard_mod_actions WHERE status = 'queued' ORDER BY id LIMIT ?",
-                (limit,),
+                "SELECT id, guild_id, user_id, action, duration_seconds, reason FROM dashboard_mod_actions "
+                "WHERE status = 'queued' AND COALESCE(retry_at, 0) <= ? ORDER BY id LIMIT ?",
+                (int(time.time()), limit),
             ).fetchall()
             ids = [row[0] for row in rows]
             if ids:
@@ -3163,6 +3620,20 @@ class Db:
         except Exception:
             self.conn.rollback()
             raise
+    def mod_action_attempts(self, request_id: int) -> int:
+        row = self.conn.execute("SELECT attempts FROM dashboard_mod_actions WHERE id=?", (request_id,)).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def retry_mod_action(self, request_id: int, error: str, retry_at: int) -> None:
+        """Put a queued mod action back in the queue after a transient Discord
+        failure. Previously any failure - including a 429 or a 5xx - marked the
+        action failed and it was simply never performed."""
+        self.conn.execute(
+            "UPDATE dashboard_mod_actions SET status='queued', error=?, attempts=COALESCE(attempts,0)+1, retry_at=? WHERE id=?",
+            (str(error)[:500], int(retry_at), request_id),
+        )
+        self.conn.commit()
+
     def complete_mod_action(self, request_id: int, error: str | None = None) -> None:
         self.conn.execute(
             "UPDATE dashboard_mod_actions SET status=?, completed_at=?, error=? WHERE id=?",
@@ -3259,6 +3730,23 @@ class Db:
         )
         self.conn.commit()
 
+    def update_lockdown_state(self, guild_id: int, remaining_channel_overwrites: dict) -> None:
+        """Rewrites the lockdown state to only the channels still restricted.
+
+        Used by Unlock when some channels couldn't be restored: clearing the
+        whole state in that case would make the bot forget those channels were
+        ever locked, so a later Unlock retry would have nothing left to work
+        from and the channels could stay locked indefinitely with no record of
+        it. If nothing remains, this is equivalent to clearing the state."""
+        if not remaining_channel_overwrites:
+            self.clear_lockdown_state(guild_id)
+            return
+        self.conn.execute(
+            "UPDATE emergency_lockdown_state SET channel_overwrites=? WHERE guild_id=?",
+            (json.dumps({str(k): v for k, v in remaining_channel_overwrites.items()}), guild_id),
+        )
+        self.conn.commit()
+
     def clear_lockdown_state(self, guild_id: int) -> None:
         self.conn.execute("DELETE FROM emergency_lockdown_state WHERE guild_id=?", (guild_id,))
         self.conn.commit()
@@ -3320,9 +3808,42 @@ class Db:
 
     def restore_config_snapshot_data(self, guild_id: int, data: dict) -> None:
         """Inverse of capture_config_snapshot_data - writes every section
-        back. Runs as one transaction (commits only at the end) so a
-        mid-restore failure can't leave settings half-swapped between the
-        old and snapshotted state."""
+        back.
+
+        This calls the same public setters used elsewhere (set_welcome,
+        set_autorole, ...) so the write logic for each section lives in
+        exactly one place. The problem: every one of those setters commits
+        internally, so a docstring claiming "one transaction" was previously
+        just wrong - a mid-restore exception could leave some sections
+        restored and others not, silently, with no rollback.
+
+        Real fix: BEGIN here, then swap self.conn for a thin proxy whose
+        commit() is a no-op, so none of the inner setters can end the
+        transaction early - sqlite3.Connection objects don't allow
+        overwriting their own bound methods directly (attribute assignment on
+        the C-level Connection raises AttributeError), so the proxy swaps out
+        the whole `self.conn` reference on this Db instance instead, which is
+        an ordinary Python attribute and swaps back in `finally` regardless of
+        outcome. Only the true underlying connection's own commit()/rollback()
+        (called directly, past the proxy) actually ends the transaction.
+        """
+        real_conn = self.conn
+        real_conn.execute("BEGIN IMMEDIATE")
+        self.conn = _DeferredCommitConn(real_conn)
+        try:
+            self._restore_config_snapshot_data_unsafe(guild_id, data)
+        except Exception:
+            real_conn.rollback()
+            raise
+        else:
+            real_conn.commit()
+        finally:
+            self.conn = real_conn
+
+    def _restore_config_snapshot_data_unsafe(self, guild_id: int, data: dict) -> None:
+        """The actual restore logic. Never call directly - only through
+        restore_config_snapshot_data, which provides the transaction guard
+        this method relies on."""
         gc = data.get("guild_config", {})
         if gc.get("welcome_channel_id") and gc.get("welcome_message"):
             self.set_welcome(guild_id, gc["welcome_channel_id"], gc["welcome_message"])
@@ -3378,7 +3899,6 @@ class Db:
                 "INSERT INTO log_channels (guild_id, category, channel_id) VALUES (?, ?, ?)",
                 (guild_id, category, channel_id),
             )
-        self.conn.commit()
 
     def _restore_id_list(self, guild_id: int, table: str, id_column: str, ids: list) -> None:
         """Shared by every snapshot section that's just a set of
@@ -3692,6 +4212,20 @@ class Db:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def try_create_ticket(self, guild_id: int, channel_id: int, opener_id: int, subject: str):
+        """create_ticket, but returns None instead of raising when the opener
+        already has an open ticket.
+
+        The "do they already have one?" check in the cog is a read, so two
+        button clicks in the same instant both passed it and both created a
+        ticket (and a channel). The partial unique index on
+        (guild_id, opener_id) WHERE status='open' makes the database the
+        arbiter; the loser gets None back and cleans up its channel."""
+        try:
+            return self.create_ticket(guild_id, channel_id, opener_id, subject)
+        except sqlite3.IntegrityError:
+            return None
+
     def get_ticket_by_channel(self, channel_id: int) -> Optional[tuple]:
         return self.conn.execute(
             "SELECT id, guild_id, channel_id, opener_id, subject, status FROM tickets WHERE channel_id=? AND status='open'",
@@ -3715,7 +4249,11 @@ class Db:
             (int(time.time()), closed_by, reason, ticket_id),
         )
         self.conn.commit()
-        return cur.rowcount > 0
+        closed = cur.rowcount > 0
+        if closed and not getattr(self, "_ticket_index_ok", False):
+            self._ensure_one_open_ticket_index()
+            self.conn.commit()
+        return closed
 
     def get_open_ticket_by_opener(self, guild_id: int, opener_id: int) -> Optional[tuple]:
         return self.conn.execute(
@@ -5347,6 +5885,47 @@ class Db:
     def get_starboard_message(self,guild_id:int,source_message_id:int):
         return self.conn.execute("SELECT starboard_message_id, channel_id, star_count FROM starboard_messages WHERE guild_id=? AND source_message_id=?",(guild_id,source_message_id)).fetchone()
 
+    def claim_starboard_post(self, guild_id: int, source_message_id: int, channel_id: int, star_count: int) -> bool:
+        """Reserve the right to post a starboard message for this source.
+
+        Returns True only for the caller that inserted the placeholder row, so
+        two reaction events arriving together can't both send a starboard post.
+        The real starboard_message_id is filled in by upsert_starboard_message
+        once the send succeeds; a 0 placeholder that never gets filled in is
+        released by release_starboard_claim."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO starboard_messages(guild_id,source_message_id,starboard_message_id,channel_id,star_count) VALUES(?,?,0,?,?)",
+                (guild_id, source_message_id, channel_id, star_count),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return cur.rowcount > 0
+
+    def release_starboard_claim(self, guild_id: int, source_message_id: int) -> None:
+        """Drop an unfulfilled placeholder claim (the Discord send failed), so
+        a later reaction can try again."""
+        self.conn.execute(
+            "DELETE FROM starboard_messages WHERE guild_id=? AND source_message_id=? AND starboard_message_id=0",
+            (guild_id, source_message_id),
+        )
+        self.conn.commit()
+
+    def release_all_starboard_claims(self) -> int:
+        """Drop every placeholder claim left by a previous process.
+
+        A claim is only meaningful while a send is in flight. If the bot was
+        killed between claim_starboard_post() and the send finishing, the
+        placeholder row stayed forever and that message could never be
+        starboarded. Called once at cog load, when nothing can be in flight.
+        """
+        cur = self.conn.execute("DELETE FROM starboard_messages WHERE starboard_message_id=0")
+        self.conn.commit()
+        return cur.rowcount
+
     def upsert_starboard_message(self,guild_id:int,source_message_id:int,starboard_message_id:int,channel_id:int,star_count:int):
         self.conn.execute("INSERT INTO starboard_messages(guild_id,source_message_id,starboard_message_id,channel_id,star_count) VALUES(?,?,?,?,?) ON CONFLICT(guild_id,source_message_id) DO UPDATE SET starboard_message_id=excluded.starboard_message_id,channel_id=excluded.channel_id,star_count=excluded.star_count",(guild_id,source_message_id,starboard_message_id,channel_id,star_count)); self.conn.commit()
 
@@ -5368,6 +5947,21 @@ class Db:
 
     def list_suggestions(self,guild_id:int,limit:int=50):
         return self.conn.execute("SELECT id,message_id,author_id,content,status,staff_id,staff_reason,created_at,updated_at FROM suggestions WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit)).fetchall()
+
+    def claim_suggestion_status(self, suggestion_id: int, status: str, staff_id: int, reason: str = "") -> bool:
+        """Atomically move a suggestion out of `pending`.
+
+        Two staff members clicking Approve/Deny at the same moment both used to
+        read status='pending' and both wrote, so the final state was whichever
+        write landed last and both edited the Discord message. The conditional
+        UPDATE means exactly one caller wins; the loser is told it was already
+        reviewed."""
+        cur = self.conn.execute(
+            "UPDATE suggestions SET status=?,staff_id=?,staff_reason=?,updated_at=? WHERE id=? AND status='pending'",
+            (status, staff_id, reason, int(time.time()), suggestion_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def set_suggestion_status(self,suggestion_id:int,status:str,staff_id:int,reason:str=''):
         self.conn.execute("UPDATE suggestions SET status=?,staff_id=?,staff_reason=?,updated_at=? WHERE id=?",(status,staff_id,reason,int(time.time()),suggestion_id)); self.conn.commit()

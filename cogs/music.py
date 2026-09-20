@@ -43,10 +43,18 @@ from voicelink.enums import LoopType, SearchType
 from voicelink.filters import Equalizer, Filter, Filters, Timescale
 from voicelink.lyrics import LYRICS_PLATFORMS
 from voicelink.pool import NodePool
-from voicelink.exceptions import NoNodesAvailable, VoicelinkException
+from voicelink.exceptions import NodeCreationError, NoNodesAvailable, VoicelinkException
 from voicelink.utils import format_ms, format_to_ms
 
 logger = logging.getLogger("music")
+
+
+# Lavalink supervisor tuning. The retry loop is unbounded on purpose - a
+# permanently-unreachable Lavalink should keep costing one log line per
+# NODE_RETRY_MAX_SECONDS, not permanently disable music.
+NODE_RETRY_BASE_SECONDS = 5
+NODE_RETRY_MAX_SECONDS = 300
+NODE_SUPERVISOR_INTERVAL_SECONDS = 30
 
 
 class Music(commands.Cog, name="Music"):
@@ -101,8 +109,10 @@ class Music(commands.Cog, name="Music"):
         # Lavalink connection below was never actually attempted on any
         # startup. NodePool._nodes is the real underlying dict and correctly
         # reflects whether a node has been registered yet.
-        if not NodePool._nodes:
-            self._node_task = asyncio.create_task(self._connect_node())
+        # Always run the supervisor: it no-ops while a healthy node exists and
+        # (re)creates one whenever the pool is empty, so Lavalink coming up
+        # late, crashing, or being restarted no longer requires a bot restart.
+        self._node_task = asyncio.create_task(self._node_supervisor())
         # timer_settings.cache_cleanup was already exposed by Config but
         # nothing ever called SQLiteMusicDB.cleanup_cache() on a schedule -
         # without it, per-guild settings/user caches are never evicted, so
@@ -155,38 +165,57 @@ class Music(commands.Cog, name="Music"):
                     logger.exception("Failed to destroy music player during unload")
         NodePool._nodes.clear()
 
-    async def _connect_node(self):
+    async def _node_supervisor(self):
+        """Keeps exactly one Lavalink node registered, forever.
+
+        The old `_connect_node` gave up after five attempts, and the node is
+        only added to NodePool *after* its websocket connects - so if Lavalink
+        was still booting (Undertow opens the port several seconds after the
+        JVM starts), or the container restarted later, the pool stayed empty
+        and /music reported "no nodes available" until the whole bot was
+        restarted.
+
+        Once a node is in the pool, voicelink's own `Node._listen` reconnects
+        its websocket with backoff, so this supervisor only has to notice an
+        *empty* pool and rebuild it - which also covers a node that was
+        removed via disconnect(remove_from_pool=True).
+        """
         await self.bot.wait_until_ready()
         node_cfg = Config().nodes["DEFAULT"]
-        # Lavalink (a separate container/process) can still be mid-boot when
-        # the bot comes up - Undertow doesn't open the port until a few
-        # seconds after the JVM starts. A single failed attempt here used to
-        # be permanent for the rest of the process's lifetime (/music would
-        # report "no nodes available" until the whole bot was restarted).
-        # Retry a handful of times with backoff to ride out that race.
-        max_attempts = 5
-        delay = 2
-        for attempt in range(1, max_attempts + 1):
+        node_logger = logging.getLogger("music.lavalink")
+        delay = NODE_RETRY_BASE_SECONDS
+        connected_once = False
+        while not self.bot.is_closed():
             try:
-                await NodePool.create_node(bot=self.bot, **node_cfg, logger=logging.getLogger("music.lavalink"))
-                logger.info("Connected to Lavalink node %s:%s", node_cfg["host"], node_cfg["port"])
-                return
+                if NodePool._nodes:
+                    # Healthy (or self-reconnecting) node already registered.
+                    delay = NODE_RETRY_BASE_SECONDS
+                    await asyncio.sleep(NODE_SUPERVISOR_INTERVAL_SECONDS)
+                    continue
+                try:
+                    await NodePool.create_node(bot=self.bot, **node_cfg, logger=node_logger)
+                except NodeCreationError:
+                    # Another task registered it first - nothing to do.
+                    await asyncio.sleep(NODE_SUPERVISOR_INTERVAL_SECONDS)
+                    continue
+                logger.info(
+                    "%s Lavalink node %s:%s",
+                    "Reconnected to" if connected_once else "Connected to",
+                    node_cfg["host"], node_cfg["port"],
+                )
+                connected_once = True
+                delay = NODE_RETRY_BASE_SECONDS
+                await asyncio.sleep(NODE_SUPERVISOR_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                if attempt == max_attempts:
-                    logger.exception(
-                        "Unable to connect to Lavalink after %d attempts; "
-                        "/music will report the node as unavailable until the bot restarts",
-                        max_attempts,
-                    )
-                    return
+            except Exception as exc:
                 logger.warning(
-                    "Lavalink connection attempt %d/%d failed, retrying in %ds",
-                    attempt, max_attempts, delay,
+                    "Lavalink node unavailable (%s); retrying in %ss", exc, delay,
                 )
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 30)
+                # Exponential backoff so a down Lavalink isn't hammered, but the
+                # retry loop itself never ends.
+                delay = min(delay * 2, NODE_RETRY_MAX_SECONDS)
 
     @staticmethod
     def _guild(interaction: discord.Interaction) -> discord.Guild:

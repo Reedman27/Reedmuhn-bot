@@ -11,10 +11,13 @@ it, and won't double-post later the same day.
 """
 import calendar
 import datetime
+import logging
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+
+logger = logging.getLogger("birthdays")
 
 CHECK_INTERVAL_MINUTES = 60
 
@@ -132,6 +135,16 @@ class Birthdays(commands.Cog):
 
     @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
     async def check_birthdays(self):
+        # Everything in here is defensive on purpose: an uncaught exception
+        # inside a tasks.Loop body stops the loop for the rest of the process's
+        # life, which previously meant one Forbidden on one birthday message
+        # killed every future birthday announcement in every guild.
+        try:
+            await self._announce_due_birthdays()
+        except Exception:
+            logger.exception("birthday check pass failed")
+
+    async def _announce_due_birthdays(self):
         today = datetime.date.today()
         for guild_id in self.bot.db.all_guild_ids_with_birthdays():
             config = self.bot.db.get_guild_config(guild_id)
@@ -151,7 +164,16 @@ class Birthdays(commands.Cog):
                     continue
 
             for user_id in due:
-                await channel.send(f"🎉 Happy birthday, <@{user_id}>! 🎂")
+                try:
+                    await channel.send(f"🎉 Happy birthday, <@{user_id}>! 🎂")
+                except discord.HTTPException as exc:
+                    # Not marked announced, so the next hourly tick retries it
+                    # (and the rest of today's birthdays still go out now).
+                    logger.warning(
+                        "birthday announcement failed: guild=%s user=%s channel=%s error=%s",
+                        guild_id, user_id, channel_id, exc,
+                    )
+                    continue
                 self.bot.db.mark_birthday_announced(guild_id, user_id, today.year)
 
     @check_birthdays.before_loop

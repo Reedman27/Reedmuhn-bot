@@ -105,27 +105,43 @@ class AutoMod(commands.Cog):
 
     @tasks.loop(seconds=3)
     async def _poll_queue_decisions(self):
-        for request_id, guild_id, review_id, decision, resolved_by in self.bot.db.claim_automod_decisions():
-            review = self.bot.db.get_automod_review(guild_id, review_id)
-            if review is None or review["status"] != "pending":
-                continue  # already resolved from Discord's side in the meantime
-            status = "confirmed" if decision == "confirm" else "dismissed"
-            applied = self.bot.db.resolve_automod_review(guild_id, review_id, resolved_by, status)
-            if not applied:
-                continue
-            guild = self.bot.get_guild(guild_id)
-            if decision != "confirm":
-                if guild is not None:
-                    await self._log_queue_dismissal(guild, review, resolved_by)
-                continue
-            if guild is None:
-                logger.warning("automod queue confirm for unknown guild %s (request %s)", guild_id, request_id)
-                continue
-            member = guild.get_member(review["user_id"])
-            if member is None:
-                logger.info("automod queue confirm for guild %s: member %s isn't in the guild anymore", guild_id, review["user_id"])
-                continue
-            await self._finalize_queued_violation(guild, member, review["rule_label"])
+        # A tasks.Loop dies for the rest of the process's life on any uncaught
+        # exception. Without this guard, one bad row (a member lookup that
+        # raises, a Discord error inside _finalize_queued_violation) would
+        # have silently stopped every future automod-queue decision from ever
+        # being applied.
+        try:
+            requests = self.bot.db.claim_automod_decisions()
+        except Exception:
+            logger.exception("failed to claim automod queue decisions")
+            return
+        for request_id, guild_id, review_id, decision, resolved_by in requests:
+            try:
+                await self._apply_queue_decision(request_id, guild_id, review_id, decision, resolved_by)
+            except Exception:
+                logger.exception("failed to apply automod queue decision %s", request_id)
+
+    async def _apply_queue_decision(self, request_id, guild_id, review_id, decision, resolved_by) -> None:
+        review = self.bot.db.get_automod_review(guild_id, review_id)
+        if review is None or review["status"] != "pending":
+            return  # already resolved from Discord's side in the meantime
+        status = "confirmed" if decision == "confirm" else "dismissed"
+        applied = self.bot.db.resolve_automod_review(guild_id, review_id, resolved_by, status)
+        if not applied:
+            return
+        guild = self.bot.get_guild(guild_id)
+        if decision != "confirm":
+            if guild is not None:
+                await self._log_queue_dismissal(guild, review, resolved_by)
+            return
+        if guild is None:
+            logger.warning("automod queue confirm for unknown guild %s (request %s)", guild_id, request_id)
+            return
+        member = guild.get_member(review["user_id"])
+        if member is None:
+            logger.info("automod queue confirm for guild %s: member %s isn't in the guild anymore", guild_id, review["user_id"])
+            return
+        await self._finalize_queued_violation(guild, member, review["rule_label"])
 
     @_poll_queue_decisions.before_loop
     async def _before_poll_queue_decisions(self):

@@ -1971,7 +1971,17 @@ async def set_extras_xp_route(request: Request, guild_id: int, user_id: int = Fo
         new_xp = current - amount
     else:
         new_xp = amount
-    db.set_extras_xp(guild_id, user_id, new_xp)
+    result = db.set_extras_xp_detailed(guild_id, user_id, new_xp)
+    # This process has no Discord connection, so it can't hand out the reward
+    # roles the new level earns. Queue the work for the bot (same mechanism as
+    # the reaction-role and giveaway actions above) - otherwise an admin
+    # bumping someone from level 4 to level 10 here would leave the database
+    # saying level 10 while the member never gets the level 5-10 roles.
+    if result["new_level"] > result["old_level"]:
+        db.insert_scheduled_event(
+            "sync_level_rewards", guild_id, int(time.time()),
+            {"user_id": user_id, "new_level": result["new_level"], "old_level": result["old_level"]},
+        )
     return RedirectResponse(f"/guild/{guild_id}/leveling?saved=1", status_code=303)
 
 
