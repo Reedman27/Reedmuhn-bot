@@ -21,7 +21,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -30,6 +30,9 @@ import hmac
 import asyncio
 from db import Db
 from redis_client import RedisClient
+from safe_feed import validate_feed_url
+
+SESSION_TTL_SECONDS = 12 * 60 * 60
 
 MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
@@ -57,6 +60,16 @@ def load_or_create_secret_key() -> str:
     except OSError:
         pass
     return key
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable. .env.example documents "true"
+    while the code used to accept only "1", which silently left the session
+    cookie without the Secure flag for anyone who followed the example."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 SECRET_KEY = load_or_create_secret_key()
@@ -102,19 +115,138 @@ app = FastAPI(lifespan=_lifespan)
 
 @app.middleware("http")
 async def security_headers_and_origin_check(request: Request, call_next):
-    if request.method == "POST" and request.url.path != "/login":
-        origin = request.headers.get("origin")
-        referer = request.headers.get("referer")
-        expected = urlsplit(str(request.base_url))
-        supplied = origin or referer
-        if supplied:
-            supplied_parts = urlsplit(supplied)
-            # Compare scheme + network location exactly. A simple startswith()
-            # check is unsafe because an attacker-controlled origin such as
-            # https://dashboard.example.evil can share the dashboard's prefix.
-            if (supplied_parts.scheme, supplied_parts.netloc) != (expected.scheme, expected.netloc):
-                return RedirectResponse("/login", status_code=303)
+    # CSRF tokens are tied to the signed session. Token fields are injected into
+    # every rendered HTML POST form below, so templates do not need to duplicate
+    # security-sensitive boilerplate. Non-form clients may use X-CSRF-Token.
+    state_changing = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if request.method == "GET" and not request.url.path.startswith("/static/"):
+        request.session.setdefault("_csrf_token", secrets.token_urlsafe(32))
+
+    def reject_request(message: str, status_code: int = 403):
+        rejected = PlainTextResponse(message, status_code=status_code)
+        rejected.headers.setdefault("X-Content-Type-Options", "nosniff")
+        rejected.headers.setdefault("X-Frame-Options", "DENY")
+        rejected.headers.setdefault("Referrer-Policy", "same-origin")
+        rejected.headers.setdefault("Cache-Control", "no-store")
+        return rejected
+
+    if state_changing:
+        # Preserve the existing exact-origin defense for authenticated dashboard
+        # actions. Login is still protected by a session-bound token, but isn't
+        # subject to proxy-origin assumptions that may otherwise break login.
+        if request.url.path != "/login":
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            supplied = origin or referer
+            if supplied:
+                try:
+                    expected_origin = urlsplit(str(request.base_url))
+                    supplied_origin = urlsplit(supplied)
+                except ValueError:
+                    return reject_request("Request origin could not be validated.")
+                if (supplied_origin.scheme, supplied_origin.netloc) != (
+                    expected_origin.scheme, expected_origin.netloc
+                ):
+                    return reject_request("Request origin did not match this dashboard.")
+
+        # Parse once and replay the buffered body for FastAPI's downstream Form
+        # dependencies. This lets the middleware validate CSRF fields without
+        # consuming the form body before the route receives it.
+        max_body_bytes = 8 * 1024 * 1024
+        try:
+            declared_length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            return reject_request("Invalid Content-Length.", status_code=400)
+        if declared_length > max_body_bytes:
+            return reject_request("Request body is too large.", status_code=413)
+
+        original_receive = request._receive
+        try:
+            # Enforce the limit while streaming. Buffering request.body() first
+            # would allow a huge chunked body to consume memory before rejection.
+            body_chunks = []
+            body_size = 0
+            async for chunk in request.stream():
+                body_size += len(chunk)
+                if body_size > max_body_bytes:
+                    return reject_request("Request body is too large.", status_code=413)
+                body_chunks.append(chunk)
+            body = b"".join(body_chunks)
+            request._body = body
+            form_data = await request.form()
+        except Exception:
+            return reject_request("Unable to validate request CSRF token.")
+
+        submitted_token = form_data.get("_csrf_token") or request.headers.get("x-csrf-token")
+        expected_token = request.session.get("_csrf_token")
+        if (
+            not isinstance(expected_token, str)
+            or not isinstance(submitted_token, str)
+            or not hmac.compare_digest(expected_token, submitted_token)
+        ):
+            return reject_request("CSRF validation failed. Reload the page and try again.")
+
+        body_replayed = False
+
+        async def replay_request_body():
+            nonlocal body_replayed
+            if not body_replayed:
+                body_replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await original_receive()
+
+        request._receive = replay_request_body
+
     response = await call_next(request)
+
+    # Inject a per-session CSRF field into every rendered HTML POST form.
+    # BaseHTTPMiddleware wraps downstream responses as streams, so buffer only
+    # HTML pages and rebuild the response while retaining its status, headers,
+    # cookies, and background task. Dashboard HTML pages are bounded UI output.
+    csrf_token = request.session.get("_csrf_token")
+    content_type = response.headers.get("content-type", "")
+    if csrf_token and "text/html" in content_type and hasattr(response, "body_iterator"):
+        token_bytes = csrf_token.encode("ascii")
+        form_pattern = re.compile(
+            rb"(<form\b(?=[^>]*\bmethod\s*=\s*(?:\"post\"|'post'|post)(?:\s|>))[^>]*>)(.*?</form\s*>)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        existing_token_pattern = re.compile(
+            rb"<input\b(?=[^>]*\bname\s*=\s*(?:\"_csrf_token\"|'_csrf_token'|_csrf_token)(?:\s|>))[^>]*>",
+            re.IGNORECASE,
+        )
+        hidden_field = (
+            b'<input type="hidden" name="_csrf_token" value="'
+            + token_bytes
+            + b'">'
+        )
+
+        def inject_csrf_field(match):
+            entire_form = match.group(0)
+            if existing_token_pattern.search(entire_form):
+                return entire_form
+            return match.group(1) + hidden_field + match.group(2)
+
+        original_body = b"".join([chunk async for chunk in response.body_iterator])
+        secured_body = form_pattern.sub(inject_csrf_field, original_body)
+        from starlette.responses import Response
+
+        old_headers = [
+            (key, value)
+            for key, value in response.raw_headers
+            if key.lower() not in {b"content-length", b"content-type", b"transfer-encoding"}
+        ]
+        background = getattr(response, "background", None)
+        response = Response(
+            content=secured_body,
+            status_code=response.status_code,
+            background=background,
+        )
+        response.raw_headers.extend(old_headers)
+        response.headers["content-type"] = content_type
+        response.headers["content-length"] = str(len(secured_body))
+        response.headers.setdefault("Cache-Control", "private, no-store")
+
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
@@ -140,8 +272,8 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
     same_site="lax",
-    max_age=12 * 60 * 60,
-    https_only=os.environ.get("WEBUI_HTTPS_ONLY", "0") == "1",
+    max_age=SESSION_TTL_SECONDS,
+    https_only=_env_flag("WEBUI_HTTPS_ONLY"),
 )
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -156,7 +288,14 @@ if not WEBUI_PASSWORD:
 
 
 def is_authed(request: Request) -> bool:
-    return request.session.get("authenticated") is True
+    session_id = request.session.get("session_id")
+    if request.session.get("authenticated") is not True or not isinstance(session_id, str):
+        return False
+    try:
+        return db.is_webui_session_valid(session_id)
+    except Exception:
+        # Fail closed if the session store cannot be checked.
+        return False
 
 
 async def require_auth(request: Request):
@@ -288,21 +427,32 @@ async def login_submit(request: Request, password: str = Form(...)):
     if is_locked_out(request):
         return RedirectResponse("/login?error=locked", status_code=303)
 
-    if not hmac.compare_digest(password, WEBUI_PASSWORD):
+    # Compare bytes: hmac.compare_digest() raises TypeError for non-ASCII str
+    # arguments, which used to turn such attempts into an unthrottled HTTP 500.
+    if not hmac.compare_digest(password.encode("utf-8"), WEBUI_PASSWORD.encode("utf-8")):
         record_failed_login(request)
         db.record_webui_login(_client_ip(request), False)
         return RedirectResponse("/login?error=failed", status_code=303)
 
     clear_failed_logins(request)
     db.record_webui_login(_client_ip(request), True)
+    old_session_id = request.session.get("session_id")
+    if isinstance(old_session_id, str):
+        db.revoke_webui_session(old_session_id)
     request.session.clear()
+    session_id = secrets.token_urlsafe(32)
+    db.create_webui_session(session_id, SESSION_TTL_SECONDS)
     request.session["authenticated"] = True
+    request.session["session_id"] = session_id
     request.session["discord_username"] = "Dashboard Admin"
     return RedirectResponse("/", status_code=303)
 
 
-@app.get("/logout")
+@app.post("/logout")
 async def logout(request: Request):
+    session_id = request.session.get("session_id")
+    if isinstance(session_id, str):
+        db.revoke_webui_session(session_id)
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
@@ -1891,8 +2041,9 @@ async def feeds_page(request: Request, guild_id: int):
 async def add_extras_feed(request: Request, guild_id: int, url: str = Form(...), channel_id: int = Form(...)):
     if (r := await require_auth(request)):
         return r
-    url = url.strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
+    try:
+        url = validate_feed_url(url)
+    except ValueError:
         return RedirectResponse(f"/guild/{guild_id}/feeds?error=feedurl", status_code=303)
     if not validate_channel(guild_id, channel_id, ("text",)):
         return RedirectResponse(f"/guild/{guild_id}/feeds?error=feedchannel", status_code=303)
@@ -2817,10 +2968,12 @@ async def polls_page(request: Request, guild_id: int):
     for poll in db.list_polls(guild_id, 20):
         counts = db.poll_results(poll["id"], len(poll["options"]))
         total = sum(counts)
+        voter_ids = db.poll_voters(poll["id"], len(poll["options"]))
         results = [
             {
                 "option": opt, "count": counts[i],
                 "pct": round(counts[i] / total * 100) if total else 0,
+                "voters": [member_label(guild_id, uid) for uid in voter_ids.get(i, [])],
             }
             for i, opt in enumerate(poll["options"])
         ]
@@ -2844,8 +2997,9 @@ async def close_poll_route(request: Request, guild_id: int, poll_id: int = Form(
     poll = db.get_poll(poll_id)
     if poll is None or poll["guild_id"] != guild_id:
         return RedirectResponse(f"/guild/{guild_id}/polls?error=notfound", status_code=303)
-    if poll["closed"]:
-        return RedirectResponse(f"/guild/{guild_id}/polls?error=alreadyclosed", status_code=303)
+    # Queue even when the DB already says closed. The previous attempt may
+    # have committed the closed flag but failed to edit the Discord message;
+    # re-running the idempotent close handler repairs the stale embed/buttons.
     db.queue_poll_close(guild_id, poll_id)
     await _wake("poll_close")
     return RedirectResponse(f"/guild/{guild_id}/polls?closequeued={poll_id}", status_code=303)

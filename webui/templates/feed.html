@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Channel Feed</h1>
 <section class="card">
-    <p class="hint">Mirrors this server's channel messages into the dashboard so you can read them here instead of opening Discord. Off by default - turning it on stores message content (not just metadata) for every channel the bot can see, going forward. Only the most recent 300 messages per channel are kept.</p>
+    <p class="hint">Mirrors this server's channel messages into the dashboard so you can read them here instead of opening Discord. Off by default. When enabled, message content is stored for channels the bot can see. Only the most recent 300 messages per channel are kept (the operator can also set FEED_RETENTION_DAYS to expire older rows). Turning the feed off deletes all stored feed messages for this server.</p>
     <form method="post" action="/guild/{{ guild_id }}/feed/toggle">
         <label class="toggle-row">
             <span><strong>Enable Channel Feed</strong><small>Start mirroring new messages from this server</small></span>

@@ -9,6 +9,7 @@ messages are pruned down to a fixed number per channel to keep it from
 growing without bound.
 """
 import logging
+import os
 
 import discord
 from discord.ext import commands, tasks
@@ -16,6 +17,9 @@ from discord.ext import commands, tasks
 logger = logging.getLogger("channelfeed")
 
 KEEP_PER_CHANNEL = 300
+# 0 (default) keeps the original behavior: only the per-channel cap applies.
+# Set FEED_RETENTION_DAYS=N in the bot environment to also expire rows after N days.
+RETENTION_DAYS = max(0, int(os.environ.get("FEED_RETENTION_DAYS", "0") or 0))
 PRUNE_INTERVAL_MINUTES = 15
 
 
@@ -51,7 +55,7 @@ class ChannelFeed(commands.Cog):
     @tasks.loop(minutes=PRUNE_INTERVAL_MINUTES)
     async def prune_loop(self):
         try:
-            self.bot.db.prune_feed_messages(KEEP_PER_CHANNEL)
+            self.bot.db.prune_feed_messages(KEEP_PER_CHANNEL, RETENTION_DAYS)
         except Exception:
             logger.exception("Failed to prune message_feed")
 

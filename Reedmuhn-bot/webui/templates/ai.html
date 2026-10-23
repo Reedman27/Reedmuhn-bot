@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}AI · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>🤖 AI Connections</h1>
+<p class="muted">Connect ReedMuhn to OpenAI or another OpenAI-compatible service. Ollama, Groq, self-hosted gateways, and other compatible endpoints can use the same interface.</p>
+
+{% if request.query_params.get("saved") %}<div class="notice success">AI settings saved.</div>{% endif %}
+
+<section class="card">
+<form method="post" action="/guild/{{ guild_id }}/ai/save" class="stack-form">
+    <label><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}> Enable <code>/ask</code> for this server</label>
+
+    <label for="provider">Provider</label>
+    <select id="provider" name="provider">
+        <option value="openai_compatible" {% if cfg.provider == 'openai_compatible' %}selected{% endif %}>OpenAI-compatible</option>
+        <option value="openai" {% if cfg.provider == 'openai' %}selected{% endif %}>OpenAI</option>
+        <option value="groq" {% if cfg.provider == 'groq' %}selected{% endif %}>Groq</option>
+        <option value="ollama" {% if cfg.provider == 'ollama' %}selected{% endif %}>Ollama / local</option>
+        <option value="custom" {% if cfg.provider == 'custom' %}selected{% endif %}>Custom gateway</option>
+    </select>
+
+    <label for="base_url">API base URL</label>
+    <input id="base_url" name="base_url" value="{{ cfg.base_url }}" placeholder="https://api.openai.com/v1" required>
+    <p class="hint">Use the API's <code>/v1</code> base. ReedMuhn appends <code>/chat/completions</code>.</p>
+
+    <label for="api_key">API key</label>
+    <input id="api_key" type="password" name="api_key" placeholder="{% if cfg.api_key_set %}Saved — leave blank to keep it{% else %}Paste API key{% endif %}" autocomplete="new-password">
+    <p class="hint">The saved key is never displayed back in the dashboard.</p>
+
+    <label for="model">Model</label>
+    <input id="model" name="model" value="{{ cfg.model }}" placeholder="gpt-4o-mini" required>
+
+    <label for="system_prompt">System prompt</label>
+    <textarea id="system_prompt" name="system_prompt" rows="5">{{ cfg.system_prompt }}</textarea>
+
+    <div class="form-grid">
+        <label>Max tokens<input type="number" name="max_tokens" min="64" max="4000" value="{{ cfg.max_tokens }}"></label>
+        <label>Temperature<input type="number" name="temperature" min="0" max="2" step="0.1" value="{{ cfg.temperature }}"></label>
+    </div>
+
+    <label><input type="checkbox" name="use_channel_context" {% if cfg.use_channel_context %}checked{% endif %}> Let <code>/ask</code> see recent channel messages</label>
+    <p class="hint">When enabled, ReedMuhn sends the most recent messages from the channel where <code>/ask</code> was run to the AI provider, so it can answer questions about the ongoing conversation. This sends real member messages to your configured third-party provider — leave it off unless you trust that provider and have told your members.</p>
+
+    <label for="context_message_limit">Messages to include</label>
+    <input id="context_message_limit" type="number" name="context_message_limit" min="1" max="30" value="{{ cfg.context_message_limit }}">
+
+    <hr>
+    <label><input type="checkbox" name="index_channels" {% if cfg.index_channels %}checked{% endif %}> Index server channels for AI</label>
+    <p class="hint">When enabled, ReedMuhn stores a rolling searchable copy of channel messages in the shared SQLite database so <code>/ask</code> can answer questions about earlier conversations. It is off by default. Only enable this where your server's members are comfortable with message indexing.</p>
+
+    <label for="index_message_limit">Indexed messages kept per channel</label>
+    <input id="index_message_limit" type="number" name="index_message_limit" min="50" max="5000" value="{{ cfg.index_message_limit }}">
+
+    <button type="submit">Save AI settings</button>
+</form>
+</section>
+
+<section class="card">
+    <h2>Connection presets</h2>
+    <p class="hint">Channel indexing and live channel context are separate settings. Indexing does not automatically send your entire database to the AI provider; <code>/ask</code> only sends the small set of indexed messages that match the question.</p>
+    <p class="muted"><strong>OpenAI:</strong> <code>https://api.openai.com/v1</code> · <strong>Groq:</strong> <code>https://api.groq.com/openai/v1</code> · <strong>Ollama:</strong> <code>http://host.docker.internal:11434/v1</code> when that hostname is available from your Docker setup.</p>
+    <p class="hint">Providers that speak the OpenAI chat-completions format work without another SDK. Keep your API key private and only enable AI in servers where you trust the configured endpoint.</p>
+</section>
+{% endblock %}

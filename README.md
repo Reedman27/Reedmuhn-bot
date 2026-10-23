@@ -80,10 +80,8 @@ Create a `.env` file next to `docker-compose.yml`:
 DISCORD_TOKEN=your_discord_bot_token
 WEBUI_PASSWORD=your_dashboard_password
 DEV_GUILD_ID=
-# Optional - shared secret between the bot and the bundled Lavalink
-# container (see "Music" below). Defaults to "youshallnotpass" if unset,
-# which is fine since Lavalink is only reachable on the internal compose
-# network, not the host, but you can change it here.
+# Required shared secret between bot and bundled Lavalink; generate with `openssl rand -hex 32`.
+# Keep it private. Compose refuses to start if any required secret is blank.
 LAVALINK_PASSWORD=
 ```
 
@@ -115,9 +113,9 @@ docker compose logs -f discord-bot
 
 The dashboard is normally available at:
 
-```text
-http://YOUR-SERVER-IP:8490
-```
+    `http://YOUR-SERVER-IP:8490`
+
+Keep this port on a trusted LAN/VPN. For access over untrusted networks, configure HTTPS at a reverse proxy and set `WEBUI_HTTPS_ONLY=1`. Do not expose the dashboard over plain HTTP to the public internet.
 
 ---
 
@@ -232,7 +230,7 @@ defaults are set via optional environment variables in `.env`:
 |---|---|---|
 | `LAVALINK_HOST` | `lavalink` | Hostname of the Lavalink node (the compose service name) |
 | `LAVALINK_PORT` | `2333` | Lavalink's REST/WS port |
-| `LAVALINK_PASSWORD` | `youshallnotpass` | Shared secret with the Lavalink container - see `.env` above |
+| `LAVALINK_PASSWORD` | `youshallnotpass` | Shared secret with the Lavalink container (internal network only; set your own if you expose the port) |
 | `MUSIC_SEARCH_PLATFORM` | `youtube` | Default source for bare (non-URL) search queries |
 | `MUSIC_LYRICS_PLATFORM` | `lrclib` | Lyrics provider |
 | `MUSIC_MAX_QUEUE` | `1000` | Max tracks per guild queue |

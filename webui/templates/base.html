@@ -81,7 +81,9 @@
             {% endif %}
             {% if discord_username %}<div class="muted logged-in-as">Logged in as {{ discord_username }}</div>{% endif %}
             <a href="/dashboard-log" class="{{ 'active' if active == 'dashboard_log' else '' }}">📝 Dashboard Log</a>
-            <a href="/logout" class="logout">Log out</a>
+            <form action="/logout" method="post" class="logout-form">
+                <button type="submit" class="logout">Log out</button>
+            </form>
         </div>
 
         <main>{% block content %}{% endblock %}</main>

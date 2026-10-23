@@ -1,0 +1,19 @@
+# The WebUI image needs templates/static/source only, never local credentials or data.
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+bot.db
+*.sqlite
+*.sqlite3
+*.db
+data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/

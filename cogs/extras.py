@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import utils
+from safe_feed import fetch_feed_bytes, validate_feed_url
 
 logger = logging.getLogger(__name__)
 
@@ -431,7 +432,15 @@ class Extras(commands.Cog):
             mid = int(message_id)
         except ValueError:
             return await interaction.response.send_message("Invalid message ID.", ephemeral=True)
-        ok = await self._end_giveaway(mid)
+        try:
+            ok = await self._end_giveaway(mid)
+        except Exception:
+            logger.exception("Could not finish giveaway %s from slash command", mid)
+            await interaction.response.send_message(
+                "I couldn't announce the winners. The giveaway will remain active and be retried.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message("Giveaway ended." if ok else "Giveaway not found or already ended.", ephemeral=True)
 
     @extras.command(name="counter", description="Configure a live server counter voice channel")
@@ -467,8 +476,10 @@ class Extras(commands.Cog):
     @extras.command(name="feed-add", description="Add an RSS or Atom feed")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def feed_add(self, interaction: discord.Interaction, url: str, channel: discord.TextChannel):
-        if not (url.startswith("http://") or url.startswith("https://")):
-            return await interaction.response.send_message("Feed URL must start with http:// or https://.", ephemeral=True)
+        try:
+            url = validate_feed_url(url)
+        except ValueError as exc:
+            return await interaction.response.send_message(str(exc), ephemeral=True)
         self.db.conn.execute(
             "INSERT INTO extras_feeds(guild_id,url,channel_id,last_id) VALUES(?,?,?,?) ON CONFLICT(guild_id,url) DO UPDATE SET channel_id=excluded.channel_id",
             (interaction.guild_id, url, channel.id, ""),
@@ -518,24 +529,38 @@ class Extras(commands.Cog):
             msg = await channel.fetch_message(row[2])
         except discord.NotFound:
             return False  # message deleted - stays ended, nothing to announce
-        except discord.HTTPException:
+        except Exception:
+            # Any retrieval failure other than a missing/deleted message is
+            # retryable; don't falsely tell the caller the giveaway ended.
             unclaim()
-            return False
+            raise
         reaction = discord.utils.get(msg.reactions, emoji="🎉")
         users = []
         if reaction:
             try:
                 users = [u async for u in reaction.users() if not u.bot]
-            except discord.HTTPException:
+            except Exception:
                 unclaim()
-                return False
+                raise
         random.shuffle(users)
         winners = users[:int(row[4])]
-        if winners:
-            mentions = " ".join(u.mention for u in winners)
-            await channel.send(f"🎉 Giveaway ended! Prize: **{row[3]}**\nWinner(s): {mentions}", allowed_mentions=discord.AllowedMentions(users=winners))
-        else:
-            await channel.send(f"🎉 Giveaway ended! Prize: **{row[3]}**\nNo valid entries.")
+        try:
+            if winners:
+                mentions = " ".join(u.mention for u in winners)
+                await channel.send(
+                    f"🎉 Giveaway ended! Prize: **{row[3]}**\nWinner(s): {mentions}",
+                    allowed_mentions=discord.AllowedMentions(users=winners),
+                )
+            else:
+                await channel.send(f"🎉 Giveaway ended! Prize: **{row[3]}**\nNo valid entries.")
+        except Exception:
+            # `ended=1` is also the atomic claim that prevents the command and
+            # timer from ending the same giveaway simultaneously. If posting
+            # the final announcement fails, release that claim so a later
+            # timer pass can retry instead of leaving an unannounced giveaway
+            # permanently marked as finished.
+            unclaim()
+            raise
         return True
 
     @tasks.loop(minutes=1)
@@ -644,7 +669,8 @@ class Extras(commands.Cog):
         rows = self.db.conn.execute("SELECT guild_id,url,channel_id,last_id FROM extras_feeds").fetchall()
         for gid, url, cid, last_id in rows:
             try:
-                parsed = await asyncio.to_thread(feedparser.parse, url)
+                body = await fetch_feed_bytes(url)
+                parsed = await asyncio.to_thread(feedparser.parse, body)
                 entries = list(parsed.entries or [])
                 if not entries:
                     continue

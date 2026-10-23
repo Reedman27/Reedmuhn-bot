@@ -239,6 +239,63 @@ class Music(commands.Cog, name="Music"):
         voice = getattr(interaction.user, "voice", None)
         return bool(voice and voice.channel and player.channel and voice.channel.id == player.channel.id)
 
+    async def _authorize_player_control(
+        self,
+        interaction: discord.Interaction,
+        player: voicelink.Player,
+        action: str,
+        *,
+        allow_vote: bool = False,
+        allow_requester: bool = False,
+        leave_vote: bool = False,
+    ) -> bool:
+        """Apply the same DJ/member-vote policy as the interactive controller.
+
+        Playback slash commands used to call Player mutators directly, bypassing
+        the DJ checks and votes that protect the button-based controller.
+        """
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await self._send_error(interaction, "This control only works in a server.")
+            return False
+        try:
+            privileged = player.is_privileged(member)
+        except VoicelinkException as exc:
+            await self._send_error(interaction, str(exc))
+            return False
+        if privileged:
+            return True
+        if allow_requester and player.current and getattr(player.current.requester, "id", None) == member.id:
+            return True
+        if not allow_vote:
+            await self._send_error(
+                interaction,
+                "Only the DJ, a configured bot-access user, or someone with Manage Server can use this control.",
+            )
+            return False
+
+        vote_set_name = {
+            "pause": "pause_votes",
+            "resume": "resume_votes",
+            "skip": "skip_votes",
+            "back": "previous_votes",
+            "shuffle": "shuffle_votes",
+            "leave": "stop_votes",
+        }[action]
+        votes = getattr(player, vote_set_name)
+        if member in votes:
+            await self._send_error(interaction, "You have already voted for this action.")
+            return False
+        votes.add(member)
+        required = player.required(leave=leave_vote)
+        if len(votes) < required:
+            await interaction.response.send_message(
+                f"🗳️ Vote registered for **{action}** ({len(votes)}/{required}).",
+                ephemeral=True,
+            )
+            return False
+        return True
+
     @staticmethod
     async def _send_error(interaction: discord.Interaction, message: str):
         if interaction.response.is_done():
@@ -248,6 +305,16 @@ class Music(commands.Cog, name="Music"):
 
     @music.command(name="connect", description="Join your current voice channel")
     async def connect(self, interaction: discord.Interaction, channel: discord.VoiceChannel | None = None):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await self._send_error(interaction, "This command only works in a server.")
+        voice = interaction.user.voice
+        if channel is None and (voice is None or voice.channel is None):
+            return await self._send_error(interaction, "Join a voice channel first.")
+        if channel is not None and not interaction.user.guild_permissions.manage_guild:
+            if voice is None or voice.channel is None or voice.channel.id != channel.id:
+                return await self._send_error(
+                    interaction, "You can only connect the bot to your own voice channel unless you have Manage Server."
+                )
         await interaction.response.defer()
         try:
             player = await voicelink.connect_channel(interaction, channel)
@@ -342,14 +409,16 @@ class Music(commands.Cog, name="Music"):
     @music.command(name="pause", description="Pause the current track")
     async def pause(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
-        if not self._in_player_channel(interaction, player):
-            return await self._send_error(interaction, "Join the music voice channel first.")
+        if not await self._authorize_player_control(interaction, player, action="pause", allow_vote=True):
+            return
         await player.set_pause(True, interaction.user)
         await interaction.response.send_message("⏸️ Paused.")
 
     @music.command(name="resume", description="Resume the current track")
     async def resume(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="resume", allow_vote=True):
+            return
         await player.set_pause(False, interaction.user)
         await interaction.response.send_message("▶️ Resumed.")
 
@@ -357,6 +426,10 @@ class Music(commands.Cog, name="Music"):
     @app_commands.describe(index="Optional 1-based queue position")
     async def skip(self, interaction: discord.Interaction, index: int = 0):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(
+            interaction, player, action="skip", allow_vote=index <= 0, allow_requester=index <= 0
+        ):
+            return
         if index > 0:
             player.queue.skipto(index)
         await player.stop()
@@ -365,6 +438,8 @@ class Music(commands.Cog, name="Music"):
     @music.command(name="back", description="Play the previous track")
     async def back(self, interaction: discord.Interaction, index: int = 1):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="back", allow_vote=True):
+            return
         player.queue.back(index)
         await player.stop()
         await interaction.response.send_message(f"⏮️ Went back **{index}** track(s).")
@@ -373,6 +448,8 @@ class Music(commands.Cog, name="Music"):
     @app_commands.describe(position="Position such as 1:20 or 90")
     async def seek(self, interaction: discord.Interaction, position: str):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="seek"):
+            return
         value = format_to_ms(position)
         await player.seek(value, interaction.user)
         await interaction.response.send_message(f"⏩ Seeked to **{position}**.")
@@ -380,18 +457,24 @@ class Music(commands.Cog, name="Music"):
     @music.command(name="forward", description="Move forward in the current track")
     async def forward(self, interaction: discord.Interaction, position: str = "10"):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="forward"):
+            return
         await player.seek(min(player.position + format_to_ms(position), player.current.length), interaction.user)
         await interaction.response.send_message(f"⏩ Forwarded **{position}**.")
 
     @music.command(name="rewind", description="Move backward in the current track")
     async def rewind(self, interaction: discord.Interaction, position: str = "10"):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="rewind"):
+            return
         await player.seek(max(player.position - format_to_ms(position), 0), interaction.user)
         await interaction.response.send_message(f"⏪ Rewound **{position}**.")
 
     @music.command(name="replay", description="Restart the current track")
     async def replay(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="replay"):
+            return
         await player.seek(0, interaction.user)
         await interaction.response.send_message("🔁 Restarted the current track.")
 
@@ -404,6 +487,8 @@ class Music(commands.Cog, name="Music"):
     ])
     async def loop(self, interaction: discord.Interaction, mode: app_commands.Choice[str] | None = None):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="loop"):
+            return
         selected = {"off": LoopType.OFF, "track": LoopType.TRACK, "queue": LoopType.QUEUE}.get(mode.value) if mode else None
         result = await player.set_repeat(selected, interaction.user)
         await interaction.response.send_message(f"🔁 Repeat mode: **{result.name.lower()}**.")
@@ -411,6 +496,8 @@ class Music(commands.Cog, name="Music"):
     @music.command(name="shuffle", description="Shuffle the queue")
     async def shuffle(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="shuffle", allow_vote=True):
+            return
         await player.shuffle("queue", interaction.user)
         await interaction.response.send_message("🔀 Queue shuffled.")
 
@@ -418,6 +505,8 @@ class Music(commands.Cog, name="Music"):
     @app_commands.describe(position1="First queue position", position2="Optional last queue position")
     async def remove(self, interaction: discord.Interaction, position1: int, position2: int | None = None):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="remove"):
+            return
         removed = await player.remove_track(position1, position2, requester=interaction.user)
         await interaction.response.send_message(f"🗑️ Removed **{len(removed)}** track(s).")
 
@@ -425,6 +514,8 @@ class Music(commands.Cog, name="Music"):
     @app_commands.choices(queue=[app_commands.Choice(name="Queue", value="queue"), app_commands.Choice(name="History", value="history")])
     async def clear(self, interaction: discord.Interaction, queue: app_commands.Choice[str] = None):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="clear"):
+            return
         target = queue.value if queue else "queue"
         await player.clear_queue(target, interaction.user)
         await interaction.response.send_message(f"🧹 Cleared the **{target}**.")
@@ -433,18 +524,24 @@ class Music(commands.Cog, name="Music"):
     @app_commands.describe(value="Volume percentage (1-150)")
     async def volume(self, interaction: discord.Interaction, value: app_commands.Range[int, 1, 150]):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="volume"):
+            return
         await player.set_volume(value, interaction.user)
         await interaction.response.send_message(f"🔊 Volume: **{value}%**.")
 
     @music.command(name="leave", description="Disconnect from voice and clear the player")
     async def leave(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
-        await player.destroy()
+        if not await self._authorize_player_control(interaction, player, action="leave", allow_vote=True, leave_vote=True):
+            return
+        await player.teardown()
         await interaction.response.send_message("👋 Left the voice channel.")
 
     @music.command(name="autoplay", description="Toggle automatic recommendations when the queue empties")
     async def autoplay(self, interaction: discord.Interaction):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="autoplay"):
+            return
         enabled = not player.autoplay
         player.settings["autoplay"] = enabled
         await SQLiteMusicDB.update_settings(interaction.guild.id, {"$set": {"autoplay": enabled}})
@@ -479,6 +576,8 @@ class Music(commands.Cog, name="Music"):
     @app_commands.choices(effect=[app_commands.Choice(name=k, value=k) for k in Filters.get_available_filters().keys()])
     async def filter(self, interaction: discord.Interaction, effect: app_commands.Choice[str], clear: bool = False):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="filter"):
+            return
         if clear:
             await player.reset_filter(requester=interaction.user)
         cls = Filters.get_available_filters()[effect.value]
@@ -490,6 +589,8 @@ class Music(commands.Cog, name="Music"):
     @app_commands.describe(effect="Optional effect tag; omit to clear all")
     async def effect_clear(self, interaction: discord.Interaction, effect: str = None):
         player = await self._require_player(interaction)
+        if not await self._authorize_player_control(interaction, player, action="effect_clear"):
+            return
         if effect:
             await player.remove_filter(effect, interaction.user, fast_apply=True)
             msg = f"🧹 Removed **{effect}**."

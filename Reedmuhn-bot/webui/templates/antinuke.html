@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Anti-Nuke · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>🧨 Anti-Nuke</h1><p class="muted">Protect the server from rapid destructive actions by trusted accounts or compromised bots.</p>
+<section class="card"><form method="post" action="/guild/{{ guild_id }}/antinuke/save" class="stack-form">
+<label><input type="checkbox" name="enabled" value="on" {% if cfg.enabled %}checked{% endif %}> Enable anti-nuke</label>
+<label><input type="checkbox" name="auto_recovery" value="on" {% if cfg.auto_recovery %}checked{% endif %}> Enable automatic recovery where supported</label>
+<label>Punishment<select name="punishment"><option value="BAN" {% if cfg.default_punishment=='BAN' %}selected{% endif %}>Ban</option><option value="KICK" {% if cfg.default_punishment=='KICK' %}selected{% endif %}>Kick</option></select></label>
+<div class="form-grid"><label>Threshold<input type="number" name="threshold" min="1" max="50" value="{{ cfg.threshold }}"></label><label>Window (seconds)<input type="number" name="window_seconds" min="1" max="300" value="{{ cfg.window_seconds }}"></label></div>
+<label>Incident log channel<select name="log_channel_id"><option value="">Off</option>{% for id,name,ctype,pos in channels %}<option value="{{ id }}" {% if id==cfg.log_channel_id %}selected{% endif %}>#{{ name }}</option>{% endfor %}</select></label>
+<button type="submit">Save Anti-Nuke</button></form></section>
+<section class="card"><h2>Recent incidents</h2>{% if incidents %}<div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Punishment</th><th>Hits</th></tr></thead><tbody>{% for r in incidents %}<tr><td>{{ r[5] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">No incidents recorded.</p>{% endif %}</section>
+{% endblock %}

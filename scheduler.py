@@ -319,7 +319,11 @@ async def _handle_close_poll(bot: discord.Client, db, guild_id: int, data: dict)
         logger.warning("scheduled poll close: Polls cog isn't loaded")
         return
     guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
-    await cog._close_poll(guild, data["poll_id"])
+    error = await cog._close_poll(guild, data["poll_id"], propagate_http_errors=True)
+    if error:
+        # Preserve the durable scheduled event rather than silently deleting
+        # it when the poll's Discord message could not be finalized.
+        raise RuntimeError(error)
 
 
 async def _handle_ticket_channel_delete(bot: discord.Client, guild_id: int, data: dict) -> None:
