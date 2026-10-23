@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Staff Activity - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Staff Activity</h1>
+<section class="card">
+    <p class="hint">Counts pulled straight from warnings, closed tickets, and resolved reports - not a separate log, so it's always consistent with what's on the Moderation, Tickets, and Reports pages. Manual kicks/timeouts done from Discord's own UI aren't included, since those aren't reliably attributable to a specific moderator.</p>
+    <div class="tabs">
+        <a class="tab {{ 'active' if window == '7' else '' }}" href="/guild/{{ guild_id }}/staffstats?window=7">7 days</a>
+        <a class="tab {{ 'active' if window == '30' else '' }}" href="/guild/{{ guild_id }}/staffstats?window=30">30 days</a>
+        <a class="tab {{ 'active' if window == '90' else '' }}" href="/guild/{{ guild_id }}/staffstats?window=90">90 days</a>
+        <a class="tab {{ 'active' if window == 'all' else '' }}" href="/guild/{{ guild_id }}/staffstats?window=all">All time</a>
+    </div>
+    {% if staff %}
+    <table><thead><tr><th>Moderator</th><th>Warnings</th><th>Tickets closed</th><th>Reports resolved</th><th>Total</th></tr></thead><tbody>
+    {% for s in staff %}
+    <tr><td>{{ s.moderator_name }}</td><td>{{ s.warns }}</td><td>{{ s.tickets_closed }}</td><td>{{ s.reports_resolved }}</td><td><strong>{{ s.total }}</strong></td></tr>
+    {% endfor %}</tbody></table>
+    {% else %}<p class="muted">No moderator activity in this window.</p>{% endif %}
+</section>
+{% endblock %}

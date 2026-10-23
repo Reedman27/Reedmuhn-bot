@@ -1,0 +1,94 @@
+server: # REST and WS server
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  plugins:
+    # The built-in YouTube source in Lavalink is deprecated and no longer
+    # updated, so YouTube playback goes through this plugin instead.
+    # https://github.com/lavalink-devs/youtube-source
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      repository: "https://maven.lavalink.dev/releases"
+
+  server:
+    # Overridable at runtime via the LAVALINK_SERVER_PASSWORD env var - see
+    # docker-compose.yml. Change this from the default before exposing the
+    # port outside your own docker network.
+    password: "youshallnotpass"
+    sources:
+      youtube: false # handled by the youtube-source plugin above instead
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # These are the InnerTube clients youtube-source tries, in order, when
+    # loading a track. YouTube periodically breaks individual clients, so
+    # if playback starts failing, check
+    # https://github.com/lavalink-devs/youtube-source for the current
+    # recommended list before assuming something else is wrong.
+    # TVHTML5EMBEDDED was removed in youtube-plugin 1.18.0 (the version
+    # pinned above, via lavalink/Dockerfile's LAVALINK_VERSION build arg)
+    # and replaced with TVHTML5_SIMPLY - keeping the old name here would be
+    # silently ignored or rejected by the plugin depending on version, so
+    # it's dropped rather than carried forward. Client support shifts often
+    # as YouTube changes its API; check
+    # https://github.com/lavalink-devs/youtube-source for the current
+    # recommended list if playback starts failing.
+    clients:
+      - MUSIC
+      - TV
+      - WEB
+      - TVHTML5_SIMPLY
+    # WEB and TVHTML5_SIMPLY are the two clients YouTube's bot-detection has
+    # been hitting ("no supported audio streams" / "Sign in to confirm
+    # you're not a bot" - see the oauth block below for the actual fix).
+    # TV is the client that benefits from OAuth (see the table at
+    # https://github.com/lavalink-devs/youtube-source#available-clients),
+    # so it's added ahead of them - once oauth.enabled is true and a
+    # refreshToken is set below, TV should carry most playback.
+    oauth:
+      # Bare minimum to turn OAuth on. The first time this runs with no
+      # refreshToken set, youtube-source starts an OAuth device-code flow
+      # and prints a URL + code to THIS CONTAINER'S LOGS (not the bot's) -
+      # watch it with `podman logs -f mybot-lavalink` right after a
+      # redeploy. Open the URL on any device, sign in with a YouTube
+      # account (use a burner, not your main one - see the plugin's own
+      # warning at the link above), and enter the code.
+      #
+      # Once that succeeds, the SAME container logs will print a
+      # refreshToken. Copy it into the refreshToken line below, commit,
+      # and redeploy - that skips the device-code flow on every future
+      # restart. Until refreshToken is set here, every container restart
+      # will demand the flow be redone by hand, which is not something you
+      # want to rely on for an always-on bot.
+      enabled: true
+      # refreshToken: "paste the refresh token from the lavalink container logs here once you have it"
+
+metrics:
+  prometheus:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+    # root: INFO should already cover this, but the plugin's own docs call
+    # this out explicitly as needed to see the OAuth device-code URL/code
+    # and the refreshToken it prints afterwards, so it's set here too
+    # rather than relying on the root default.
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO

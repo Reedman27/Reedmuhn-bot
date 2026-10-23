@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Extras - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Extras</h1>
+<p class="hint">Live counters, Twitch/RSS notifications, and read-only leveling/economy/giveaway status. XP, coins, and giveaways are managed with /extras commands in Discord - use the Fun Commands page to disable any of them per-server.</p>
+
+{% if request.query_params.get('saved') %}<p class="success">Saved.</p>{% endif %}
+{% if request.query_params.get('queued') %}<p class="success">Queued - the bot will finish this within about 30 seconds.</p>{% endif %}
+{% if request.query_params.get('error') == 'counterkind' %}<p class="error">Choose a valid counter type.</p>
+{% elif request.query_params.get('error') == 'counterchannel' %}<p class="error">Choose a valid voice channel.</p>
+{% elif request.query_params.get('error') == 'twitchuser' %}<p class="error">Enter a valid Twitch username.</p>
+{% elif request.query_params.get('error') == 'twitchchannel' %}<p class="error">Choose a valid text channel.</p>
+{% elif request.query_params.get('error') == 'feedurl' %}<p class="error">Feed URL must start with http:// or https://.</p>
+{% elif request.query_params.get('error') == 'feedchannel' %}<p class="error">Choose a valid text channel.</p>
+{% elif request.query_params.get('error') == 'giveawaynotfound' %}<p class="error">That giveaway isn't active anymore.</p>
+{% elif request.query_params.get('error') == 'xpamount' %}<p class="error">Enter a valid XP amount (0 or greater).</p>
+{% elif request.query_params.get('error') == 'coinamount' %}<p class="error">Enter a valid coin amount (0 or greater).</p>{% endif %}
+
+<section class="card">
+    <h2>Live counters</h2>
+    <p class="hint">Renames a voice channel to show a live count. Discord rate-limits channel renames, so counters update about once a minute.</p>
+    {% if counters %}
+    <table><thead><tr><th>Counter</th><th>Channel</th><th></th></tr></thead><tbody>
+    {% for c in counters %}
+        <tr><td>{{ c.label }}</td><td>{{ c.channel_name }}</td><td><form method="post" action="/guild/{{ guild_id }}/extras/counter/delete" class="inline"><input type="hidden" name="kind" value="{{ c.kind }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No live counters configured.</p>{% endif %}
+
+    {% if available_counter_kinds %}
+    <form method="post" action="/guild/{{ guild_id }}/extras/counter/add" class="add-form">
+        <label for="counter_kind">Counter type</label>
+        <select id="counter_kind" name="kind" required>
+            {% for kind in available_counter_kinds %}<option value="{{ kind }}">{{ counter_kinds[kind] }}</option>{% endfor %}
+        </select>
+        <label for="counter_channel_id">Voice channel</label>
+        <select id="counter_channel_id" name="channel_id" required>
+            <option value="" disabled selected>Choose a voice channel…</option>
+            {% for cid, name, ctype, pos in voice_channels %}<option value="{{ cid }}">{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Add counter</button>
+    </form>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>Twitch notifications</h2>
+    {% if not twitch_configured %}<p class="hint">Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET on the bot container to enable Twitch polling - notifications added here will queue but won't fire until those are set.</p>{% endif %}
+    {% if twitch %}
+    <table><thead><tr><th>Twitch channel</th><th>Announces in</th><th>Status</th><th></th></tr></thead><tbody>
+    {% for t in twitch %}
+        <tr><td>{{ t.username }}</td><td>{{ t.channel_name }}</td><td>{{ "🟣 Live" if t.live else "Offline" }}</td><td><form method="post" action="/guild/{{ guild_id }}/extras/twitch/delete" class="inline"><input type="hidden" name="username" value="{{ t.username }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No Twitch notifications configured.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/extras/twitch/add" class="add-form">
+        <label for="twitch_username">Twitch username</label><input type="text" id="twitch_username" name="username" placeholder="username" required>
+        <label for="twitch_channel_id">Announcement channel</label>
+        <select id="twitch_channel_id" name="channel_id" required>
+            <option value="" disabled selected>Choose a channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}">#{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Add notification</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>RSS / Atom feeds</h2>
+    {% if feeds %}
+    <table><thead><tr><th>Feed</th><th>Announces in</th><th></th></tr></thead><tbody>
+    {% for f in feeds %}
+        <tr><td class="truncate" title="{{ f.url }}">{{ f.url }}</td><td>{{ f.channel_name }}</td><td><form method="post" action="/guild/{{ guild_id }}/extras/feed/delete" class="inline"><input type="hidden" name="url" value="{{ f.url }}"><button type="submit" class="danger">Remove</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No feeds configured.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/extras/feed/add" class="add-form">
+        <label for="feed_url">Feed URL</label><input type="text" id="feed_url" name="url" placeholder="https://example.com/feed.xml" required>
+        <label for="feed_channel_id">Announcement channel</label>
+        <select id="feed_channel_id" name="channel_id" required>
+            <option value="" disabled selected>Choose a channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}">#{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Add feed</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Active giveaways</h2>
+    {% if giveaways %}
+    <table><thead><tr><th>Prize</th><th>Channel</th><th>Winners</th><th>Ends</th><th></th></tr></thead><tbody>
+    {% for g in giveaways %}
+        <tr><td>{{ g.prize }}</td><td>{{ g.channel_name }}</td><td>{{ g.winners }}</td><td><time data-ts="{{ g.end_at }}">{{ g.end_at }}</time></td><td><form method="post" action="/guild/{{ guild_id }}/extras/giveaway/end" class="inline" onsubmit="return confirm('End this giveaway now and pick winners?');"><input type="hidden" name="message_id" value="{{ g.message_id }}"><button type="submit" class="danger">End now</button></form></td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No active giveaways. Start one with /extras giveaway in Discord.</p>{% endif %}
+</section>
+
+<section class="card">
+    <h2>XP leaderboard</h2>
+    {% if xp_leaderboard %}
+    <table><thead><tr><th>#</th><th>Member</th><th>Level</th><th>XP</th></tr></thead><tbody>
+    {% for row in xp_leaderboard %}
+        <tr><td>{{ loop.index }}</td><td>{{ row.name }}</td><td>{{ row.level }}</td><td>{{ "{:,}".format(row.xp) }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No XP has been earned yet.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/extras/xp/set" class="add-form">
+        <label for="xp_user_id">Member</label>
+        <select id="xp_user_id" name="user_id" required><option value="" disabled selected>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}</select>
+        <label for="xp_op">Action</label>
+        <select id="xp_op" name="op">
+            <option value="set">Set to</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+        </select>
+        <label for="xp_amount">Amount</label><input type="number" id="xp_amount" name="amount" min="0" required>
+        <button type="submit">Update XP</button>
+    </form>
+    <p class="hint">Level is recalculated automatically from the resulting XP total.</p>
+</section>
+
+<section class="card">
+    <h2>Economy leaderboard</h2>
+    {% if economy_leaderboard %}
+    <table><thead><tr><th>#</th><th>Member</th><th>Coins</th></tr></thead><tbody>
+    {% for row in economy_leaderboard %}
+        <tr><td>{{ loop.index }}</td><td>{{ row.name }}</td><td>{{ "{:,}".format(row.balance) }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No economy balances exist yet.</p>{% endif %}
+
+    <form method="post" action="/guild/{{ guild_id }}/extras/economy/set" class="add-form">
+        <label for="coin_user_id">Member</label>
+        <select id="coin_user_id" name="user_id" required><option value="" disabled selected>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}</select>
+        <label for="coin_op">Action</label>
+        <select id="coin_op" name="op">
+            <option value="set">Set to</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+        </select>
+        <label for="coin_amount">Amount</label><input type="number" id="coin_amount" name="amount" min="0" required>
+        <button type="submit">Update balance</button>
+    </form>
+</section>
+<script src="/static/feed.js"></script>
+{% endblock %}

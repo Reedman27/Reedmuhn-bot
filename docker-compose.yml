@@ -5,13 +5,14 @@ services:
     container_name: mybot
     restart: unless-stopped
     environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${DISCORD_TOKEN:?DISCORD_TOKEN_required_in_.env}
       - DB_PATH=/app/data/bot.db
       - DEV_GUILD_ID=${DEV_GUILD_ID}
       - LAVALINK_HOST=lavalink
       - LAVALINK_PORT=2333
       - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
       - REDIS_URL=redis://redis:6379/0
+      - FEED_RETENTION_DAYS=${FEED_RETENTION_DAYS:-0}
     volumes:
       - ./data:/app/data:z
     depends_on:
@@ -57,7 +58,7 @@ services:
     container_name: mybot-webui
     restart: unless-stopped
     environment:
-      - WEBUI_PASSWORD=${WEBUI_PASSWORD}
+      - WEBUI_PASSWORD=${WEBUI_PASSWORD:?WEBUI_PASSWORD_required_in_.env}
       - DB_PATH=/app/data/bot.db
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
       - REDIS_URL=redis://redis:6379/0
@@ -66,4 +67,7 @@ services:
     depends_on:
       - redis
     ports:
-      - "8490:8080"
+      # Defaults to all interfaces (same as before). Set WEBUI_BIND_ADDRESS=127.0.0.1
+      # in .env to keep the dashboard off the network and reach it via a reverse
+      # proxy or SSH tunnel, or to a VPN/LAN IP to limit which interface serves it.
+      - "${WEBUI_BIND_ADDRESS:-0.0.0.0}:8490:8080"

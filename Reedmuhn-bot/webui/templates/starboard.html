@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Starboard · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>⭐ Starboard</h1>
+<p class="muted">Highlight messages that receive enough ⭐ reactions.</p>
+<section class="card">
+<form method="post" action="/guild/{{ guild_id }}/starboard/save" class="stack-form">
+<label><input type="checkbox" name="enabled" value="on" {% if enabled %}checked{% endif %}> Enable starboard</label>
+<label>Channel<select name="channel_id"><option value="">Select a channel</option>{% for id,name,ctype,pos in channels %}<option value="{{ id }}" {% if id==channel_id %}selected{% endif %}>#{{ name }}</option>{% endfor %}</select></label>
+<label>Stars required<input type="number" name="threshold" min="1" max="50" value="{{ threshold }}"></label>
+<button type="submit">Save Starboard</button>
+</form>
+</section>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Fun Commands · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>🎮 Fun Commands</h1>
+<p class="muted">Turn individual fun commands on or off for this server. Changes apply immediately.</p>
+{% for group, commands in groups %}
+<section class="card">
+  <h2>{{ group }}</h2>
+  <div class="toggle-grid">
+  {% for name, desc, enabled in commands %}
+    <form method="post" action="/guild/{{ guild_id }}/fun-commands/toggle" class="toggle-row-form">
+      <input type="hidden" name="command_name" value="{{ name }}">
+      <label class="toggle-row"><span><strong>/{{ name }}</strong><small>{{ desc }}</small></span><input type="checkbox" name="enabled" value="on" {% if enabled %}checked{% endif %} data-autosubmit="1"><span class="toggle-slider"></span></label>
+    </form>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+<script src="/static/autosubmit.js"></script>
+{% endblock %}

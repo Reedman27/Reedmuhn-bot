@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log in - Bot Dashboard</title>
+    <script src="/static/theme.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="centered">
+    <div class="card login-card">
+        <h1>🤖 Bot Dashboard</h1>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        <p class="hint">Enter the WebUI password configured in your .env file.</p>
+        <form method="post" action="/login">
+            <label for="password">Dashboard password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+            <button type="submit" class="button">Log in</button>
+        </form>
+    </div>
+</body>
+</html>

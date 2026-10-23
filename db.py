@@ -1724,19 +1724,31 @@ class Db:
     def record_feed_message(self, guild_id: int, channel_id: int, message_id: int, author_id: int,
                              author_name: str, author_avatar: Optional[str], content: str,
                              attachments: list[str], created_at: int) -> None:
+        # Re-check opt-in within the INSERT itself. The cog's earlier check is
+        # only a fast path; this closes the race where disable/purge happens
+        # between that check and the write.
         self.conn.execute(
             """INSERT INTO message_feed
                    (guild_id, channel_id, message_id, author_id, author_name, author_avatar,
                     content, attachments, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+               WHERE EXISTS (
+                   SELECT 1 FROM guild_config
+                   WHERE guild_id = ? AND message_feed_enabled = 1
+               )""",
             (guild_id, channel_id, message_id, author_id, author_name, author_avatar,
-             content, json.dumps(attachments) if attachments else None, created_at),
+             content, json.dumps(attachments) if attachments else None, created_at, guild_id),
         )
         self.conn.commit()
 
-    def prune_feed_messages(self, keep_per_channel: int = 300) -> None:
-        """Keeps only the most recent `keep_per_channel` rows per channel so
-        the table doesn't grow without bound on a busy server."""
+    def prune_feed_messages(self, keep_per_channel: int = 300, retention_days: int = 0) -> None:
+        """Retain recent feed messages only: expire old rows, then cap each
+        channel to its most recent `keep_per_channel` messages."""
+        keep_per_channel = max(1, int(keep_per_channel))
+        retention_days = max(0, int(retention_days))
+        if retention_days:
+            cutoff = int(time.time()) - retention_days * 86400
+            self.conn.execute("DELETE FROM message_feed WHERE created_at < ?", (cutoff,))
         self.conn.execute(
             """DELETE FROM message_feed WHERE id IN (
                    SELECT id FROM (
@@ -1768,6 +1780,10 @@ class Db:
                ON CONFLICT(guild_id) DO UPDATE SET message_feed_enabled = excluded.message_feed_enabled""",
             (guild_id, int(enabled)),
         )
+        if not enabled:
+            # Disabling the opt-in feed also clears this guild's collected
+            # message content. This write shares the transaction with the flag.
+            self.conn.execute("DELETE FROM message_feed WHERE guild_id = ?", (guild_id,))
         self.conn.commit()
 
     def list_feed_channels(self, guild_id: int) -> list[dict]:
@@ -4453,13 +4469,53 @@ class Db:
             for r in rows
         ]
 
-    def cast_poll_vote(self, poll_id: int, user_id: int, option_index: int) -> None:
-        self.conn.execute(
-            "INSERT INTO poll_votes (poll_id, user_id, option_index) VALUES (?, ?, ?) "
-            "ON CONFLICT(poll_id, user_id) DO UPDATE SET option_index=excluded.option_index",
-            (poll_id, user_id, option_index),
-        )
-        self.conn.commit()
+    def cast_poll_vote(self, poll_id: int, user_id: int, option_index: int) -> bool:
+        """Atomically cast/change a vote only while the poll is open.
+
+        The poll's closed flag and vote write are checked under one SQLite
+        write transaction so a click racing with poll closure cannot sneak a
+        vote in after the poll has been finalized. Invalid option indexes are
+        rejected at the storage boundary as well as in the UI.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT options, closed FROM polls WHERE id=?", (poll_id,)
+            ).fetchone()
+            if row is None or bool(row[1]):
+                self.conn.rollback()
+                return False
+            try:
+                options = json.loads(row[0])
+            except (TypeError, ValueError):
+                self.conn.rollback()
+                return False
+            if not isinstance(option_index, int) or option_index < 0 or option_index >= len(options):
+                self.conn.rollback()
+                return False
+            self.conn.execute(
+                "INSERT INTO poll_votes (poll_id, user_id, option_index) VALUES (?, ?, ?) "
+                "ON CONFLICT(poll_id, user_id) DO UPDATE SET option_index=excluded.option_index",
+                (poll_id, user_id, option_index),
+            )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def poll_voters(self, poll_id: int, num_options: int | None = None) -> dict[int, list[int]]:
+        """Return voter user IDs grouped by option index, in stable vote order."""
+        grouped: dict[int, list[int]] = {}
+        rows = self.conn.execute(
+            "SELECT user_id, option_index FROM poll_votes WHERE poll_id=? ORDER BY option_index, user_id",
+            (poll_id,),
+        ).fetchall()
+        for user_id, option_index in rows:
+            if option_index < 0 or (num_options is not None and option_index >= num_options):
+                continue
+            grouped.setdefault(option_index, []).append(user_id)
+        return grouped
 
     def poll_results(self, poll_id: int, num_options: int) -> list[int]:
         counts = [0] * num_options

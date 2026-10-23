@@ -23,7 +23,7 @@ OPTION_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 BAR_LENGTH = 12
 
 
-def render_results_embed(question: str, options: list[str], counts: list[int], closed: bool) -> discord.Embed:
+def _build_poll_lines(options, counts, voters, per_option):
     total = sum(counts)
     lines = []
     for i, option in enumerate(options):
@@ -31,10 +31,31 @@ def render_results_embed(question: str, options: list[str], counts: list[int], c
         pct = (count / total * 100) if total else 0
         filled = round(BAR_LENGTH * pct / 100)
         bar = "█" * filled + "░" * (BAR_LENGTH - filled)
-        lines.append(f"{OPTION_EMOJI[i]} **{option}**\n`{bar}` {pct:.0f}% ({count})")
+        entry = f"{OPTION_EMOJI[i]} **{option}**\n`{bar}` {pct:.0f}% ({count})"
+        if voters is not None and per_option > 0:
+            ids = voters.get(i, [])
+            if ids:
+                shown = ", ".join(f"<@{user_id}>" for user_id in ids[:per_option])
+                if len(ids) > per_option:
+                    shown += f" and {len(ids) - per_option} more"
+                entry += f"\nVoted: {shown}"
+            else:
+                entry += "\nVoted: —"
+        lines.append(entry)
+    return lines
+
+
+def render_results_embed(question: str, options: list[str], counts: list[int], closed: bool, voters: dict[int, list[int]] | None = None) -> discord.Embed:
+    total = sum(counts)
+    # Discord caps embed descriptions at 4096 characters; shrink the voter
+    # lists (never the results) until the embed fits.
+    for per_option in (10, 5, 2, 0):
+        description = "\n\n".join(_build_poll_lines(options, counts, voters, per_option))
+        if len(description) <= 4000:
+            break
     embed = discord.Embed(
         title=("🔒 " if closed else "📊 ") + question,
-        description="\n\n".join(lines),
+        description=description,
         color=discord.Color.light_gray() if closed else discord.Color.blurple(),
     )
     embed.set_footer(text=f"{total} vote{'s' if total != 1 else ''}" + (" - poll closed" if closed else ""))
@@ -68,9 +89,14 @@ class PollView(discord.ui.View):
         if poll["closed"]:
             await interaction.response.send_message("This poll is closed.", ephemeral=True)
             return
-        self.bot.db.cast_poll_vote(self.poll_id, interaction.user.id, option_index)
+        if not self.bot.db.cast_poll_vote(self.poll_id, interaction.user.id, option_index):
+            latest = self.bot.db.get_poll(self.poll_id)
+            message = "This poll is closed." if latest and latest["closed"] else "This poll is no longer available."
+            await interaction.response.send_message(message, ephemeral=True)
+            return
         counts = self.bot.db.poll_results(self.poll_id, len(poll["options"]))
-        embed = render_results_embed(poll["question"], poll["options"], counts, closed=False)
+        voters = self.bot.db.poll_voters(self.poll_id, len(poll["options"]))
+        embed = render_results_embed(poll["question"], poll["options"], counts, closed=False, voters=voters)
         await interaction.response.edit_message(embed=embed)
         try:
             await interaction.followup.send(f"Vote recorded for **{poll['options'][option_index]}**.", ephemeral=True)
@@ -148,25 +174,64 @@ class Polls(commands.Cog, name="Polls"):
         if not (is_owner or is_manager):
             await interaction.response.send_message("Only the person who started this poll (or a server manager) can close it.", ephemeral=True)
             return
-        await self._close_poll(interaction.guild, poll_id)
-        await interaction.response.send_message("Poll closed.", ephemeral=True)
+        error = await self._close_poll(interaction.guild, poll_id)
+        if error:
+            await interaction.response.send_message(
+                f"The poll is closed, but its Discord message could not be updated: {error}",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message("Poll closed.", ephemeral=True)
 
-    async def _close_poll(self, guild: discord.Guild, poll_id: int) -> str | None:
+    async def _close_poll(
+        self, guild: discord.Guild, poll_id: int, *, propagate_http_errors: bool = False,
+    ) -> str | None:
         poll = self.bot.db.get_poll(poll_id)
         if poll is None:
             return "That poll no longer exists."
-        if poll["closed"]:
-            return None
-        self.bot.db.close_poll(poll_id)
+
+        # Closing is idempotent, but updating the Discord message must still be
+        # retried when the database was closed successfully and the API edit
+        # failed. Returning early for an already-closed poll stranded enabled
+        # vote buttons and a stale results embed forever.
+        if not poll["closed"]:
+            self.bot.db.close_poll(poll_id)
+
         counts = self.bot.db.poll_results(poll_id, len(poll["options"]))
-        embed = render_results_embed(poll["question"], poll["options"], counts, closed=True)
+        voters = self.bot.db.poll_voters(poll_id, len(poll["options"]))
+        embed = render_results_embed(poll["question"], poll["options"], counts, closed=True, voters=voters)
+
         channel = guild.get_channel(poll["channel_id"])
-        if channel is not None and poll["message_id"]:
+        if channel is None:
             try:
-                message = await channel.fetch_message(poll["message_id"])
-                await message.edit(embed=embed, view=None)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                logger.warning("poll %s: couldn't edit final results into its message", poll_id)
+                channel = await self.bot.fetch_channel(poll["channel_id"])
+            except discord.NotFound:
+                # A deleted channel leaves no message/buttons that need editing.
+                logger.info("poll %s: channel %s no longer exists", poll_id, poll["channel_id"])
+                return None
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("poll %s: couldn't fetch channel %s: %s", poll_id, poll["channel_id"], exc)
+                if propagate_http_errors:
+                    raise
+                return "Discord refused access to the poll channel."
+
+        if not poll["message_id"]:
+            # The command may have persisted the poll before Discord returned
+            # the message ID. There is no message to edit in this state.
+            logger.warning("poll %s is closed but has no Discord message ID", poll_id)
+            return None
+
+        try:
+            message = await channel.fetch_message(poll["message_id"])
+            await message.edit(embed=embed, view=None)
+        except discord.NotFound:
+            # Deleted poll messages don't need further attempts.
+            logger.info("poll %s: original message no longer exists", poll_id)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("poll %s: couldn't edit final results into its message: %s", poll_id, exc)
+            if propagate_http_errors:
+                raise
+            return "Discord refused to update the poll message. Try closing it again after checking bot permissions."
         return None
 
     @tasks.loop(seconds=2)

@@ -732,6 +732,14 @@ html[data-layout="topnav"] .sidebar-footer {
 }
 html[data-layout="topnav"] .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
 html[data-layout="topnav"] .sidebar-footer .logged-in-as { margin-bottom: 0; white-space: nowrap; }
+html[data-layout="topnav"] .sidebar-footer .theme-menu { margin: 0; min-width: 190px; }
+html[data-layout="topnav"] .theme-menu-panel {
+    top: calc(100% + 0.4rem);
+    bottom: auto;
+    left: auto;
+    right: 0;
+    width: min(320px, 90vw);
+}
 
 .layout-toggle { white-space: nowrap; }
 
@@ -1498,3 +1506,7 @@ select option {
 .js-hidden { display: none; }
 .text-plain { text-decoration: none; }
 .text-wrap-box { white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere; }
+
+.poll-voters { grid-column: 1 / -1; font-size: .85rem; color: var(--muted); margin: .1rem 0 .4rem; }
+.poll-voters summary { cursor: pointer; width: fit-content; }
+.poll-voters ul { margin: .4rem 0 0; padding-left: 1.25rem; columns: 2; }

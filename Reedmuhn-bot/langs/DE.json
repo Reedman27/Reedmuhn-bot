@@ -1,0 +1,265 @@
+{
+    "common": {
+        "errors": {
+            "unknown": "⚠️ Beim Ausführen des Befehls ist etwas schiefgelaufen! Bitte versuche es später erneut oder tritt unserem Discord-Server bei, um weiteren Support zu erhalten.",
+            "missingIntents": "Es tut mir leid, dieser Befehl kann nicht ausgeführt werden, da mir der `({0})` Intent fehlt."
+        },
+        "status": {
+            "enabled": "aktiviert",
+            "disabled": "deaktiviert",
+            "live": "LIVE"
+        }
+    },
+    "player": {
+        "errors": {
+            "nodeReconnect": "Bitte versuche es erneut, nachdem sich die Node wieder verbunden hat.",
+            "noPlaySource": "Ich kann keine abspielbaren Quellen finden!",
+            "noPlayer": "Auf diesem Server wurden kein Player gefunden.",
+            "noTrackPlaying": "Es werden derzeit keine Songs abgespielt",
+            "noTrackFound": "Es wurden keine Songs mit dieser Abfrage gefunden! Bitte gib eine gültige URL an."
+        },
+        "dropdown": {
+            "trackSelect": "Wähle einen Song aus, um zu überspringen ...",
+            "filterSelect": "Wähle einen Filter aus, um ihn anzuwenden ..."
+        },
+        "buttons": {
+            "back": "Zurück",
+            "pause": "Pause",
+            "resume": "Weiter",
+            "skip": "Überspringen",
+            "leave": "Verlassen",
+            "loopOff": "Aus",
+            "loopTrack": "Track",
+            "loopQueue": "Warteschlange",
+            "volumeDown": "Leiser",
+            "volumeMute": "Stummschalten",
+            "volumeUnmute": "Stummschaltung aufheben",
+            "autoPlay": "Autoplay",
+            "shuffle": "Zufall",
+            "forward": "Vorspulen",
+            "rewind": "Zurückspulen",
+            "lyrics": "Liedtexte"
+        },
+        "playback": {
+            "nowplayingDesc": "**Jetzt wird abgespielt:**\n```{0}```",
+            "nowplayingField": "Als nächstes:",
+            "nowplayingLink": "Auf {0} anhören",
+            "playlistLoad": " 🎶 Die Wiedergabeliste **{0}** mit `{1}` Songs wurde zur Warteschlange hinzugefügt.",
+            "trackLoad": "**[{0}](<{1}>)** von **{2}** (`{3}`) wurde zum Abspielen hinzugefügt.\n",
+            "trackLoadPos": "**[{0}](<{1}>)** von **{2}** (`{3}`) wurde in der Warteschlange zu Position **{4}** hinzugefügt.\n"
+        },
+        "controls": {
+            "pause": {
+                "error": "Der Player ist bereits pausiert.",
+                "vote": "{0} hat für eine Pause des Songs abgestimmt. [{1}/{2}]",
+                "success": "`{0}` hat den Player pausiert."
+            },
+            "resume": {
+                "error": "Der Player ist nicht pausiert.",
+                "vote": "{0} hat für das Fortsetzen des Songs abgestimmt. [{1}/{2}]",
+                "success": "`{0}` hat den Player fortgesetzt."
+            },
+            "shuffle": {
+                "error": "Füge mehr Songs zur Warteschlange hinzu, bevor Du die Songs mischst.",
+                "vote": "{0} hat für das Mischen der Warteschlange gestimmt. [{1}/{2}]",
+                "success": "Die Warteschlange wurde gemischt."
+            },
+            "skip": {
+                "error": "Es gibt keine Songs, die übersprungen werden können.",
+                "vote": "{0} hat für das Überspringen des Songs abgestimmt. [{1}/{2}]",
+                "success": "`{0}` hat den Song übersprungen."
+            },
+            "back": {
+                "vote": "{0} hat für das Überspringen zum vorherigen Song gestimmt. [{1}/{2}]",
+                "success": "{0} hat zum vorherigen Song übersprungen."
+            },
+            "leave": {
+                "vote": "{0} hat für das Anhalten des Players gestimmt. [{1}/{2}]",
+                "success": "`{0}` hat den Player angehalten."
+            },
+            "seek": "Der Player wurde auf **{0}** gesetzt.",
+            "repeat": "Der Wiederholungsmodus wurde auf `{0}` gesetzt",
+            "forward": "Der Player wurde auf **{0}** vorgespult.",
+            "rewind": "Der Player wurde auf **{0}** zurückgespult",
+            "replay": "Der aktuelle Song wird wiederholt.",
+            "autoplay": "Der Autoplay-Modus ist jetzt **{0}**"
+        }
+    },
+    "voice": {
+        "connection": {
+            "noChannel": "Kein Sprachkanal zum Verbinden gefunden. Bitte stelle entweder einen zur Verfügung oder trete einem bei.",
+            "alreadyConnected": "Bereits mit einem Sprachkanal verbunden.",
+            "noPermission": "Es tut mir leid, ich bin nicht berechtigt, dem Sprachkanal beizutreten oder darin zu sprechen.",
+            "notInChannel": "{0}, Du musst in {1} sein, um Sprachbefehle nutzen zu können. Bitte betrete den Sprachkanal erneut bei, wenn Du dich im Voice Channel befindest!",
+            "connect": "Verbunden mit {0}"
+        },
+        "stageChannel": {
+            "setAnnounceTemplate": "Fertig! Ab sofort wird der Sprachstatus wie der, in dem Du Dich gerade befindest, gemäß Deiner Vorlage benannt. Du solltest in wenigen Sekunden eine Aktualisierung sehen."
+        }
+    },
+    "permissions": {
+        "noCreatePermission": "Es tut mir leid, ich habe keine Berechtigung, einen Song Request Channel zu erstellen.",
+        "missingPosition": "Nur der DJ oder Admins können die Position ändern.",
+        "missingMode": "Nur der DJ oder Admins können den Wiederholungsmodus wechseln.",
+        "missingQueue": "Nur der DJ oder Admins können Tracks aus der Warteschlange entfernen.",
+        "missingAutoPlay": "Nur der DJ oder Admins können den Autoplay-Modus aktivieren oder deaktivieren!",
+        "missingFunction": "Nur DJ oder Admins können diese Funktion verwenden.",
+        "notDj": "Du bist kein DJ, der aktuelle DJ ist {0}.",
+        "djToSelf": "Du kannst den DJ nicht an dich selbst oder einer App übertragen.",
+        "djNotInChannel": "`{0}` ist nicht im Sprachkanal.",
+        "djSwapped": "Du hast die DJ-Rolle auf `{0}` übertragen."
+    },
+    "settings": {
+        "actions": {
+            "languageNotFound": "Kein Sprachpaket gefunden. Bitte wähle ein vorhandenes Sprachpaket aus.",
+            "languageChanged": "Erfolgreich auf das Sprachpaket `{0}` geändert.",
+            "prefixSet": "Erledigt! Mein Präfix ist jetzt `{0}` auf deinem Server. Versuche, `{1}ping` auszuführen, um es zu testen.",
+            "djSet": "Stelle den DJ auf {0}.",
+            "queueModeSet": "Stelle den Warteschlangenmodus auf `{0}` ein.",
+            "mode247": "Der 24/7-Modus wurde erfolgreich `{0}`.",
+            "bypassVote": "Das Abstimmungssystem wurde `{0}`",
+            "volumeSet": "Stelle die Lautstärke auf `{0}`%.",
+            "controllerToggled": "Der Musikcontroller wurde erfolgreich `{0}`",
+            "duplicateTrackToggled": "Du hast das hinzufügen von doppelten Tracks in der Warteschlange `{0}`",
+            "controllerMsgToggled": "Nachrichten vom Musik-Controller wurden erfolgreich `{0}`",
+            "silentMsgToggled": "Sie haben {0} stille Nachrichten.",
+            "resetDone": "`{0}` wurde auf die Standardwerte des Servers zurückgesetzt.",
+            "resetNotFound": "Ungültiger Einstellungsname. Bitte verwende eine der folgenden Einstellungen: {0}"
+        },
+        "menu": "Servereinstellungen | {0}",
+        "basic": {
+            "title": "❤️ Grundlegende Informationen:",
+            "value": "```Präfix: {0}`\nSprache: {1}\nMusik-Controller: {2}\nDJ-Rolle: @{3}\nAbstimmungsumgehung: {4}\n24/7 Play: {5}\nStandard Lautstärke: {6}%\nSpielzeit: {7}```"
+        },
+        "queue": {
+            "title": "🔗 Warteschlangeninformationen:",
+            "value": "```Warteschlangenmodus: {0}\nMaximale Songs: {1}\nDoppelte Tracks zulassen: {2}```"
+        },
+        "voice": {
+            "title": "🎤 Sprachstatusinfo:"
+        },
+        "permissions": {
+            "title": "✨ Berechtigungen:",
+            "value": "```{0} Administrator\n{1} Guild verwalten\n{2} Kanal verwalten\n{3} Manage_Messages```"
+        }
+    },
+    "ping": {
+        "title1": "Bot-Info:",
+        "title2": "Player Info:",
+        "field1": "```Shard-ID: {0}/{1}\nShard-Latenz: {2:.3f}s {3}\nRegion: {4}```",
+        "field2": "```Node: {0} - {1:.3f}s\nPlayer: {2}\nSprachregion: {3}```"
+    },
+    "effects": {
+        "added": "Wende den Effekt `{0}` Filter an.",
+        "cleared": "Die Soundeffekte wurden gelöscht!",
+        "tagInUse": "Diese Soundeffekte sind bereits im Einsatz! Bitte verwende /cleareffect <Tag>, um sie zu entfernen."
+    },
+    "playlist": {
+        "view": {
+            "title": "Alle Playlists von {0}",
+            "headers": "ID:,Zeit:,Name:,Tracks:",
+            "footer": "Gebe /playlist play [playlist] ein, um die Playlist in die Warteschlange einzufügen.",
+            "detailTitle": "Playlist-Viewer",
+            "detailDesc": "```Name: {0} [{1}]\nTitel insgesamt: {2}\nBesitzer: {3}\nTyp: {4}\n```",
+            "permsValue": "📖 Lesen: ✓ ✍🏽 Schreiben: {0} 🗑️ Entfernen: {1}",
+            "permsValue2": "📖 Lesen: {0}",
+            "trackList": "Tracks",
+            "footer2": "Gesamtdauer: {0}",
+            "playlistSelect": "Wählen Sie eine Wiedergabeliste zur Ansicht ..."
+        },
+        "errors": {
+            "notFound": "Die Wiedergabeliste [`{0}`] wurde nicht gefunden. Gebe /playlist view ein, um Deine gesamte Wiedergabeliste anzuzeigen.",
+            "noAccess": "Es tut mir leid! Du bist nicht berechtigt, auf diese Playlist zuzugreifen!",
+            "noTrack": "Es tut uns leid! Es gibt keine Titel in der Wiedergabeliste [`{0}`].",
+            "notAllowed": "Dieser Befehl ist für verknüpfte und freigegebene Wiedergabelisten nicht zulässig.",
+            "nameOverLimit": "Verzeihung, der Name der Playlist darf nicht mehr als 10 Zeichen enthalten.",
+            "sameName": "Verzeihung, dieser Name darf nicht mit Deinem neuen Namen identisch sein.",
+            "deleteDefault": "Du kannst die Standard-Wiedergabeliste nicht löschen.",
+            "limitReached": "Du kannst nicht mehr als `{0}` Wiedergabelisten erstellen!",
+            "exists": "Die Playlist [`{0}`] existiert bereits.",
+            "invalidUrl": "Bitte geben Sie einen gültigen öffentlichen Playlist-Link ein.",
+            "trackLimitReached": "Du hast die Grenze erreicht! Du kannst deiner Playlist nur noch `{0}` Songs hinzufügen.",
+            "playlistLinkNotAllowed": "Du kannst keine Playlist-Links verwenden.",
+            "streamNotAllowed": "Du darfst deiner Playlist keine aktiven Streams hinzufügen.",
+            "positionNotFound": "Die Position `{0}` kann in Deiner Playlist [`{1}`] nicht gefunden werden.",
+            "streaming": "Du darfst Deiner Wiedergabenliste keine aktiven Streams hinzufügen!",
+            "track": "Es gab ein Problem beim Hinzufügen von Tracks zur Wiedergabenliste!",
+            "trackLimited": "Du hast das Limit erreicht! Du kannst nur noch {0} Songs zu Deiner Wiedergabenliste hinzufügen.",
+            "trackRepeated": "In Deiner Wiedergabenliste gibt es bereits den gleichen Track!"
+        },
+        "actions": {
+            "play": "Die Playlist [`{0}`] mit `{1}` Songs wurde zur Warteschlange hinzugefügt.",
+            "removed": "Du hast die Wiedergabeliste [`{0}`] entfernt.",
+            "created": "Du hast die Wiedergabeliste `{0}` erstellt. Gebe /playlist view ein, um weitere Informationen zu erhalten.",
+            "renamed": "Du hast `{0}` zu `{1}` umbenannt.",
+            "trackRemoved": "👋 {0} aus {1}s Playlist [{2}] entfernt.",
+            "cleared": "Du hast Deine Wiedergabenliste [`{0}`] erfolgreich gelöscht.",
+            "trackAdded": "❤️ **{0}** wurde in der Wiedergabenliste [`{2}`] von {1} hinzugefügt."
+        },
+        "sharing": {
+            "sendErrorPlayer": "Entschuldigung, du kannst keine Einladung an dich selber senden.",
+            "sendErrorBot": "Entschuldigung, Du kannst keine Einladung an eine App senden.",
+            "belongs": "Verzeihung, diese Playlist gehört <@{0}>.",
+            "alreadyShared": "Verzeigung, Diese Playlist wurde bereits mit {0} geteilt.",
+            "alreadySent": "Verzeihung, Du hast bereits eine Einladung gesendet.",
+            "noAccount": "{0} hat noch kein Playlist-Konto erstellt.",
+            "invitationSent": "Einladung an {0} gesendet."
+        },
+        "inbox": {
+            "full": "Es tut mir leid! Der Posteingang von {0} ist voll.",
+            "noMessages": "Es sind keine Nachrichten in Deinem Posteingang."
+        }
+    },
+    "search": {
+        "noLinkSupport": "Der Suchbefehl unterstützt keine Links!",
+        "title": "Suchabfrage: {0}",
+        "desc": "➥ Plattform: {0} **{1}**\n➥ Ergebnisse: **{2}**\n\n{3}",
+        "wait": "Wähle den Song aus, den Du zur Warteschlange hinzufügen möchtest.",
+        "success": "Der Song wurde zur Warteschlange hinzugefügt."
+    },
+    "voting": {
+        "voted": "Du hast abgestimmt!"
+    },
+    "time": {
+        "formatError": "Falsches Zeitformat. Beispiel: 2:42 oder 12:39:31",
+        "invalidStartTime": "Ungültige Startzeit! Die Zeit muss innerhalb von `00:00` und `{0}` liegen.",
+        "invalidEndTime": "Ungültige Endzeit! Die Zeit muss innerhalb von `00:00` und `{0}` liegen."
+    },
+    "lyrics": {
+        "notFound": "Es wurden keine Songtexte gefunden. Gebe /lyrics <Song Name> <Autor> ein, um die Songtexte zu finden."
+    },
+    "queue": {
+        "management": {
+            "title": "Kommende Warteschlange:",
+            "cleared": "Alle Tracks in `{0}` wurden gelöscht",
+            "removed": "`{0}` Tracks wurden aus der Warteschlange entfernt.",
+            "swapped": "`{0}` und `{1}` wurden ausgetauscht.",
+            "moved": "`{0}` zu `{1}` verschoben"
+        },
+        "view": {
+            "historyTitle": "Vorherige Warteschlange:",
+            "title": "Musik-Warteschlange",
+            "desc": "**Jetzt wird abgespielt: [Hier klicken]({0}) ⮯**\n{1}"
+        },
+        "errors": {
+            "queueFull": "Entschuldigung, Du hast das Maximum von `{0}` Tracks in der Warteschlange erreicht.",
+            "outOfList": "Bitte gib einen gültigen Track-Index an!",
+            "duplicateTrack": "Entschuldigung, dieser Track ist bereits in der Warteschlange."
+        }
+    },
+    "songRequest": {
+        "channelCreated": "Der Song Request Channel ({0}) wurde erstellt! Du kannst jeden Song nach Namen oder URL in diesem Kanal anfordern, ohne den Bot-Präfix verwenden zu müssen."
+    },
+    "pagination": {
+        "prev": "Zurück",
+        "next": "Weiter",
+        "play": "Spielen",
+        "share": "Teilen",
+        "export": "Exportieren",
+        "delete": "Löschen",
+        "page": {
+            "title": "Seitenzahl eingeben",
+            "field": "Seitenzahl"
+        }
+    }
+}
