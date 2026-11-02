@@ -592,213 +592,33 @@ body.centered {
     justify-content: center;
 }
 
-/* ---- app shell: two layouts (classic sidebar / new top nav), same
-   theme variables either way so every theme keeps working unchanged.
-   Which layout is active is stored in localStorage and applied to
-   <html data-layout> before first paint - see the inline script in
-   base.html's <head>. Default is "topnav"; "sidebar" is the classic
-   layout, kept as an option via the switch in the controls bar. ---- */
-
-.shell {
-    display: grid;
-    min-height: 100vh;
-}
-
-html[data-layout="sidebar"] .shell {
-    height: 100vh;
-    grid-template-columns: 220px 1fr;
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas: "nav main" "controls main";
-}
-html[data-layout="sidebar"] .topnav-bar { display: none; }
-html[data-layout="sidebar"] main { overflow-y: auto; height: 100vh; }
-
-html[data-layout="topnav"] .shell {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto 1fr;
-    grid-template-areas: "nav controls" "main main";
-}
-html[data-layout="topnav"] .sidebar { display: none; }
-
-.sidebar, .topnav-bar { grid-area: nav; }
-.sidebar-footer { grid-area: controls; }
-main { grid-area: main; }
-
-.sidebar {
-    width: 220px;
-    position: sticky;
-    top: 0;
-    background: var(--sidebar);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    padding: 1.25rem 0.75rem;
-    box-shadow: 1px 0 6px rgba(20, 21, 40, 0.03);
-}
-
-.sidebar .brand {
-    font-weight: 600;
-    padding: 0 0.5rem 1.25rem;
-    font-size: 1.05rem;
-}
-
-.sidebar nav, .sidebar .nav-spacer {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    flex-grow: 1;
-}
-
-.sidebar-nav { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: .2rem; scrollbar-width: thin; }
-.nav-group { margin-bottom: .25rem; }
-.nav-group-title { width:100%; display:flex; justify-content:space-between; align-items:center; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:.55rem .6rem .35rem; cursor:pointer; }
-.nav-group-title span { transition: transform .15s; }
+/* ---- app shell: compact header + persistent feature sidebar ---- */
+.shell { display:grid; min-height:100vh; grid-template-columns:240px minmax(0,1fr); grid-template-rows:52px minmax(0,1fr); grid-template-areas:"nav nav" "sidebar main"; }
+.topnav-bar { grid-area:nav; display:flex; align-items:center; gap:1rem; padding:.65rem 1.1rem; background:var(--sidebar); border-bottom:1px solid var(--border); }
+.topnav-brand { font-weight:700; font-size:1rem; white-space:nowrap; }
+.topnav-bar .server-name { color:var(--muted); font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sidebar { grid-area:sidebar; width:240px; min-height:calc(100vh - 52px); position:sticky; top:0; align-self:start; max-height:calc(100vh - 52px); overflow:hidden; background:var(--sidebar); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:1rem .75rem; }
+.sidebar nav { display:flex; flex-direction:column; gap:.15rem; flex-grow:1; min-height:0; }
+.sidebar-nav { overflow-y:auto; overflow-x:hidden; padding-right:.2rem; scrollbar-width:thin; }
+.nav-group { margin-bottom:.3rem; }
+.nav-group-title { width:100%; display:flex; justify-content:space-between; align-items:center; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.7rem; font-weight:750; text-transform:uppercase; letter-spacing:.08em; padding:.55rem .6rem .35rem; cursor:pointer; }
+.nav-group-title span { transition:transform .15s; }
 .nav-group.collapsed .nav-group-title span { transform:rotate(-90deg); }
 .nav-group.collapsed .nav-group-items { display:none; }
-.nav-group-items { display:flex; flex-direction:column; gap:.15rem; }
-
-.page-results { list-style:none; margin:0; padding:0; }
-.page-results li a { display:block; padding:.5rem .6rem; border-radius:6px; color:var(--text); text-decoration:none; font-size:.9rem; }
-.page-results li a:hover { background:var(--accent-dim); }
-
-.sidebar nav a {
-    color: var(--muted);
-    text-decoration: none;
-    padding: 0.55rem 0.6rem;
-    border-radius: 6px;
-    font-size: 0.9rem;
-}
-
-.sidebar nav a:hover { color: var(--text); background: var(--accent-dim); }
-.sidebar nav a.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
-
-/* Shown on every page - including the server picker (no guild_id yet), so
-   it's deliberately outside the "{% if guild_id %}" nav block in
-   base.html. Holds the theme menu, current server + switch, who's logged
-   in, and log out. */
-.sidebar-footer {
-    border-top: 1px solid var(--border);
-    padding-top: 0.75rem;
-    font-size: 0.85rem;
-}
-
-.sidebar-footer form { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-.sidebar-footer .logged-in-as { font-size: 0.75rem; margin-bottom: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-footer .logout { color: var(--muted); text-decoration: none; }
-.sidebar-footer .logout:hover { color: var(--text); }
-
-/* ---- topnav-bar: the no-permanent-sidebar layout option ---- */
-
-.topnav-bar {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.6rem 1rem;
-    background: var(--sidebar);
-    border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-}
-.topnav-brand { font-weight: 600; font-size: 1.05rem; white-space: nowrap; flex-shrink: 0; }
-.topnav-bar .server-name { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; flex-shrink: 0; }
-.topnav-bar .nav-spacer { flex: 1; }
-.topnav-links { display: flex; align-items: center; gap: 0.15rem; flex-shrink: 0; }
-.topnav-dropdown { position: relative; }
-.topnav-dropdown-btn {
-    display: flex; align-items: center; gap: 0.3rem;
-    background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 0.88rem;
-    padding: 0.5rem 0.65rem; border-radius: 6px; cursor: pointer; white-space: nowrap;
-}
-.topnav-dropdown-btn:hover, .topnav-dropdown-btn.active { color: var(--text); background: var(--accent-dim); }
-.topnav-dropdown-btn span { font-size: 0.7rem; }
-.topnav-dropdown-panel {
-    display: none; position: fixed; margin-top: 0.25rem;
-    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: var(--shadow); padding: 0.35rem; min-width: 200px; z-index: 50;
-    flex-direction: column; gap: 0.1rem;
-}
-.topnav-dropdown.open .topnav-dropdown-panel { display: flex; }
-.topnav-dropdown-panel a { color: var(--muted); text-decoration: none; padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.88rem; white-space: nowrap; }
-.topnav-dropdown-panel a:hover { color: var(--text); background: var(--accent-dim); }
-.topnav-dropdown-panel a.active { color: var(--accent-contrast); background: var(--accent); font-weight: 600; }
-
-/* Controls bar sits beside the topnav-bar (same grid row) instead of below
-   a sidebar, so lay it out as a horizontal row here. */
-html[data-layout="topnav"] .sidebar-footer {
-    display: flex; align-items: center; flex-wrap: wrap;
-    gap: 0.5rem 0.9rem;
-    border-top: none; border-bottom: 1px solid var(--border);
-    padding: 0.5rem 1rem; font-size: 0.85rem;
-    background: var(--sidebar);
-}
-html[data-layout="topnav"] .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
-html[data-layout="topnav"] .sidebar-footer .logged-in-as { margin-bottom: 0; white-space: nowrap; }
-html[data-layout="topnav"] .sidebar-footer .theme-menu { margin: 0; min-width: 190px; }
-html[data-layout="topnav"] .theme-menu-panel {
-    top: calc(100% + 0.4rem);
-    bottom: auto;
-    left: auto;
-    right: 0;
-    width: min(320px, 90vw);
-}
-
-.layout-toggle { white-space: nowrap; }
-
-main {
-    max-width: 760px;
-    margin: 0 auto;
-    padding: 2rem 1.5rem;
-    width: 100%;
-}
-
-@media (max-width: 700px) {
-    /* Must match (or exceed) the specificity of the desktop
-       html[data-layout="..."] .shell rules above, or this mobile override
-       loses to them and the two-column desktop grid keeps rendering at any
-       screen width - which is exactly what was happening before this fix. */
-    html[data-layout="sidebar"] .shell,
-    html[data-layout="topnav"] .shell,
-    .shell { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "nav" "controls" "main"; }
-
-    .sidebar { height: auto; position: static; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.75rem 1rem; }
-    .sidebar .brand { padding: 0; margin-right: 1rem; white-space: nowrap; }
-    .sidebar .server-name { display: none; }
-    .sidebar nav { flex-direction: row; flex-grow: 1; overflow-x: auto; overflow-y: hidden; }
-    .sidebar-nav .nav-group { display:flex; flex-direction:row; margin:0; }
-    .sidebar-nav .nav-group-title { display:none; }
-    .sidebar-nav .nav-group-items { flex-direction:row; }
-    /* Collapsing is a desktop-only affordance - the toggle button above is
-       hidden on mobile, so a group collapsed while on desktop (its
-       .collapsed class persists via localStorage, same as sidebar.js sets
-       on click) must not stay hidden here too, or there'd be no way left
-       to reach those links on a phone. */
-    .sidebar-nav .nav-group.collapsed .nav-group-items { display: flex; }
-    .sidebar .nav-spacer { flex-grow: 1; }
-
-    /* The topnav-bar's hover/click dropdowns don't translate well to touch -
-       flatten every group's links into one horizontally-scrolling row
-       instead, same idea as the sidebar's mobile treatment above. */
-    .topnav-bar { flex-wrap: wrap; }
-    .topnav-bar .server-name { display: none; }
-    .topnav-dropdown { display: contents; }
-    .topnav-dropdown-btn { display: none; }
-    .topnav-dropdown-panel { display: flex !important; position: static; box-shadow: none; border: 0; background: transparent; padding: 0; flex-direction: row; margin-top: 0; }
-
-    /* Was "display: none" - the theme menu / account controls were
-       invisible on mobile entirely. Now it wraps onto its own row below
-       the nav instead, full width, laid out horizontally. */
-    .sidebar-footer, html[data-layout="topnav"] .sidebar-footer {
-        border-top: 1px solid var(--border);
-        border-bottom: 0;
-        margin-top: 0.6rem;
-        padding: 0.6rem 1rem;
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.5rem 1rem;
-    }
-    .sidebar-footer .theme-menu { flex-grow: 1; min-width: 160px; }
-    .sidebar-footer form { margin-bottom: 0; gap: 0.4rem; }
-    .sidebar-footer .logged-in-as { margin-bottom: 0; }
+.nav-group-items { display:flex; flex-direction:column; gap:.12rem; }
+.sidebar nav a { color:var(--muted); text-decoration:none; padding:.48rem .6rem; border-radius:6px; font-size:.88rem; }
+.sidebar nav a:hover { color:var(--text); background:var(--accent-dim); }
+.sidebar nav a.active { color:var(--accent-contrast); background:var(--accent); font-weight:600; }
+.sidebar-footer { flex-shrink:0; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
+.dashboard-settings-link { display:block; color:var(--muted); text-decoration:none; padding:.65rem .7rem; border-radius:7px; font-size:.9rem; }
+.dashboard-settings-link:hover,.dashboard-settings-link.active { color:var(--text); background:var(--accent-dim); }
+main { grid-area:main; max-width:980px; margin:0 auto; padding:2rem 1.75rem; width:100%; min-width:0; }
+@media (max-width:760px) {
+ .shell { grid-template-columns:1fr; grid-template-rows:52px auto 1fr; grid-template-areas:"nav" "sidebar" "main"; }
+ .sidebar { width:100%; min-height:0; max-height:42vh; position:static; border-right:0; border-bottom:1px solid var(--border); padding:.5rem .65rem; }
+ .sidebar-nav { overflow-y:auto; }
+ .sidebar-footer { margin-top:.25rem; padding-top:.35rem; }
+ main { padding:1.25rem 1rem; }
 }
 
 /* ---- shared components ---- */

@@ -1,9 +1,9 @@
 """Web dashboard for the bot. Reads and writes the exact same bot.db file
 the Discord bot uses (via a mounted volume, see docker-compose.yml).
 
-The dashboard uses a local shared-password login. It does not require
-Discord OAuth, a public domain, or a Discord redirect URL, so it works on
-LAN-only/self-hosted deployments such as http://HOST:8490.
+The dashboard uses Discord OAuth2 identity and per-user guild permissions.
+The bot may be installed in many servers; each user only sees servers where
+they have Manage Server/Administrator access and the bot is installed.
 
 Pages live under /guild/{guild_id}/<page> as separate routes (not anchor
 links on one long page) so each section gets its own URL, its own back
@@ -28,6 +28,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import hmac
 import asyncio
+import aiohttp
 from db import Db
 from redis_client import RedisClient
 from safe_feed import validate_feed_url
@@ -140,13 +141,11 @@ async def security_headers_and_origin_check(request: Request, call_next):
             supplied = origin or referer
             if supplied:
                 try:
-                    expected_origin = urlsplit(str(request.base_url))
-                    supplied_origin = urlsplit(supplied)
+                    supplied_origin = _origin_of(supplied)
+                    allowed_origins = _allowed_origins(request)
                 except ValueError:
                     return reject_request("Request origin could not be validated.")
-                if (supplied_origin.scheme, supplied_origin.netloc) != (
-                    expected_origin.scheme, expected_origin.netloc
-                ):
+                if supplied_origin not in allowed_origins:
                     return reject_request("Request origin did not match this dashboard.")
 
         # Parse once and replay the buffered body for FastAPI's downstream Form
@@ -262,7 +261,9 @@ async def security_headers_and_origin_check(request: Request, call_next):
             parts = request.url.path.split("/")
             if len(parts) >= 3 and parts[1] == "guild":
                 guild_id = int(parts[2])
-            db.record_webui_action(guild_id, _client_ip(request), request.method, request.url.path, response.status_code)
+            actor_id, actor_name = _current_identity(request)
+            db.record_webui_action(guild_id, _client_ip(request), request.method, request.url.path,
+                                   response.status_code, actor_id, actor_name)
         except Exception:
             pass
     return response
@@ -279,12 +280,14 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "").strip()
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "").strip()
+DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "").strip()
+DISCORD_API = "https://discord.com/api/v10"
+OAUTH_CONFIGURED = bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_REDIRECT_URI)
+# Optional local-only compatibility mode for development. Production compose
+# requires OAuth credentials and does not pass WEBUI_PASSWORD.
 WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD", "")
-
-if not WEBUI_PASSWORD:
-    raise RuntimeError(
-        "WEBUI_PASSWORD is not configured. Set WEBUI_PASSWORD in .env."
-    )
 
 
 def is_authed(request: Request) -> bool:
@@ -298,11 +301,185 @@ def is_authed(request: Request) -> bool:
         return False
 
 
-async def require_auth(request: Request):
-    """Require the local WebUI password and verify guild-scoped URLs refer
-    to a guild the bot is actually in. No Discord OAuth or public domain is
-    required for this self-hosted dashboard.
+TRUST_PROXY = _env_flag("WEBUI_TRUST_PROXY")
+HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+# How long a user's Discord guild list is reused before asking Discord again.
+# Without this every page view and every form POST hit Discord's API, which
+# rate-limits quickly and then locks people out of servers they can manage.
+# Demoting someone in Discord therefore takes up to GUILD_CACHE_TTL seconds to
+# be noticed. If Discord is briefly unreachable, a cached answer up to
+# GUILD_CACHE_STALE_GRACE seconds old is still used rather than failing open.
+GUILD_CACHE_TTL = 60
+GUILD_CACHE_STALE_GRACE = 300
+_guild_cache: dict[str, tuple[float, list[dict]]] = {}
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def _origin_of(url: str) -> tuple[str, str]:
+    parts = urlsplit(url)
+    return (parts.scheme.lower(), parts.netloc.lower())
+
+
+def _allowed_origins(request: Request) -> set[tuple[str, str]]:
+    """Origins a state-changing request may come from.
+
+    Behind a TLS-terminating proxy (Tailscale Funnel, Caddy, nginx) the app only
+    sees plain http, so ``request.base_url`` says ``http://host`` while the
+    browser correctly sends ``Origin: https://host`` - and every POST would be
+    rejected. The OAuth redirect URI is the one place the operator already
+    declared the real public origin, so trust that as well.
     """
+    allowed = {_origin_of(str(request.base_url))}
+    if DISCORD_REDIRECT_URI:
+        allowed.add(_origin_of(DISCORD_REDIRECT_URI))
+    return allowed
+
+
+def _safe_equal(a: str, b: str) -> bool:
+    # hmac.compare_digest raises TypeError on non-ASCII str; compare bytes so a
+    # hostile query string can't turn into a 500.
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _forget_session(session_id: str) -> None:
+    _guild_cache.pop(session_id, None)
+    _session_locks.pop(session_id, None)
+
+
+def _current_identity(request: Request) -> tuple[Optional[str], Optional[str]]:
+    """(discord_user_id, username) of the signed-in user, or (None, None)."""
+    session_id = request.session.get("session_id")
+    if not isinstance(session_id, str):
+        return None, None
+    row = db.get_webui_oauth_token(session_id)
+    if row:
+        return str(row[0]), str(row[1])
+    if request.session.get("auth_mode") == "local-password":
+        return "local", request.session.get("discord_username")
+    return None, None
+
+
+def _is_local_admin(request: Request) -> bool:
+    return request.session.get("auth_mode") == "local-password" and not OAUTH_CONFIGURED
+
+
+async def _fetch_guild_access(session_id: str) -> Optional[list[dict]]:
+    """Ask Discord which servers this session's user may manage.
+
+    Returns the list on success, ``[]`` when access is definitively gone (the
+    session is revoked), or ``None`` for a transient failure (rate limit,
+    Discord outage, network) so the caller can decide what to do.
+    """
+    token_row = db.get_webui_oauth_token(session_id)
+    if not token_row:
+        return []
+    user_id, username, access_token, refresh_token, expires_at = token_row
+    try:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as client:
+            if int(expires_at) <= int(time.time()) + 60:
+                async with client.post(f"{DISCORD_API}/oauth2/token", data={
+                    "client_id": DISCORD_CLIENT_ID,
+                    "client_secret": DISCORD_CLIENT_SECRET,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                }, headers={"Content-Type": "application/x-www-form-urlencoded"}) as response:
+                    if response.status in (400, 401):
+                        # invalid_grant: the user revoked the app or the token
+                        # was rotated elsewhere. End the session cleanly.
+                        db.revoke_webui_session(session_id)
+                        return []
+                    if response.status != 200:
+                        return None
+                    refreshed = await response.json()
+                access_token = refreshed["access_token"]
+                refresh_token = refreshed.get("refresh_token", refresh_token)
+                db.save_webui_oauth_token(session_id, user_id, username, access_token,
+                                          refresh_token, int(time.time()) + int(refreshed.get("expires_in", 3600)))
+            async with client.get(f"{DISCORD_API}/users/@me/guilds",
+                                  headers={"Authorization": f"Bearer {access_token}"}) as response:
+                if response.status == 401:
+                    db.revoke_webui_session(session_id)
+                    return []
+                if response.status != 200:
+                    return None
+                guilds = await response.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError):
+        return None
+    # Discord permission bitfield: ADMINISTRATOR=0x8, MANAGE_GUILD=0x20.
+    accessible = []
+    for guild in guilds if isinstance(guilds, list) else []:
+        if not isinstance(guild, dict):
+            continue
+        try:
+            permissions = int(guild.get("permissions", "0"))
+        except (TypeError, ValueError):
+            permissions = 0
+        if guild.get("owner") is True or permissions & (0x8 | 0x20):
+            accessible.append({"id": str(guild.get("id", "")), "name": str(guild.get("name", ""))})
+    return accessible
+
+
+async def discord_guild_access(request: Request) -> list[dict]:
+    """The servers the current user may manage, per Discord.
+
+    Tokens are stored server-side in SQLite, never in the signed browser cookie.
+    Results are cached per session for GUILD_CACHE_TTL seconds, and a per-session
+    lock stops concurrent requests from refreshing the same (rotating) refresh
+    token twice, which would invalidate the session.
+    """
+    session_id = request.session.get("session_id")
+    if not isinstance(session_id, str):
+        return []
+    if _is_local_admin(request):
+        return [{"id": str(gid), "name": name} for gid, name in db.list_bot_guilds()]
+
+    cached = _guild_cache.get(session_id)
+    if cached and time.monotonic() - cached[0] < GUILD_CACHE_TTL:
+        return cached[1]
+    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        cached = _guild_cache.get(session_id)
+        if cached and time.monotonic() - cached[0] < GUILD_CACHE_TTL:
+            return cached[1]
+        result = await _fetch_guild_access(session_id)
+        if result is None:
+            if cached and time.monotonic() - cached[0] < GUILD_CACHE_STALE_GRACE:
+                return cached[1]
+            return []
+        if not result and not db.get_webui_oauth_token(session_id):
+            _forget_session(session_id)
+            return []
+        _guild_cache[session_id] = (time.monotonic(), result)
+        if len(_guild_cache) > 2000:
+            oldest = sorted(_guild_cache.items(), key=lambda kv: kv[1][0])[:500]
+            for key, _ in oldest:
+                _forget_session(key)
+        return result
+
+
+async def accessible_guild_ids(request: Request) -> set[int]:
+    return {int(g["id"]) for g in await discord_guild_access(request) if g.get("id", "").isdigit()}
+
+
+async def _revoke_discord_tokens(access_token: str, refresh_token: str) -> None:
+    """Best-effort: tell Discord to invalidate this session's tokens on logout."""
+    try:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as client:
+            for token, hint in ((access_token, "access_token"), (refresh_token, "refresh_token")):
+                async with client.post(f"{DISCORD_API}/oauth2/token/revoke", data={
+                    "client_id": DISCORD_CLIENT_ID,
+                    "client_secret": DISCORD_CLIENT_SECRET,
+                    "token": token,
+                    "token_type_hint": hint,
+                }, headers={"Content-Type": "application/x-www-form-urlencoded"}):
+                    pass
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        pass
+
+
+async def require_auth(request: Request):
+    """Require Discord OAuth and enforce per-user Manage Server access."""
     if not is_authed(request):
         return RedirectResponse("/login", status_code=303)
     parts = request.url.path.split("/", 3)
@@ -311,9 +488,10 @@ async def require_auth(request: Request):
             guild_id = int(parts[2])
         except ValueError:
             guild_id = None
-        if guild_id is None or not db.is_bot_in_guild(guild_id):
+        allowed_ids = await accessible_guild_ids(request)
+        if guild_id is None or guild_id not in allowed_ids or not db.is_bot_in_guild(guild_id):
             request.session.pop("guild_id", None)
-            return RedirectResponse("/?error=not_accessible", status_code=303)
+            return RedirectResponse("/?error=no_permission", status_code=303)
     return None
 
 
@@ -373,6 +551,16 @@ _failed_attempts: dict[str, list[float]] = {}
 
 
 def _client_ip(request: Request) -> str:
+    # Behind Tailscale Funnel / a reverse proxy every request otherwise appears
+    # to come from the proxy, so the lockout and the dashboard log are useless.
+    # Only honoured when WEBUI_TRUST_PROXY=1, because X-Forwarded-For is
+    # attacker-controlled if clients can reach the dashboard port directly
+    # (bind to 127.0.0.1 when using this). The last hop is the one the trusted
+    # proxy itself appended.
+    if TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+        if forwarded:
+            return forwarded[:64]
     return request.client.host if request.client else "unknown"
 
 
@@ -418,65 +606,168 @@ async def login_form(request: Request):
     error_message = {
         "failed": "Incorrect password. Please try again.",
         "locked": "Too many failed attempts. Try again in a few minutes.",
+        "oauth": "Discord sign-in failed. Please try again.",
+        "config": "Discord OAuth is not configured on this dashboard yet.",
+        "denied": "Discord authorization was cancelled.",
     }.get(error)
-    return templates.TemplateResponse(request, "login.html", {"error": error_message})
+    return templates.TemplateResponse(request, "login.html", {
+        "error": error_message,
+        "oauth_configured": OAUTH_CONFIGURED,
+        "legacy_password_enabled": bool(WEBUI_PASSWORD) and not OAUTH_CONFIGURED,
+    })
 
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
     if is_locked_out(request):
         return RedirectResponse("/login?error=locked", status_code=303)
-
-    # Compare bytes: hmac.compare_digest() raises TypeError for non-ASCII str
-    # arguments, which used to turn such attempts into an unthrottled HTTP 500.
+    if OAUTH_CONFIGURED or not WEBUI_PASSWORD:
+        return RedirectResponse("/login?error=oauth", status_code=303)
     if not hmac.compare_digest(password.encode("utf-8"), WEBUI_PASSWORD.encode("utf-8")):
         record_failed_login(request)
         db.record_webui_login(_client_ip(request), False)
         return RedirectResponse("/login?error=failed", status_code=303)
-
     clear_failed_logins(request)
-    db.record_webui_login(_client_ip(request), True)
     old_session_id = request.session.get("session_id")
     if isinstance(old_session_id, str):
         db.revoke_webui_session(old_session_id)
     request.session.clear()
     session_id = secrets.token_urlsafe(32)
     db.create_webui_session(session_id, SESSION_TTL_SECONDS)
-    request.session["authenticated"] = True
-    request.session["session_id"] = session_id
-    request.session["discord_username"] = "Dashboard Admin"
+    request.session.update({"authenticated": True, "session_id": session_id,
+                             "auth_mode": "local-password", "discord_username": "Local Dashboard Admin"})
+    db.record_webui_login(_client_ip(request), True)
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/discord")
+async def discord_oauth_start(request: Request):
+    if not OAUTH_CONFIGURED:
+        return RedirectResponse("/login?error=config", status_code=303)
+    state = secrets.token_urlsafe(32)
+    request.session["oauth_state"] = state
+    from urllib.parse import urlencode
+    params = urlencode({
+        "client_id": DISCORD_CLIENT_ID,
+        "redirect_uri": DISCORD_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "identify guilds",
+        "state": state,
+    })
+    return RedirectResponse(f"https://discord.com/oauth2/authorize?{params}", status_code=303)
+
+
+@app.get("/auth/discord/callback")
+async def discord_oauth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    expected_state = request.session.pop("oauth_state", None)
+    if error:
+        return RedirectResponse("/login?error=denied", status_code=303)
+    if not OAUTH_CONFIGURED or not code or not isinstance(expected_state, str) or not _safe_equal(expected_state, state):
+        return RedirectResponse("/login?error=oauth", status_code=303)
+    try:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as client:
+            async with client.post(f"{DISCORD_API}/oauth2/token", data={
+                "client_id": DISCORD_CLIENT_ID,
+                "client_secret": DISCORD_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": DISCORD_REDIRECT_URI,
+            }, headers={"Content-Type": "application/x-www-form-urlencoded"}) as response:
+                if response.status != 200:
+                    return RedirectResponse("/login?error=oauth", status_code=303)
+                token = await response.json()
+            # Both scopes are required: "guilds" drives every permission check.
+            if not {"identify", "guilds"} <= set(str(token.get("scope", "")).split()):
+                return RedirectResponse("/login?error=oauth", status_code=303)
+            async with client.get(f"{DISCORD_API}/users/@me", headers={
+                "Authorization": f"Bearer {token['access_token']}"}) as response:
+                if response.status != 200:
+                    return RedirectResponse("/login?error=oauth", status_code=303)
+                user = await response.json()
+        old_session_id = request.session.get("session_id")
+        if isinstance(old_session_id, str):
+            db.revoke_webui_session(old_session_id)
+            _forget_session(old_session_id)
+        request.session.clear()
+        session_id = secrets.token_urlsafe(32)
+        db.create_webui_session(session_id, SESSION_TTL_SECONDS)
+        username = user.get("global_name") or user.get("username") or "Discord user"
+        db.save_webui_oauth_token(session_id, str(user["id"]), username,
+                                  token["access_token"], token["refresh_token"],
+                                  int(time.time()) + int(token.get("expires_in", 3600)))
+        request.session["authenticated"] = True
+        request.session["session_id"] = session_id
+        request.session["discord_username"] = username
+        db.record_webui_login(_client_ip(request), True, str(user["id"]), username)
+        return RedirectResponse("/", status_code=303)
+    except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError, AttributeError):
+        db.record_webui_login(_client_ip(request), False)
+        return RedirectResponse("/login?error=oauth", status_code=303)
 
 
 @app.post("/logout")
 async def logout(request: Request):
     session_id = request.session.get("session_id")
     if isinstance(session_id, str):
-        db.revoke_webui_session(session_id)
+        token_row = db.get_webui_oauth_token(session_id)
+        db.revoke_webui_session(session_id)  # also deletes the stored OAuth tokens
+        _forget_session(session_id)
+        if token_row and OAUTH_CONFIGURED:
+            await _revoke_discord_tokens(token_row[2], token_row[3])
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
 
+# ---- dashboard-wide settings ----
+
+@app.get("/dashboard-settings")
+async def dashboard_settings_page(request: Request):
+    if not is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    guild_id = request.session.get("guild_id")
+    if guild_id and (guild_id not in await accessible_guild_ids(request) or not db.is_bot_in_guild(guild_id)):
+        request.session.pop("guild_id", None)
+        guild_id = None
+    return templates.TemplateResponse(request, "dashboard_settings.html", {
+        "guild_id": guild_id,
+        "guild_name": db.get_guild_name(guild_id) if guild_id else None,
+        "active": "dashboard_settings",
+        "discord_username": request.session.get("discord_username"),
+    })
+
+
 # ---- dashboard log (login attempts + actions taken through the WebUI) ----
 # Global rather than per-guild: login happens before a server is even
-# selected, and the shared-password model (see the note atop this file)
-# means there's no per-admin identity to scope it to anyway.
+# selected. Login events are retained for operational auditing.
 
 @app.get("/dashboard-log")
 async def dashboard_log_page(request: Request):
     if not is_authed(request):
         return RedirectResponse("/login", status_code=303)
+    # Multi-server dashboard: a signed-in Discord user may hold no server access
+    # at all, so this page must only show their own sign-ins and the actions
+    # taken in servers they can manage - never other people's IPs or servers.
+    user_id, _name = _current_identity(request)
+    if _is_local_admin(request):
+        login_rows = db.list_webui_login_events(50)
+        action_rows = db.list_webui_action_log(100)
+    else:
+        login_rows = db.list_webui_login_events(50, user_id=user_id)
+        action_rows = db.list_webui_action_log(100, guild_ids=await accessible_guild_ids(request))
     logins = [
         {"created_at": datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S"), "ip": row[1], "success": bool(row[2])}
-        for row in db.list_webui_login_events(50)
+        for row in login_rows
     ]
     actions = [
         {
             "created_at": datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S"), "guild_id": row[1],
             "guild_name": (db.get_guild_name(row[1]) if row[1] else None),
-            "ip": row[2], "method": row[3], "path": row[4], "status_code": row[5],
+            # Other admins' IP addresses stay private; you only see your own.
+            "ip": row[2] if (_is_local_admin(request) or row[7] == user_id) else "hidden",
+            "user": row[6] or "Unknown",
+            "method": row[3], "path": row[4], "status_code": row[5],
         }
-        for row in db.list_webui_action_log(100)
+        for row in action_rows
     ]
     return templates.TemplateResponse(
         request, "dashboard_log.html",
@@ -498,9 +789,8 @@ async def home(request: Request):
     if guild_id:
         return RedirectResponse(f"/guild/{guild_id}", status_code=303)
 
-    # Password authentication is intentionally local/shared: anyone who has
-    # the dashboard password can manage the bot's servers.
-    accessible_guilds = db.list_bot_guilds()
+    allowed_ids = await accessible_guild_ids(request)
+    accessible_guilds = [g for g in db.list_bot_guilds() if int(g[0]) in allowed_ids]
     error = request.query_params.get("error")
     return templates.TemplateResponse(
         request, "pick_guild.html",
@@ -519,8 +809,9 @@ async def home(request: Request):
 async def select_guild(request: Request, guild_id: int = Form(...)):
     if (r := await require_auth(request)):
         return r
-    if not db.is_bot_in_guild(guild_id):
-        return RedirectResponse("/?error=not_accessible", status_code=303)
+    allowed_ids = await accessible_guild_ids(request)
+    if not db.is_bot_in_guild(guild_id) or guild_id not in allowed_ids:
+        return RedirectResponse("/?error=no_permission", status_code=303)
     request.session["guild_id"] = guild_id
     return RedirectResponse(f"/guild/{guild_id}", status_code=303)
 
@@ -836,11 +1127,7 @@ async def counting_page(request: Request, guild_id: int):
     if (r := await require_auth(request)):
         return r
     counting = db.get_counting(guild_id)
-    sorted_milestones = (
-        sorted(counting["milestone_emojis"].items(), key=lambda kv: int(kv[0])) if counting else []
-    )
     return render(request, "counting.html", guild_id, "counting", counting=counting,
-                  sorted_milestones=sorted_milestones,
                   text_channels=db.list_bot_channels(guild_id, "text") + db.list_bot_channels(guild_id, "news"))
 
 
@@ -854,6 +1141,16 @@ async def save_counting_channel(request: Request, guild_id: int, channel_id: int
     return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
 
 
+@app.post("/guild/{guild_id}/counting/savesenabled")
+async def save_counting_saves_enabled(request: Request, guild_id: int, enabled: str = Form(default="")):
+    if (r := await require_auth(request)):
+        return r
+    db.set_saves_enabled(guild_id, enabled == "on")
+    db.record_bot_event("counting.save_config", guild_id, None, None,
+                         f"enabled={enabled == 'on'}", source="dashboard_counting")
+    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
+
+
 @app.post("/guild/{guild_id}/counting/saves")
 async def save_counting_saves(request: Request, guild_id: int, milestone: int = Form(...), max_saves: int = Form(...)):
     if (r := await require_auth(request)):
@@ -861,6 +1158,8 @@ async def save_counting_saves(request: Request, guild_id: int, milestone: int = 
     if not 1 <= milestone <= 1_000_000 or not 0 <= max_saves <= 100:
         return RedirectResponse(f"/guild/{guild_id}/counting?error=invalid", status_code=303)
     db.set_save_settings(guild_id, milestone, max_saves)
+    db.record_bot_event("counting.save_config", guild_id, None, None,
+                         f"interval={milestone} cap={max_saves}", source="dashboard_counting")
     return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
 
 
@@ -869,29 +1168,6 @@ async def save_counting_highscorealerts(request: Request, guild_id: int, enabled
     if (r := await require_auth(request)):
         return r
     db.set_high_score_alerts(guild_id, enabled == "on")
-    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
-
-
-@app.post("/guild/{guild_id}/counting/milestones/add")
-async def add_counting_milestone(request: Request, guild_id: int, number: int = Form(...), emoji: str = Form(...)):
-    if (r := await require_auth(request)):
-        return r
-    emoji = emoji.strip()
-    if not 1 <= number <= 1_000_000_000 or not emoji:
-        return RedirectResponse(f"/guild/{guild_id}/counting?error=invalid", status_code=303)
-    db.set_milestone_emoji(guild_id, number, emoji)
-    db.record_bot_event("counting.milestone_emoji", guild_id, None, None,
-                         f"number={number} emoji={emoji!r}", source="dashboard_counting")
-    return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
-
-
-@app.post("/guild/{guild_id}/counting/milestones/remove")
-async def remove_counting_milestone(request: Request, guild_id: int, number: int = Form(...)):
-    if (r := await require_auth(request)):
-        return r
-    db.set_milestone_emoji(guild_id, number, None)
-    db.record_bot_event("counting.milestone_emoji", guild_id, None, None,
-                         f"number={number} emoji=None", source="dashboard_counting")
     return RedirectResponse(f"/guild/{guild_id}/counting", status_code=303)
 
 
@@ -2270,6 +2546,14 @@ async def automod_page(request: Request, guild_id: int):
         tiers=tiers,
         action_choices=list(AUTOMOD_ACTION_LABELS.items()),
         exempt_roles=[(rid, role_label(guild_id, rid)) for rid in db.list_automod_exempt_roles(guild_id)],
+        invite_allow=db.list_automod_invite_allow(guild_id),
+        invite_exempt_channels=[(cid, channel_label(guild_id, cid)) for cid in db.list_automod_invite_exempt_channels(guild_id)],
+        invite_modes=[
+            ("strike", "Delete + count as a strike (punishment ladder)"),
+            ("delete", "Delete only (no strike)"),
+            ("log", "Log only (leave the message up)"),
+        ],
+        text_channels=[c for c in db.list_bot_channels(guild_id) if c[2] in ("text", "news")],
         role_choices=db.list_bot_roles(guild_id),
         gif_allowlist=db.list_automod_gif_allowlist(guild_id),
         gif_blocklist=db.list_automod_gif_blocklist(guild_id),
@@ -2289,6 +2573,62 @@ async def save_automod_invites(request: Request, guild_id: int, block_invites: s
     if (r := await require_auth(request)):
         return r
     db.set_automod_invites(guild_id, block_invites == "on")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/invites/settings")
+async def save_automod_invite_settings(request: Request, guild_id: int, invite_mode: str = Form(...), allow_own: str = Form(None)):
+    if (r := await require_auth(request)):
+        return r
+    try:
+        db.set_automod_invite_mode(guild_id, invite_mode)
+    except ValueError:
+        return RedirectResponse(f"/guild/{guild_id}/automod?error=invitemode", status_code=303)
+    db.set_automod_invite_allow_own(guild_id, allow_own == "on")
+    db.record_bot_event("automod.invite_settings", guild_id, None, None,
+                         f"mode={invite_mode} allow_own={allow_own == 'on'}", source="dashboard_automod")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/invites/allow/add")
+async def add_automod_invite_allow(request: Request, guild_id: int, entry: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    try:
+        kind, value = db.add_automod_invite_allow(guild_id, entry)
+    except ValueError:
+        return RedirectResponse(f"/guild/{guild_id}/automod?error=inviteallow", status_code=303)
+    db.record_bot_event("automod.invite_allow_add", guild_id, None, None,
+                         f"{kind}={value}", source="dashboard_automod")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/invites/allow/delete")
+async def delete_automod_invite_allow(request: Request, guild_id: int, kind: str = Form(...), value: str = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if kind in ("code", "guild"):
+        db.remove_automod_invite_allow(guild_id, kind, value)
+        db.record_bot_event("automod.invite_allow_remove", guild_id, None, None,
+                             f"{kind}={value}", source="dashboard_automod")
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/invites/exempt-channels/add")
+async def add_automod_invite_exempt_channel(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    if not validate_channel(guild_id, channel_id, ("text", "news")):
+        return RedirectResponse(f"/guild/{guild_id}/automod?error=channel", status_code=303)
+    db.add_automod_invite_exempt_channel(guild_id, channel_id)
+    return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
+
+
+@app.post("/guild/{guild_id}/automod/invites/exempt-channels/delete")
+async def delete_automod_invite_exempt_channel(request: Request, guild_id: int, channel_id: int = Form(...)):
+    if (r := await require_auth(request)):
+        return r
+    db.remove_automod_invite_exempt_channel(guild_id, channel_id)
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)
 
 
@@ -2687,9 +3027,8 @@ async def stickyroles_include(request: Request, guild_id: int, role_id: int = Fo
 
 # ---- talk as the bot ----
 # Whoever's logged into the dashboard can compose a message and have the
-# bot send it into a text channel. Anyone with the WEBUI_PASSWORD can use
-# this - same trust level as everything else behind require_auth - since
-# there's no per-admin dashboard login, just a shared password.
+# bot send it into a text channel. The selected server is protected by the
+# Discord OAuth permission check in require_auth.
 
 @app.get("/guild/{guild_id}/talk")
 async def talk_page(request: Request, guild_id: int, show_deleted: str = ""):

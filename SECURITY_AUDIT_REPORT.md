@@ -20,8 +20,8 @@ This is a code and regression-test review, not a production penetration test. Th
 | 2 | `GET /logout` changed state | Low | **Fixed in supplied snapshot** | `webui/main.py`, `webui/templates/base.html` |
 | 3 | Non-ASCII password attempts could raise `TypeError` and bypass normal throttling behavior | Low | **Fixed in supplied snapshot** | `webui/main.py` |
 | 4 | `WEBUI_HTTPS_ONLY=true` was not interpreted as true | Low | **Fixed in supplied snapshot** | `webui/main.py`, `.env.example` |
-| 5 | Compose used a predictable Lavalink password fallback | Low | **Fixed; Compose now requires the shared secret** | `docker-compose.yml` |
-| 6 | Lavalink and music code still had a predictable password fallback | Low | **Fixed; both fail closed without environment configuration** | `lavalink/application.yml`, `cogs/music.py` |
+| 5 | Compose uses a predictable Lavalink password fallback | Low | **Correction (2026-11-02): NOT fixed.** `docker-compose.yml` still defaults to `youshallnotpass` and a test asserts it. Acceptable only because Lavalink is not published to the host; set `LAVALINK_PASSWORD` anyway | `docker-compose.yml` |
+| 6 | Lavalink and music code still have a predictable password fallback | Low | **Correction (2026-11-02): NOT fixed.** `cogs/music.py` falls back to `youshallnotpass` and `lavalink/application.yml` hardcodes it; the earlier "fails closed" claim was inaccurate | `lavalink/application.yml`, `cogs/music.py` |
 | 7 | `dnspython` was pinned to an older version reported vulnerable in the supplied audit | Per advisory | **Updated to 2.6.1 in supplied snapshot; advisory scan not rerun in this follow-up** | `requirements.txt` |
 | 8 | Python bytecode could be included in source/build context | Info | **Ignored by `.gitignore`/`.dockerignore`; whether any bytecode was historically tracked cannot be reverified without `.git`** | root, `webui/` |
 | 9 | Build contexts could include `.env` and runtime data | Low | **Fixed by Docker ignore files** | `.dockerignore`, `webui/.dockerignore` |
@@ -31,13 +31,13 @@ This is a code and regression-test review, not a production penetration test. Th
 | 13 | Dashboard port 8490 publishes on all interfaces by default | Deployment-dependent | **Not changed intentionally; `WEBUI_BIND_ADDRESS` can restrict the bind to loopback or a chosen LAN/VPN address** | `docker-compose.yml`, `.env.example` |
 | 14 | Music slash commands could directly mutate playback without the DJ/member-vote policy used by the interactive player | Medium | **Fixed; shared authorization guard added to mutating playback controls** | `cogs/music.py` |
 | 15 | Request body size was checked only after buffering the entire request | Low | **Fixed; middleware enforces the 8 MiB limit as chunks stream in** | `webui/main.py` |
-| 16 | Compose passed empty `DISCORD_TOKEN` or `WEBUI_PASSWORD` into containers instead of failing before startup | Low | **Fixed; all three required deployment secrets now use Compose required-variable expressions** | `docker-compose.yml` |
+| 16 | Compose passed empty deployment secrets into containers instead of failing before startup | Low | **Superseded; production WebUI now requires Discord OAuth client ID, secret, and redirect URI via Compose required-variable expressions** | `docker-compose.yml` |
 
 ### Additional security details
 
 - Music control policy allows ordinary members to vote for pause/resume/skip/back/leave/shuffle where the interactive player supports it. The requester exception only applies to skipping the current track; skipping directly to an arbitrary queue position still requires privilege.
 - The Channel Feed deletes rows at the application/database level. It does not promise forensic erasure from pre-existing SQLite free pages, WAL files, snapshots, or backups; protect the data directory and backups accordingly.
-- The WebUI remains a single shared-password interface. Anyone who knows that password has the same dashboard authority; there are no per-user identities or individual action attribution.
+- Superseded: the dashboard now uses per-user Discord OAuth2 and the dashboard action log records which Discord user performed each action (see `SECURITY_REVIEW.md`).
 
 ## Other reviewed areas
 
@@ -70,7 +70,7 @@ The original supplied report records prior `pip-audit` runs after the `dnspython
 ## Deployment notes
 
 1. Back up `data/` before deploying. It contains the SQLite database and the WebUI signing key.
-2. Set non-empty `DISCORD_TOKEN`, `WEBUI_PASSWORD`, and a strong random `LAVALINK_PASSWORD` in `.env` (for example, generate the Lavalink secret with `openssl rand -hex 32`). Compose now fails if any of these are blank. Never paste secrets into issue reports or chats.
+2. Set non-empty `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, and a strong random `LAVALINK_PASSWORD` in `.env`. See the current `SECURITY_REVIEW.md` for the OAuth setup; this report's original shared-password instructions are superseded.
 3. Set `WEBUI_BIND_ADDRESS=127.0.0.1` when only a local reverse proxy or SSH tunnel should reach the dashboard, or set a specific trusted LAN/VPN address when that is the intended access path. Do not expose plain-HTTP dashboard access to the public internet.
 4. Set `WEBUI_HTTPS_ONLY=1` only when HTTPS is actually active.
 5. Rebuild/restart the bot and WebUI. The additive `webui_sessions` table is created automatically. No SQL migration command is needed.

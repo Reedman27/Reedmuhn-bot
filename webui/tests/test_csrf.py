@@ -98,9 +98,8 @@ def test_hostile_origin_is_rejected_even_with_valid_token():
         data={"password": "unit-test-only-password-not-for-use", "_csrf_token": token},
     )
     assert login_response.status_code == 303
-    # The global base template always contains the POST logout form, even when
-    # the temporary test database has no Discord guilds configured.
-    home_response = client.get("/dashboard-log")
+    # Account actions now live on the dedicated dashboard settings page.
+    home_response = client.get("/dashboard-settings")
     assert home_response.status_code == 200
     fresh_token = token_from_response(home_response)
     response = client.post(

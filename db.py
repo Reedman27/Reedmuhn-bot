@@ -12,16 +12,6 @@ from typing import Optional
 
 logger = logging.getLogger("db")
 
-# Default counting milestone reaction emoji, ported from the reference
-# count-bot's specialEmojis dict. Per-guild copies of this live in the
-# counting.milestone_emojis JSON column and can be edited via the WebUI.
-DEFAULT_MILESTONE_EMOJIS = {
-    "67": "😒",
-    "100": "💯",
-    "1234": "🔢",
-    "2024": "🐋",
-}
-
 
 class _DeferredCommitConn:
     """Wraps a sqlite3.Connection so commit() is a no-op while everything
@@ -1042,40 +1032,21 @@ class Db:
                 save_milestone INTEGER NOT NULL DEFAULT 50,
                 max_saves INTEGER NOT NULL DEFAULT 3,
                 high_score_alerts INTEGER NOT NULL DEFAULT 0,
-                milestone_emojis TEXT NOT NULL DEFAULT ('{default_emojis}')
-            )""".format(default_emojis=json.dumps(DEFAULT_MILESTONE_EMOJIS))
-        )
-        # counting predates save_milestone/max_saves - add them for anyone
-        # upgrading from an older db without wiping their data.
-        counting_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(counting)")}
-        if "save_milestone" not in counting_cols:
-            self.conn.execute("ALTER TABLE counting ADD COLUMN save_milestone INTEGER NOT NULL DEFAULT 50")
-        if "max_saves" not in counting_cols:
-            self.conn.execute("ALTER TABLE counting ADD COLUMN max_saves INTEGER NOT NULL DEFAULT 3")
-        if "high_score_alerts" not in counting_cols:
-            self.conn.execute("ALTER TABLE counting ADD COLUMN high_score_alerts INTEGER NOT NULL DEFAULT 0")
-        if "milestone_emojis" not in counting_cols:
-            # Bonus reaction emoji on specific numbers, ported from the
-            # reference count-bot's specialEmojis dict (67/100/1234/2024) -
-            # purely cosmetic/fun, doesn't affect saves or high score.
-            # Stored as a JSON object {"67": "😒", ...} so it's editable
-            # per-guild from the WebUI instead of being hardcoded.
-            self.conn.execute(
-                "ALTER TABLE counting ADD COLUMN milestone_emojis TEXT NOT NULL DEFAULT '{}'"
-            )
-            self.conn.execute(
-                "UPDATE counting SET milestone_emojis = ? WHERE milestone_emojis = '{}'",
-                (json.dumps(DEFAULT_MILESTONE_EMOJIS),),
-            )
-        self.conn.execute(
-            """CREATE TABLE IF NOT EXISTS counting_users (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                correct_count INTEGER NOT NULL DEFAULT 0,
-                saves INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id)
+                saves_enabled INTEGER NOT NULL DEFAULT 0,
+                server_saves INTEGER NOT NULL DEFAULT 0
             )"""
         )
+        # Databases created by older versions are upgraded in place.
+        counting_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(counting)")}
+        for col, ddl in (
+            ("save_milestone", "INTEGER NOT NULL DEFAULT 50"),
+            ("max_saves", "INTEGER NOT NULL DEFAULT 3"),
+            ("high_score_alerts", "INTEGER NOT NULL DEFAULT 0"),
+            ("saves_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("server_saves", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in counting_cols:
+                self.conn.execute(f"ALTER TABLE counting ADD COLUMN {col} {ddl}")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS reaction_roles (
                 guild_id INTEGER NOT NULL,
@@ -1185,6 +1156,32 @@ class Db:
             self.conn.execute(
                 "ALTER TABLE automod_config ADD COLUMN block_gifs INTEGER NOT NULL DEFAULT 0"
             )
+        # Invite-link controls (see cogs/automod.py). Defaults keep the old
+        # behavior for upgrading servers: every invite is blocked and a hit
+        # counts as a strike on the escalation ladder.
+        if "invite_mode" not in automod_cfg_cols:
+            self.conn.execute(
+                "ALTER TABLE automod_config ADD COLUMN invite_mode TEXT NOT NULL DEFAULT 'strike'"
+            )
+        if "invite_allow_own" not in automod_cfg_cols:
+            self.conn.execute(
+                "ALTER TABLE automod_config ADD COLUMN invite_allow_own INTEGER NOT NULL DEFAULT 0"
+            )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_invite_allow (
+                guild_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (guild_id, kind, value)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS automod_invite_exempt_channels (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, channel_id)
+            )"""
+        )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS antinuke_config (
                 guild_id INTEGER PRIMARY KEY,
@@ -2798,19 +2795,14 @@ class Db:
     # ---- counting ----
 
     def get_counting(self, guild_id: int) -> Optional[dict]:
-        cur = self.conn.execute(
-            """SELECT channel_id, current_number, last_user_id, high_score, save_milestone, max_saves,
-                      high_score_alerts, milestone_emojis
+        row = self.conn.execute(
+            """SELECT channel_id, current_number, last_user_id, high_score, save_milestone,
+                      max_saves, high_score_alerts, saves_enabled, server_saves
                FROM counting WHERE guild_id = ?""",
             (guild_id,),
-        )
-        row = cur.fetchone()
+        ).fetchone()
         if row is None:
             return None
-        try:
-            milestone_emojis = json.loads(row[7]) if row[7] else {}
-        except (TypeError, ValueError):
-            milestone_emojis = {}
         return {
             "channel_id": row[0],
             "current_number": row[1],
@@ -2819,26 +2811,18 @@ class Db:
             "save_milestone": row[4],
             "max_saves": row[5],
             "high_score_alerts": bool(row[6]),
-            "milestone_emojis": milestone_emojis,
+            "saves_enabled": bool(row[7]),
+            "server_saves": row[8],
         }
 
-    def set_milestone_emoji(self, guild_id: int, number: int, emoji: Optional[str]) -> dict:
-        """Adds/updates a milestone reaction emoji, or removes it if emoji is
-        None/empty. Returns the resulting milestone_emojis dict."""
-        state = self.get_counting(guild_id)
-        milestones = dict(state["milestone_emojis"]) if state else {}
-        key = str(number)
-        if emoji:
-            milestones[key] = emoji
-        else:
-            milestones.pop(key, None)
+    def set_counting_channel(self, guild_id: int, channel_id: int) -> None:
+        # Changing the channel keeps the current number, high score and saves.
         self.conn.execute(
-            """INSERT INTO counting (guild_id, channel_id, milestone_emojis) VALUES (?, 0, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET milestone_emojis = excluded.milestone_emojis""",
-            (guild_id, json.dumps(milestones)),
+            """INSERT INTO counting (guild_id, channel_id) VALUES (?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id""",
+            (guild_id, channel_id),
         )
         self.conn.commit()
-        return milestones
 
     def set_high_score_alerts(self, guild_id: int, enabled: bool) -> None:
         self.conn.execute(
@@ -2848,90 +2832,105 @@ class Db:
         )
         self.conn.commit()
 
-    def set_counting_channel(self, guild_id: int, channel_id: int) -> None:
-        # Changing the channel only touches channel_id - existing progress
-        # and high score for this guild are preserved, matching how the
-        # reference count-bot's /channel behaves.
+    def set_saves_enabled(self, guild_id: int, enabled: bool) -> None:
         self.conn.execute(
-            """INSERT INTO counting (guild_id, channel_id, current_number, last_user_id, high_score)
-               VALUES (?, ?, 0, NULL, 0)
-               ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id""",
-            (guild_id, channel_id),
+            """INSERT INTO counting (guild_id, channel_id, saves_enabled) VALUES (?, 0, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET saves_enabled = excluded.saves_enabled""",
+            (guild_id, int(enabled)),
         )
         self.conn.commit()
 
-    def set_save_settings(self, guild_id: int, milestone: int, max_saves: int) -> None:
+    def set_save_settings(self, guild_id: int, interval: int, max_saves: int) -> None:
+        """interval: a save is earned each time the count reaches a multiple
+        of it. max_saves: size of the server's save bank (banked saves above
+        a lowered cap are trimmed)."""
         self.conn.execute(
-            """INSERT INTO counting (guild_id, channel_id, save_milestone, max_saves)
-               VALUES (?, 0, ?, ?)
+            """INSERT INTO counting (guild_id, channel_id, save_milestone, max_saves, server_saves)
+               VALUES (?, 0, ?, ?, 0)
                ON CONFLICT(guild_id) DO UPDATE SET
                    save_milestone = excluded.save_milestone,
-                   max_saves = excluded.max_saves""",
-            (guild_id, milestone, max_saves),
+                   max_saves = excluded.max_saves,
+                   server_saves = MIN(counting.server_saves, excluded.max_saves)""",
+            (guild_id, interval, max_saves),
         )
         self.conn.commit()
 
-    def advance_count(self, guild_id: int, new_number: int, user_id: int) -> None:
-        self.conn.execute(
-            """UPDATE counting SET
-                   current_number = ?,
-                   last_user_id = ?,
-                   high_score = MAX(high_score, ?)
-               WHERE guild_id = ?""",
-            (new_number, user_id, new_number, guild_id),
-        )
-        self.conn.commit()
-        self.record_bot_event("counting.advance", guild_id, user_id, None, f"number={new_number}")
+    def apply_count_attempt(self, guild_id: int, user_id: int, value: int) -> Optional[dict]:
+        """Judges one number posted in the counting channel and stores the
+        result in the same step. Nothing here awaits, so the event loop
+        handles messages one at a time and two people can never be judged
+        against the same stored number.
 
-    def reset_count(self, guild_id: int) -> None:
+        Returns None if the server has no counting channel. Otherwise a dict
+        whose "result" is one of:
+          "ok"    - correct. Also: number, earned_save, saves, new_high.
+          "nudge" - wrong while the count is still 0, so nothing was lost.
+          "saved" - wrong, but a server save was spent. Also: current,
+                    expected, saves_left.
+          "reset" - wrong; the count went back to 0. Also: lost (the number
+                    it had reached).
+        Every non-ok result also carries "reason": "wrong" or "repeat"
+        (the same member counting twice in a row, even with the right
+        number).
+        """
+        state = self.get_counting(guild_id)
+        if state is None or not state["channel_id"]:
+            return None
+
+        current = state["current_number"]
+        expected = current + 1
+        repeat = state["last_user_id"] is not None and user_id == state["last_user_id"]
+
+        if value == expected and not repeat:
+            saves = state["server_saves"]
+            earned = False
+            interval = state["save_milestone"]
+            if state["saves_enabled"] and interval > 0 and expected % interval == 0 and saves < state["max_saves"]:
+                saves += 1
+                earned = True
+            previous_high = state["high_score"]
+            self.conn.execute(
+                """UPDATE counting SET current_number = ?, last_user_id = ?,
+                       high_score = MAX(high_score, ?), server_saves = ?
+                   WHERE guild_id = ?""",
+                (expected, user_id, expected, saves, guild_id),
+            )
+            self.conn.commit()
+            self.record_bot_event("counting.advance", guild_id, user_id, None, f"number={expected}")
+            return {
+                "result": "ok",
+                "number": expected,
+                "earned_save": earned,
+                "saves": saves,
+                "new_high": previous_high > 0 and expected > previous_high,
+            }
+
+        reason = "repeat" if repeat else "wrong"
+
+        if current == 0:
+            return {"result": "nudge", "reason": reason, "expected": expected}
+
+        if state["saves_enabled"] and state["server_saves"] > 0:
+            left = state["server_saves"] - 1
+            self.conn.execute(
+                "UPDATE counting SET server_saves = ? WHERE guild_id = ?", (left, guild_id)
+            )
+            self.conn.commit()
+            self.record_bot_event(
+                "counting.save_used", guild_id, user_id, None, f"number={current} saves_left={left}"
+            )
+            return {
+                "result": "saved", "reason": reason, "current": current,
+                "expected": expected, "saves_left": left,
+            }
+
         self.conn.execute(
             "UPDATE counting SET current_number = 0, last_user_id = NULL WHERE guild_id = ?",
             (guild_id,),
         )
         self.conn.commit()
-        self.record_bot_event("counting.reset", guild_id, None, None, "current_number=0")
-
-    # ---- counting saves (earned by personal correct-count milestones) ----
-
-    def get_user_counting_stats(self, guild_id: int, user_id: int) -> dict:
-        cur = self.conn.execute(
-            "SELECT correct_count, saves FROM counting_users WHERE guild_id = ? AND user_id = ?",
-            (guild_id, user_id),
-        )
-        row = cur.fetchone()
-        return {"correct_count": row[0], "saves": row[1]} if row else {"correct_count": 0, "saves": 0}
-
-    def record_correct_count(self, guild_id: int, user_id: int, milestone: int, max_saves: int) -> tuple[int, int, bool]:
-        """Increments this user's lifetime correct-count for the guild, and
-        grants a save if they just crossed a milestone (capped at
-        max_saves). Returns (new_correct_count, new_saves, earned_a_save)."""
-        self.conn.execute(
-            """INSERT INTO counting_users (guild_id, user_id, correct_count, saves)
-               VALUES (?, ?, 1, 0)
-               ON CONFLICT(guild_id, user_id) DO UPDATE SET correct_count = correct_count + 1""",
-            (guild_id, user_id),
-        )
-        stats = self.get_user_counting_stats(guild_id, user_id)
-        earned = False
-        if milestone > 0 and stats["correct_count"] % milestone == 0 and stats["saves"] < max_saves:
-            self.conn.execute(
-                "UPDATE counting_users SET saves = saves + 1 WHERE guild_id = ? AND user_id = ?",
-                (guild_id, user_id),
-            )
-            stats["saves"] += 1
-            earned = True
-        self.conn.commit()
-        return stats["correct_count"], stats["saves"], earned
-
-    def use_save(self, guild_id: int, user_id: int) -> int:
-        """Consumes one save (caller must have already checked saves > 0).
-        Returns the number of saves remaining."""
-        self.conn.execute(
-            "UPDATE counting_users SET saves = saves - 1 WHERE guild_id = ? AND user_id = ? AND saves > 0",
-            (guild_id, user_id),
-        )
-        self.conn.commit()
-        return self.get_user_counting_stats(guild_id, user_id)["saves"]
+        self.record_bot_event("counting.reset", guild_id, user_id, None, f"lost={current}")
+        return {"result": "reset", "reason": reason, "lost": current}
 
     # ---- extras (leveling, economy, counters, twitch, feeds, giveaways) ----
 
@@ -3943,6 +3942,17 @@ class Db:
                 int(bool(data.get("block_gifs"))), guild_id,
             ),
         )
+        # Invite-link controls: only restored if the snapshot has them, so
+        # snapshots taken before they existed leave the current values alone.
+        if data.get("invite_mode") in self.AUTOMOD_INVITE_MODES:
+            self.conn.execute(
+                "UPDATE automod_config SET invite_mode=? WHERE guild_id=?", (data["invite_mode"], guild_id)
+            )
+        if "invite_allow_own" in data:
+            self.conn.execute(
+                "UPDATE automod_config SET invite_allow_own=? WHERE guild_id=?",
+                (int(bool(data["invite_allow_own"])), guild_id),
+            )
         self.conn.execute("DELETE FROM automod_escalation_tiers WHERE guild_id=?", (guild_id,))
         for tier in data.get("escalation_tiers", []):
             self.conn.execute(
@@ -4749,7 +4759,11 @@ class Db:
         "duplicate_count", "duplicate_window_seconds",
         "violation_mute_threshold", "violation_window_seconds", "violation_mute_duration_seconds",
         "fuzzy_words", "queue_fuzzy_matches", "block_gifs",
+        "invite_mode", "invite_allow_own",
     )
+
+    AUTOMOD_INVITE_MODES = ("strike", "delete", "log")
+    AUTOMOD_INVITE_ALLOW_LIMIT = 100
 
     def get_automod_config(self, guild_id: int) -> dict:
         cols = ", ".join(self._AUTOMOD_COLUMNS)
@@ -4772,6 +4786,9 @@ class Db:
         result["fuzzy_words"] = bool(result["fuzzy_words"])
         result["queue_fuzzy_matches"] = bool(result["queue_fuzzy_matches"])
         result["block_gifs"] = bool(result["block_gifs"])
+        result["invite_allow_own"] = bool(result["invite_allow_own"])
+        if result["invite_mode"] not in self.AUTOMOD_INVITE_MODES:
+            result["invite_mode"] = "strike"
         result["banned_words"] = [w for w in result["banned_words"].split(",") if w.strip()]
         return result
 
@@ -4788,6 +4805,100 @@ class Db:
             "UPDATE automod_config SET block_invites = ? WHERE guild_id = ?", (int(block), guild_id)
         )
         self.conn.commit()
+
+    # ---- invite-link controls ----
+
+    def set_automod_invite_mode(self, guild_id: int, mode: str) -> None:
+        """strike: delete + count toward the escalation ladder (the old
+        behavior). delete: delete + log, but no strike. log: leave the
+        message alone and only log it."""
+        if mode not in self.AUTOMOD_INVITE_MODES:
+            raise ValueError(f"mode must be one of {', '.join(self.AUTOMOD_INVITE_MODES)}")
+        self.get_automod_config(guild_id)
+        self.conn.execute(
+            "UPDATE automod_config SET invite_mode = ? WHERE guild_id = ?", (mode, guild_id)
+        )
+        self.conn.commit()
+
+    def set_automod_invite_allow_own(self, guild_id: int, enabled: bool) -> None:
+        self.get_automod_config(guild_id)
+        self.conn.execute(
+            "UPDATE automod_config SET invite_allow_own = ? WHERE guild_id = ?", (int(enabled), guild_id)
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def parse_invite_allow_entry(text: str) -> tuple[str, str]:
+        """Turns what a person typed into ("guild", "<server id>") or
+        ("code", "<invite code>"). Accepts a server ID, a full invite link
+        (discord.gg/abc, discord.com/invite/abc) or a bare invite code.
+        Raises ValueError for anything else."""
+        import re as _re
+        raw = (text or "").strip()
+        if not raw:
+            raise ValueError("empty entry")
+        if raw.isdigit():
+            if not 15 <= len(raw) <= 22:
+                raise ValueError("a server ID is 15-22 digits")
+            return "guild", str(int(raw))
+        match = _re.search(
+            r"(?i)(?:discord\.gg|discordapp\.com/+invite|discord\.com/+invite)/+([a-zA-Z0-9-]+)", raw
+        )
+        code = match.group(1) if match else raw
+        if not _re.fullmatch(r"[A-Za-z0-9-]{2,32}", code):
+            raise ValueError("that doesn't look like an invite link, invite code or server ID")
+        return "code", code
+
+    def list_automod_invite_allow(self, guild_id: int) -> list[tuple[str, str]]:
+        return [
+            (row[0], row[1]) for row in self.conn.execute(
+                "SELECT kind, value FROM automod_invite_allow WHERE guild_id = ? ORDER BY kind, value",
+                (guild_id,),
+            ).fetchall()
+        ]
+
+    def add_automod_invite_allow(self, guild_id: int, text: str) -> tuple[str, str]:
+        kind, value = self.parse_invite_allow_entry(text)
+        existing = self.list_automod_invite_allow(guild_id)
+        if (kind, value) not in existing and len(existing) >= self.AUTOMOD_INVITE_ALLOW_LIMIT:
+            raise ValueError(f"allowlist is full ({self.AUTOMOD_INVITE_ALLOW_LIMIT} entries)")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automod_invite_allow (guild_id, kind, value) VALUES (?, ?, ?)",
+            (guild_id, kind, value),
+        )
+        self.conn.commit()
+        return kind, value
+
+    def remove_automod_invite_allow(self, guild_id: int, kind: str, value: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM automod_invite_allow WHERE guild_id = ? AND kind = ? AND value = ?",
+            (guild_id, kind, value),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_automod_invite_exempt_channels(self, guild_id: int) -> list[int]:
+        return [
+            row[0] for row in self.conn.execute(
+                "SELECT channel_id FROM automod_invite_exempt_channels WHERE guild_id = ? ORDER BY channel_id",
+                (guild_id,),
+            ).fetchall()
+        ]
+
+    def add_automod_invite_exempt_channel(self, guild_id: int, channel_id: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automod_invite_exempt_channels (guild_id, channel_id) VALUES (?, ?)",
+            (guild_id, channel_id),
+        )
+        self.conn.commit()
+
+    def remove_automod_invite_exempt_channel(self, guild_id: int, channel_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM automod_invite_exempt_channels WHERE guild_id = ? AND channel_id = ?",
+            (guild_id, channel_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def set_automod_block_gifs(self, guild_id: int, enabled: bool) -> None:
         self.get_automod_config(guild_id)

@@ -51,7 +51,7 @@ def _fill(path: str) -> str:
 
 
 def _token(client) -> str:
-    page = client.get("/dashboard-log")
+    page = client.get("/dashboard-settings")
     assert page.status_code == 200
     return TOKEN_RE.search(page.text).group(1)
 
@@ -195,7 +195,7 @@ def test_cross_site_logout_without_token_is_blocked(authed_client):
 
 
 def test_login_page_logout_link_is_a_form_not_a_link(authed_client):
-    html = authed_client.get("/dashboard-log").text
+    html = authed_client.get("/dashboard-settings").text
     assert 'href="/logout"' not in html
     assert re.search(r'<form[^>]*action="/logout"[^>]*method="post"', html, re.IGNORECASE)
 
@@ -227,7 +227,7 @@ def test_login_rotates_session_and_token(anon_client):
 
 def test_unknown_guild_is_not_accessible(authed_client):
     resp = authed_client.get("/guild/999/rules")
-    assert resp.status_code == 303 and "not_accessible" in resp.headers["location"]
+    assert resp.status_code == 303 and "no_permission" in resp.headers["location"]
 
 
 def test_non_ascii_wrong_password_is_a_normal_failure_not_a_500(anon_client, app_module):
@@ -268,7 +268,7 @@ def test_session_cookie_is_httponly_samesite_lax_and_expires(authed_client):
 
 
 def test_security_headers_survive_the_csrf_html_rewrite(authed_client):
-    resp = authed_client.get("/dashboard-log")
+    resp = authed_client.get("/dashboard-settings")
     assert resp.status_code == 200 and TOKEN_RE.search(resp.text)  # body was rewritten
     h = resp.headers
     assert h["x-content-type-options"] == "nosniff"

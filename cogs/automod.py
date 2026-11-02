@@ -64,6 +64,10 @@ class AutoMod(commands.Cog):
         # In-memory only, keyed by (guild_id, channel_id, user_id) - see
         # automod_checks.UserMessageTracker for why this isn't persisted.
         self.trackers: dict[tuple[int, int, int], UserMessageTracker] = defaultdict(UserMessageTracker)
+        # invite code -> (server id or None, expires_at). Only used when an
+        # allowlist of servers (or "allow this server's own invites") is set,
+        # so servers without one never trigger an invite lookup.
+        self._invite_cache: dict[str, tuple[int | None, float]] = {}
         self._poll_queue_decisions.start()
 
     def cog_unload(self):
@@ -254,6 +258,77 @@ class AutoMod(commands.Cog):
             return
         self.bot.db.set_automod_invites(interaction.guild.id, block)
         await interaction.response.send_message(f"Invite link blocking is now {'on' if block else 'off'}.")
+
+    @automod.command(name="invitesettings", description="Fine-tune invite blocking: action, allowed servers/invites, exempt channels")
+    @app_commands.describe(
+        mode="strike = delete + count toward punishments, delete = delete only, log = just log it",
+        allow_own_server="Let this server's own invites through",
+        allow="Allow an invite link/code or a server ID",
+        unallow="Remove an allowed invite link/code or server ID",
+        exempt_channel="Channel where invites are always allowed",
+        unexempt_channel="Channel to stop exempting",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="strike (delete + punishment ladder)", value="strike"),
+        app_commands.Choice(name="delete only (no strike)", value="delete"),
+        app_commands.Choice(name="log only (leave message up)", value="log"),
+    ])
+    @manager_or_permission("manage_guild")
+    async def automod_invitesettings(
+        self,
+        interaction: discord.Interaction,
+        mode: app_commands.Choice[str] | None = None,
+        allow_own_server: bool | None = None,
+        allow: str | None = None,
+        unallow: str | None = None,
+        exempt_channel: discord.TextChannel | None = None,
+        unexempt_channel: discord.TextChannel | None = None,
+    ):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        db = self.bot.db
+        guild_id = interaction.guild.id
+        notes: list[str] = []
+        try:
+            if mode is not None:
+                db.set_automod_invite_mode(guild_id, mode.value)
+                notes.append(f"Action set to **{mode.value}**.")
+            if allow_own_server is not None:
+                db.set_automod_invite_allow_own(guild_id, allow_own_server)
+                notes.append(f"This server's own invites are now {'allowed' if allow_own_server else 'blocked'}.")
+            if allow:
+                kind, value = db.add_automod_invite_allow(guild_id, allow)
+                notes.append(f"Allowed {'server' if kind == 'guild' else 'invite'} `{value}`.")
+            if unallow:
+                kind, value = db.parse_invite_allow_entry(unallow)
+                removed = db.remove_automod_invite_allow(guild_id, kind, value)
+                notes.append(f"Removed `{value}`." if removed else f"`{value}` wasn't on the allowlist.")
+            if exempt_channel is not None:
+                db.add_automod_invite_exempt_channel(guild_id, exempt_channel.id)
+                notes.append(f"Invites are now allowed in {exempt_channel.mention}.")
+            if unexempt_channel is not None:
+                removed = db.remove_automod_invite_exempt_channel(guild_id, unexempt_channel.id)
+                notes.append(
+                    f"{unexempt_channel.mention} is no longer exempt." if removed
+                    else f"{unexempt_channel.mention} wasn't exempt."
+                )
+        except ValueError as exc:
+            await interaction.response.send_message(f"Couldn't do that: {exc}", ephemeral=True)
+            return
+        if notes:
+            db.record_bot_event("automod.invite_settings", guild_id, interaction.user.id, None, " | ".join(notes)[:500])
+
+        cfg = db.get_automod_config(guild_id)
+        allow_list = db.list_automod_invite_allow(guild_id)
+        channels = db.list_automod_invite_exempt_channels(guild_id)
+        summary = [
+            f"Invite blocking: **{'on' if cfg['block_invites'] else 'off'}** | action: **{cfg['invite_mode']}** | "
+            f"own server: **{'allowed' if cfg['invite_allow_own'] else 'blocked'}**",
+            "Allowed: " + (", ".join(f"`{v}`" for _k, v in allow_list) or "none"),
+            "Exempt channels: " + (", ".join(f"<#{c}>" for c in channels) or "none"),
+        ]
+        await interaction.response.send_message("\n".join(notes + ([""] if notes else []) + summary), ephemeral=True)
 
     @automod.command(name="gifs", description="Toggle blocking GIFs (uploaded, or linked from Tenor/Giphy)")
     @manager_or_permission("manage_guild")
@@ -534,7 +609,23 @@ class AutoMod(commands.Cog):
         tracker = self.trackers[key]
         now = time.time()
 
-        violation = self._check_message(message, cfg, tracker, now)
+        blocked_invites = await self._blocked_invite_codes(message, cfg) if cfg["block_invites"] else []
+        invite_mode = cfg["invite_mode"]
+        if blocked_invites and invite_mode == "log":
+            # Log-only: leave the message up and still run the other rules.
+            await self._log_violation(message, "posting a Discord invite link (log only)", queued=False, title="Invite spotted")
+            blocked_invites = []
+        elif blocked_invites and invite_mode == "delete":
+            # Delete-only: message goes, no strike on the escalation ladder.
+            tracker.record(now, message.content)
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound):
+                pass
+            await self._log_violation(message, "posting a Discord invite link (no strike)", queued=False)
+            return
+
+        violation = self._check_message(message, cfg, tracker, now, invite_hit=bool(blocked_invites))
 
         tracker.record(now, message.content)
 
@@ -544,7 +635,58 @@ class AutoMod(commands.Cog):
         reason, queue_for_review = violation
         await self._handle_violation(message, reason, cfg, queue_for_review)
 
-    def _check_message(self, message: discord.Message, cfg: dict, tracker: UserMessageTracker, now: float) -> tuple[str, bool] | None:
+    async def _resolve_invite_guild(self, code: str) -> int | None:
+        """Which server an invite code leads to, or None if it can't be
+        resolved. Cached so repeated posts of the same code cost nothing."""
+        now = time.monotonic()
+        hit = self._invite_cache.get(code)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+        guild_id: int | None = None
+        try:
+            invite = await self.bot.fetch_invite(code, with_counts=False, with_expiration=False)
+            guild_id = invite.guild.id if invite.guild is not None else None
+        except discord.NotFound:
+            guild_id = None  # dead/invalid invite - safe to cache
+        except discord.HTTPException:
+            return None  # transient failure - don't cache, treat as unknown
+        if len(self._invite_cache) >= 1000:
+            self._invite_cache.clear()
+        self._invite_cache[code] = (guild_id, now + 600)
+        return guild_id
+
+    async def _blocked_invite_codes(self, message: discord.Message, cfg: dict) -> list[str]:
+        """Invite codes in the message that are NOT allowed. Empty means the
+        message is fine (no invites, exempt channel, or everything allowed).
+        An invite that can't be resolved is blocked unless its exact code is
+        on the allowlist."""
+        codes = list(dict.fromkeys(find_invite_codes(message.content)))
+        if not codes:
+            return []
+        db = self.bot.db
+        guild = message.guild
+        if message.channel.id in set(db.list_automod_invite_exempt_channels(guild.id)):
+            return []
+        allow = db.list_automod_invite_allow(guild.id)
+        allowed_codes = {value for kind, value in allow if kind == "code"}
+        allowed_guilds = {int(value) for kind, value in allow if kind == "guild"}
+        vanity = (guild.vanity_url_code or "").lower()
+        if cfg["invite_allow_own"]:
+            allowed_guilds.add(guild.id)
+        blocked = []
+        for code in codes:
+            if code in allowed_codes:
+                continue
+            if cfg["invite_allow_own"] and vanity and code.lower() == vanity:
+                continue
+            if allowed_guilds:
+                target = await self._resolve_invite_guild(code)
+                if target is not None and target in allowed_guilds:
+                    continue
+            blocked.append(code)
+        return blocked
+
+    def _check_message(self, message: discord.Message, cfg: dict, tracker: UserMessageTracker, now: float, invite_hit: bool | None = None) -> tuple[str, bool] | None:
         """Returns (reason, queue_for_review) or None if clean.
         queue_for_review is only ever True for a fuzzy-only banned-word
         match when the guild has opted into queuing those (see
@@ -552,7 +694,12 @@ class AutoMod(commands.Cog):
         acts immediately, same as before."""
         content = message.content
 
-        if cfg["block_invites"] and find_invite_codes(content):
+        # on_message works out invite_hit asynchronously (allowlist, exempt
+        # channels, invite lookups). None = not supplied, fall back to the
+        # plain "any invite counts" rule.
+        if invite_hit is None:
+            invite_hit = bool(cfg["block_invites"] and find_invite_codes(content))
+        if invite_hit:
             return ("posting a Discord invite link", False)
 
         gif_identifiers_found = gif_identifiers(
@@ -768,7 +915,7 @@ class AutoMod(commands.Cog):
         embed.set_footer(text=f"User ID: {member.id}")
         await logging_cog.log_event(guild, "moderation", embed)
 
-    async def _log_violation(self, message: discord.Message, reason: str, queued: bool) -> None:
+    async def _log_violation(self, message: discord.Message, reason: str, queued: bool, title: str | None = None) -> None:
         """Every AutoMod catch, not just the ones that cross an escalation
         threshold - previously only escalations (a small fraction of actual
         catches) showed up in any log channel, so routine filter activity
@@ -778,7 +925,7 @@ class AutoMod(commands.Cog):
         logging_cog = self.bot.get_cog("Logging")
         if logging_cog is None:
             return
-        title = "Held for review" if queued else "Message removed"
+        title = title or ("Held for review" if queued else "Message removed")
         embed = discord.Embed(
             description=f"**AutoMod: {title}** - {message.author.mention} ({message.author}) in {message.channel.mention}",
             color=discord.Color.gold() if queued else discord.Color.orange(),

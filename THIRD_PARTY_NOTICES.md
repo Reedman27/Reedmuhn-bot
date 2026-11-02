@@ -30,8 +30,8 @@ for clear attribution and provenance.
 
 ## count-bot — counting-game reference / attribution
 
-The counting game (`cogs/counting.py`, plus the `counting`/`counting_users`
-tables in `db.py`) is modeled on **count-bot**, a Discord counting-game bot.
+The counting game (`cogs/counting.py`, plus the `counting` table in `db.py`)
+follows the game rules of **count-bot**, a Discord counting-game bot.
 
 - Original project: https://git.nidus.me.uk/whaletech07/count-bot
 - License: GNU Affero General Public License v3.0
@@ -39,14 +39,14 @@ tables in `db.py`) is modeled on **count-bot**, a Discord counting-game bot.
 count-bot's `bot.py` is not run as-is or imported at runtime - ReedMuhn's
 `cogs/counting.py` is its own implementation built on ReedMuhn's cog/database
 framework (slash-command groups, SQLite via `db.py`, WebUI settings at
-`/guild/{id}/counting`). It follows count-bot's game rules closely though:
-wrong number or counting twice in a row both fail the same way (and both
-count-bot and ReedMuhn's `/counting saves` and `/counting calc` derive from
-its `simple_eval`-based `evaluate()`/`calc` design, reimplemented here as
-`utils.safe_eval` - an AST-whitelist evaluator used in place of `simpleeval`
-for tighter sandboxing), and the default milestone reaction emoji
-(67 😒 / 100 💯 / 1234 🔢 / 2024 🐋) are carried over verbatim from count-bot's
-`specialEmojis` dict, just made per-guild configurable instead of hardcoded.
+`/guild/{id}/counting`). The rules it follows are: wrong number or counting
+twice in a row both fail the same way. Saves are server-wide (see
+`Db.apply_count_attempt`).
+
+(2026-11-02: the counting cog was replaced with the rewritten version. The
+`/counting calc` command, the per-number milestone reaction emoji and the
+per-member save bank that were ported from count-bot are gone; `utils.safe_eval`
+is no longer used by anything but is left in place.)
 
 No separate copy of count-bot's source or license text is kept in this repo:
 ReedMuhn is itself licensed AGPL-3.0 (see the repository `LICENSE`), the same

@@ -78,14 +78,23 @@ Create a `.env` file next to `docker-compose.yml`:
 
 ```dotenv
 DISCORD_TOKEN=your_discord_bot_token
-WEBUI_PASSWORD=your_dashboard_password
+# Create OAuth2 credentials in the Discord Developer Portal.
+DISCORD_CLIENT_ID=your_application_client_id
+DISCORD_CLIENT_SECRET=your_application_client_secret
+# Must exactly match a Redirect URI configured in the Developer Portal.
+DISCORD_REDIRECT_URI=https://YOUR-TAILSCALE-FUNNEL-DOMAIN/auth/discord/callback
+WEBUI_HTTPS_ONLY=1
 DEV_GUILD_ID=
 # Required shared secret between bot and bundled Lavalink; generate with `openssl rand -hex 32`.
 # Keep it private. Compose refuses to start if any required secret is blank.
 LAVALINK_PASSWORD=
 ```
 
-Never share your Discord bot token.
+Never share your Discord bot token or OAuth client secret.
+
+In the Discord Developer Portal, open your bot application's **OAuth2** settings and add the exact `DISCORD_REDIRECT_URI` above under Redirects. The dashboard requests only `identify` and `guilds`. After sign-in, it lists a server only when (1) the bot is installed there and (2) the signed-in Discord user owns that server or has **Manage Server** / **Administrator** permission. This is checked against Discord's guild membership API for every guild-scoped page; changing the URL to another server ID does not bypass it.
+
+For Tailscale Funnel, point the HTTPS Funnel hostname at the WebUI's local port `8490`, use that public HTTPS hostname in `DISCORD_REDIRECT_URI`, and keep `WEBUI_HTTPS_ONLY=1`. Do not publish port 8490 directly to the public internet. Anyone can install the bot in multiple servers; dashboard access remains per Discord account and per server.
 
 ### 3. Pull the image
 
@@ -111,11 +120,7 @@ View logs:
 docker compose logs -f discord-bot
 ```
 
-The dashboard is normally available at:
-
-    `http://YOUR-SERVER-IP:8490`
-
-Keep this port on a trusted LAN/VPN. For access over untrusted networks, configure HTTPS at a reverse proxy and set `WEBUI_HTTPS_ONLY=1`. Do not expose the dashboard over plain HTTP to the public internet.
+The dashboard is normally available at `http://YOUR-SERVER-IP:8490` on your trusted LAN. For remote access, use Tailscale Serve/Funnel or another HTTPS reverse proxy and set `WEBUI_HTTPS_ONLY=1`. The OAuth redirect URI must use the exact external HTTPS URL and end in `/auth/discord/callback`. Do not expose the dashboard over plain HTTP to the public internet.
 
 ---
 

@@ -58,9 +58,12 @@ services:
     container_name: mybot-webui
     restart: unless-stopped
     environment:
-      - WEBUI_PASSWORD=${WEBUI_PASSWORD:?WEBUI_PASSWORD_required_in_.env}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID:?DISCORD_CLIENT_ID_required_in_.env}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET:?DISCORD_CLIENT_SECRET_required_in_.env}
+      - DISCORD_REDIRECT_URI=${DISCORD_REDIRECT_URI:?DISCORD_REDIRECT_URI_required_in_.env}
       - DB_PATH=/app/data/bot.db
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
+      - WEBUI_TRUST_PROXY=${WEBUI_TRUST_PROXY:-0}
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./data:/app/data:z

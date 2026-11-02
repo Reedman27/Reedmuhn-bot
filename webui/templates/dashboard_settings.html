@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Dashboard Settings - Reedmuhn Bot{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div><h1>Dashboard Settings</h1><p class="muted">Account, appearance, server selection and dashboard-wide controls.</p></div>
+</div>
+<section class="card">
+  <h2>Account</h2>
+  <p><strong>Logged in as</strong> {{ discord_username or 'Unknown account' }}</p>
+  <p class="muted">Your Discord identity and server access are managed through Discord authentication.</p>
+  <form action="/logout" method="post"><button type="submit" class="button">Log out</button></form>
+</section>
+<section class="card">
+  <h2>Appearance</h2>
+  <div class="theme-menu" id="theme-menu">
+    <span class="theme-menu-label">Theme</span>
+    <button type="button" id="theme-menu-button" class="theme-menu-button" aria-haspopup="listbox" aria-expanded="false">
+      <span class="theme-swatch" id="theme-menu-swatch"><i class="sw sw-bg"></i><i class="sw sw-accent"></i></span>
+      <span id="theme-menu-current">Catppuccin Mocha</span>
+      <svg class="theme-menu-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <div id="theme-menu-panel" class="theme-menu-panel" role="listbox" aria-labelledby="theme-menu-button" hidden></div>
+  </div>
+</section>
+<section class="card">
+  <h2>Dashboard</h2>
+  <p><a href="/">← Return to server selection</a></p>
+  <p><a href="/dashboard-log">📝 Open Dashboard Log</a></p>
+  {% if guild_id %}<form action="/switch-guild" method="post"><button class="button" type="submit">Switch server</button></form>{% endif %}
+</section>
+{% endblock %}

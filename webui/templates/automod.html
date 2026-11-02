@@ -23,6 +23,38 @@
         </label>
         <button type="submit">Save</button>
     </form>
+    <hr>
+    <h3>What happens, and what gets through</h3>
+    <form method="post" action="/guild/{{ guild_id }}/automod/invites/settings">
+        <label for="invite_mode">When an invite is caught</label>
+        <select id="invite_mode" name="invite_mode">
+            {% for value, label in invite_modes %}<option value="{{ value }}" {{ "selected" if cfg.invite_mode == value }}>{{ label }}</option>{% endfor %}
+        </select>
+        <label>
+            <input type="checkbox" name="allow_own" {{ "checked" if cfg.invite_allow_own }}>
+            Allow invites to this server
+        </label>
+        <button type="submit">Save</button>
+    </form>
+    <p class="hint">Only matters while invite blocking is on. Admins and AutoMod exemption roles are always exempt.</p>
+    <h3>Allowed invites and servers</h3>
+    <p class="hint">Paste an invite link, an invite code, or a server ID. A server ID lets through every invite that leads to that server (partners, your other servers). Invite codes are matched exactly.</p>
+    <form method="post" action="/guild/{{ guild_id }}/automod/invites/allow/add" class="add-form">
+        <label for="invite_allow_entry">Add allowed invite or server</label>
+        <input id="invite_allow_entry" name="entry" maxlength="200" required placeholder="discord.gg/abc123 or 123456789012345678">
+        <button type="submit">Allow</button>
+    </form>
+    {% if invite_allow %}<table><thead><tr><th>Type</th><th>Allowed</th><th></th></tr></thead><tbody>{% for kind, value in invite_allow %}<tr><td>{{ "Server ID" if kind == "guild" else "Invite code" }}</td><td><code>{{ value }}</code></td><td><form method="post" action="/guild/{{ guild_id }}/automod/invites/allow/delete" class="inline"><input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="value" value="{{ value }}"><button type="submit">Remove</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="hint">Nothing allowed yet - every invite is blocked.</p>{% endif %}
+    <h3>Channels where invites are allowed</h3>
+    <form method="post" action="/guild/{{ guild_id }}/automod/invites/exempt-channels/add" class="add-form">
+        <label for="invite_exempt_channel">Add channel (e.g. #advertising)</label>
+        <select id="invite_exempt_channel" name="channel_id" required>
+            <option value="" disabled selected>Choose a channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}">#{{ name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Exempt</button>
+    </form>
+    {% if invite_exempt_channels %}<table><thead><tr><th>Channel</th><th></th></tr></thead><tbody>{% for cid, name in invite_exempt_channels %}<tr><td>{{ name }}</td><td><form method="post" action="/guild/{{ guild_id }}/automod/invites/exempt-channels/delete" class="inline"><input type="hidden" name="channel_id" value="{{ cid }}"><button type="submit">Remove</button></form></td></tr>{% endfor %}</tbody></table>{% endif %}
 </section>
 
 <section class="card">

@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_compose_requires_exposed_service_secrets():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    # The bot token and dashboard password must be set. Lavalink is internal-only
+    # The bot token and OAuth credentials must be set. Lavalink is internal-only
     # (expose, not ports), so it keeps a working default instead of blocking boot.
-    for secret in ("DISCORD_TOKEN", "WEBUI_PASSWORD"):
+    for secret in ("DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_REDIRECT_URI"):
         assert f"${{{secret}:?{secret}_required_in_.env}}" in compose
     assert "LAVALINK_PASSWORD:-youshallnotpass" in compose
 
