@@ -18,14 +18,12 @@
 <section class="card">
   <h2>Get running in 10 minutes</h2>
   <ol>
-    <li><strong>Check the boot report.</strong> Set <code>BOOT_LOG_CHANNEL_ID</code> in <code>.env</code> to a private channel. Each restart the bot posts every cog file it loaded, with &#9989; or &#10060; and the error if one failed.</li>
     <li><strong>Pick who sees this dashboard.</strong> <a href="/guild/{{ guild_id }}/access">Dashboard Access</a>: leave it open to Administrators, or narrow it to just you. Add moderators as <em>Staff</em>.</li>
     <li><strong>Turn on logging.</strong> <a href="/guild/{{ guild_id }}/logging">Logging</a> &rarr; auto-create channels so you can see what happens.</li>
     <li><strong>Protect the server.</strong> <a href="/guild/{{ guild_id }}/automod">AutoMod</a>, <a href="/guild/{{ guild_id }}/raid">Raid Detection</a> and <a href="/guild/{{ guild_id }}/antinuke">Anti-Nuke</a>.</li>
     <li><strong>Welcome people.</strong> <a href="/guild/{{ guild_id }}/welcome">Welcome &amp; Roles</a> and <a href="/guild/{{ guild_id }}/verification">Verification</a>.</li>
     <li><strong>Add what you want.</strong> Tickets, reaction roles, leveling, music... everything else is optional and lives in the menu on the left.</li>
   </ol>
-  <p class="hint">Turn a feature off completely with <code>DISABLED_COGS</code> in <code>.env</code> (e.g. <code>DISABLED_COGS=music,fun</code>). The full guide is <code>docs/QUICKSTART.md</code> in the bot's folder.</p>
 </section>
 {% endif %}
 {% endblock %}
