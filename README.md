@@ -329,9 +329,7 @@ of effort:
 ### Credit
 
 The project gives explicit credit to Vocard Development / ChocoMeow (MIT) and
-keeps the original Vocard license. The counting
-game (`/counting`) is modeled on count-bot (AGPL-3.0); ReedMuhn is itself
-AGPL-3.0, so no relicensing is needed. See `docs/THIRD_PARTY_NOTICES.md`.
+keeps the original Vocard license. See `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Lavalink image
 
