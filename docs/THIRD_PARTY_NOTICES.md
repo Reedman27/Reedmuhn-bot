@@ -2,7 +2,7 @@
 
 ## Vocard — music subsystem
 
-ReedMuhn's music subsystem (`voicelink/`, `langs/`, and `cogs/music/music.py`) is
+ReedMuhn's music subsystem (`voicelink/` and `cogs/music/music.py`) is
 based on **Vocard**, created by **Vocard Development / ChocoMeow**.
 
 - Original project: https://github.com/ChocoMeow/Vocard

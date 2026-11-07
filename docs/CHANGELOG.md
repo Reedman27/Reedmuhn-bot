@@ -1,6 +1,6 @@
 # Changelog
 
-Security fixes have their own history in `SECURITY.md`. This file is
+Security fixes have their own history in `.github/SECURITY.md`. This file is
 everything else: features, behavior changes, reorganizations.
 
 ## 2026-11-07
@@ -21,7 +21,7 @@ everything else: features, behavior changes, reorganizations.
 ## 2026-11-06
 
 - **Repo cleanup:** removed scattered dated audit/change-log files in favor of
-  one `SECURITY.md` (vulnerability history) and this `CHANGELOG.md`. Removed
+  one `.github/SECURITY.md` (vulnerability history) and this `CHANGELOG.md`. Removed
   `third_party/DINGOLINGO-GPL-3.0.txt` and `third_party/RED-DISCORD-BOT-LICENSE.txt`
   and their mentions — neither was a runtime dependency (DingoLingo was a
   design reference only).
@@ -105,5 +105,5 @@ everything else: features, behavior changes, reorganizations.
 
 Counting game, AutoMod, the OAuth dashboard rework and the CSRF/session
 hardening all went through earlier iterations before the dates above; see
-`SECURITY.md` for the security-relevant subset of that history. Nothing
+`.github/SECURITY.md` for the security-relevant subset of that history. Nothing
 earlier than 2026-10-12 is tracked here in detail.

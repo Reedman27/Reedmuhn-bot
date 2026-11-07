@@ -49,21 +49,19 @@ This is a self-hosted personal/hobby project that gets iterated on a lot, includ
 
 ```
 bot.py              entry point for the Discord bot
-core/               shared code: db/ (the one database layer, one file per feature),
+core/               shared code (fonts in core/assets/): db/ (the one database layer, one file per feature),
                     utils, scheduler, framework (cog loader), automod_checks,
                     redis_client, safe_feed, welcome_card
 cogs/               bot features, one folder per area (moderation, community, fun,
                     music, notifications, utility, dashboard) - see cogs/README.md
 webui/              FastAPI dashboard: main.py, routes/, templates/, static/, tests/
-voicelink/          music engine (ported from Vocard, MIT)
+voicelink/          music engine (ported from Vocard, MIT); langs/ holds its translations
 lavalink/           Lavalink image for the music feature
-langs/  assets/     translations and fonts
-tests/              bot tests (dashboard tests live in webui/tests/)
-docs/               QUICKSTART.md, THIRD_PARTY_NOTICES.md, screenshots/
-third_party/        license texts for bundled third-party code
+tests/              bot tests + requirements.txt for running them (dashboard tests: webui/tests/)
+docs/               QUICKSTART, CHANGELOG, THIRD_PARTY_NOTICES, licenses/, screenshots/
 ```
 
-Run the tests with `pip install -r requirements-dev.txt`, then `pytest tests`
+Run the tests with `pip install -r tests/requirements.txt`, then `pytest tests`
 and `cd webui && pytest tests`.
 
 ---
@@ -385,9 +383,9 @@ fallback.
 
 # 🔐 Security
 
-See [`SECURITY.md`](SECURITY.md) for the current security model and the
+See [`.github/SECURITY.md`](.github/SECURITY.md) for the current security model and the
 history of vulnerabilities found and fixed. See
-[`CHANGELOG.md`](CHANGELOG.md) for everything else that's changed.
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md) for everything else that's changed.
 
 # 🤝 Contributing
 

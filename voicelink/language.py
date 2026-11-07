@@ -22,6 +22,7 @@ SOFTWARE.
 """
 
 import os
+from pathlib import Path
 import json
 import logging
 
@@ -45,7 +46,7 @@ class LangHandler:
     @classmethod
     def init(
         cls,
-        langs_dir: str = Config.WORKING_DIR / "langs",
+        langs_dir: str = Path(__file__).resolve().parent / "langs",
         local_langs_dir: str = Config.WORKING_DIR / "local_langs"
     ) -> "LangHandler":
         """
