@@ -23,7 +23,6 @@ SOFTWARE.
 
 from .embed_builder import EmbedBuilderView
 from .controller import InteractiveController
-from .debug import DebugView
 from .link import LinkView
 from .inbox import InboxView
 from .playlist import PlaylistViewManager

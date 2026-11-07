@@ -13,6 +13,25 @@ from typing import Optional
 logger = logging.getLogger("db")
 
 
+# Permissions a temp-voice channel's creator can be given ON THEIR OWN CHANNEL.
+# This list is the hard ceiling: the dashboard can only pick from it, and the
+# bot re-applies the same mask when it builds the overwrite, so nothing outside
+# it (Administrator, Manage Server, Manage Roles server-wide, ...) can ever be
+# handed out, even from a hand-edited database.
+TEMP_VOICE_OWNER_PERMS = {
+    "manage_channels": (1 << 4, "Rename, resize and edit the channel"),
+    "manage_roles": (1 << 28, "Manage permissions on the channel"),
+    "create_instant_invite": (1 << 0, "Create invites to the channel"),
+    "mute_members": (1 << 22, "Mute people in the channel"),
+    "deafen_members": (1 << 23, "Deafen people in the channel"),
+    "move_members": (1 << 24, "Move people out of the channel"),
+    "priority_speaker": (1 << 8, "Priority speaker"),
+}
+TEMP_VOICE_OWNER_MASK = sum(bit for bit, _label in TEMP_VOICE_OWNER_PERMS.values())
+TEMP_VOICE_DEFAULT_OWNER_PERMS = (1 << 4) | (1 << 22) | (1 << 23) | (1 << 24)
+TEMP_VOICE_MAX_CHANNELS_CEILING = 100
+
+
 class _DeferredCommitConn:
     """Wraps a sqlite3.Connection so commit() is a no-op while everything
     else (execute, rollback, ...) passes straight through.
@@ -58,13 +77,6 @@ class Db:
         self._create_tables()
 
     def _create_tables(self) -> None:
-        # Shared with voicelink.SQLiteMusicDB (same file, same JSON-blob
-        # format/table name) - the bot process normally creates this table
-        # itself on startup, but the webui process can read/write it too and
-        # may start up first, so it needs to be able to create it as well.
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS vocard_settings (guild_id INTEGER PRIMARY KEY, data TEXT NOT NULL)"
-        )
         # Extras: XP/levels, economy, giveaways, live counters and notifications.
         self.conn.execute("""CREATE TABLE IF NOT EXISTS extras_xp (
             guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
@@ -396,6 +408,19 @@ class Db:
         temp_voice_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(temp_voice_channels)")}
         if "user_limit" not in temp_voice_cols:
             self.conn.execute("ALTER TABLE temp_voice_channels ADD COLUMN user_limit INTEGER NOT NULL DEFAULT 0")
+        if "role_id" not in temp_voice_cols:
+            self.conn.execute("ALTER TABLE temp_voice_channels ADD COLUMN role_id INTEGER NOT NULL DEFAULT 0")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS temp_voice_settings (
+                guild_id INTEGER PRIMARY KEY,
+                owner_perms INTEGER NOT NULL DEFAULT 0,
+                create_role INTEGER NOT NULL DEFAULT 0,
+                role_hoist INTEGER NOT NULL DEFAULT 1,
+                log_channel_id INTEGER NOT NULL DEFAULT 0,
+                name_template TEXT NOT NULL DEFAULT '',
+                max_channels INTEGER NOT NULL DEFAULT 25
+            )"""
+        )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS temp_voice_delete_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -676,6 +701,24 @@ class Db:
             )"""
         )
         self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS webui_sessions (
+                session_id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_webui_sessions_expiry ON webui_sessions(expires_at)")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS webui_oauth_tokens (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                access_token TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            )"""
+        )
+        self.conn.execute(
             """CREATE TABLE IF NOT EXISTS webui_action_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at INTEGER NOT NULL,
@@ -686,6 +729,14 @@ class Db:
                 status_code INTEGER NOT NULL
             )"""
         )
+        # Per-user attribution for the multi-server dashboard. Older databases
+        # created these tables without it, so add the columns when missing.
+        for _table in ("webui_login_events", "webui_action_log"):
+            _cols = {row[1] for row in self.conn.execute(f"PRAGMA table_info({_table})")}
+            if "user_id" not in _cols:
+                self.conn.execute(f"ALTER TABLE {_table} ADD COLUMN user_id TEXT")
+            if "username" not in _cols:
+                self.conn.execute(f"ALTER TABLE {_table} ADD COLUMN username TEXT")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS automod_config (
                 guild_id INTEGER PRIMARY KEY,
@@ -720,6 +771,22 @@ class Db:
                 guild_id INTEGER NOT NULL,
                 role_id INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, role_id)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_access (
+                guild_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                level TEXT NOT NULL CHECK (level IN ('full', 'staff')),
+                added_by TEXT,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_guild_settings (
+                guild_id INTEGER PRIMARY KEY,
+                managers_allowed INTEGER NOT NULL DEFAULT 1
             )"""
         )
         self.conn.execute(
@@ -840,6 +907,8 @@ class Db:
         member_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_members)")}
         if "status" not in member_cols:
             self.conn.execute("ALTER TABLE bot_members ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'")
+        if "is_bot" not in member_cols:
+            self.conn.execute("ALTER TABLE bot_members ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS bot_guilds (
                 guild_id INTEGER PRIMARY KEY,
@@ -849,6 +918,20 @@ class Db:
         bot_guilds_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(bot_guilds)")}
         if "everyone_permissions" not in bot_guilds_cols:
             self.conn.execute("ALTER TABLE bot_guilds ADD COLUMN everyone_permissions INTEGER NOT NULL DEFAULT 0")
+        # Read-only server facts cached by the bot so the dashboard can show
+        # them without a Discord connection of its own.
+        for column, definition in (
+            ("owner_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("boost_level", "INTEGER NOT NULL DEFAULT 0"),
+            ("boost_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("verification_level", "TEXT NOT NULL DEFAULT ''"),
+            ("member_total", "INTEGER NOT NULL DEFAULT 0"),
+            ("emoji_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("bot_permissions", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in bot_guilds_cols:
+                self.conn.execute(f"ALTER TABLE bot_guilds ADD COLUMN {column} {definition}")
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS log_channels (
                 guild_id INTEGER NOT NULL,
@@ -1313,6 +1396,9 @@ class Db:
         if "retry_at" not in mod_action_cols:
             self.conn.execute("ALTER TABLE dashboard_mod_actions ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0")
         self._ensure_one_open_ticket_index()
+        # Same table the bot process's voicelink.SQLiteMusicDB writes to
+        # (schema kept identical on purpose - see get_music_settings below).
+        self.conn.execute("CREATE TABLE IF NOT EXISTS vocard_settings (guild_id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
         self.conn.commit()
 
     def _ensure_one_open_ticket_index(self) -> bool:
@@ -1765,7 +1851,7 @@ class Db:
     # is the same read, named to match the get_/set_ pattern the rest of the
     # dashboard's settings toggles use. Both are kept (rather than picking
     # one and updating every call site) since this file is copied verbatim
-    # into webui/db.py and both names are already relied on elsewhere.
+    # into db.py and both names are already relied on elsewhere.
 
     def get_feed_enabled(self, guild_id: int) -> bool:
         return self.is_feed_enabled(guild_id)
@@ -2732,7 +2818,13 @@ class Db:
         roles = self.conn.execute(
             "SELECT COUNT(*) FROM bot_roles WHERE guild_id = ?", (guild_id,)
         ).fetchone()[0] + 1  # include @everyone, which is intentionally not cached
-        return {"members": members, "online": online, "channels": channels, "roles": roles}
+        bots = self.conn.execute(
+            "SELECT COUNT(*) FROM bot_members WHERE guild_id = ? AND is_bot = 1", (guild_id,)
+        ).fetchone()[0]
+        return {
+            "members": members, "online": online, "channels": channels, "roles": roles,
+            "bots": bots, "humans": max(members - bots, 0),
+        }
 
     # ---- birthdays ----
 
@@ -2938,7 +3030,7 @@ class Db:
     def _extras_level_from_xp(xp: int) -> int:
         """Mirrors cogs.extras.Extras._level_from_xp's curve. Duplicated
         deliberately, not imported - the WebUI process doesn't import cogs
-        (see the note atop this file about webui/db.py being a deliberate
+        (see the note atop this file about db.py being a deliberate
         copy of this one, not an import).
 
         Curve: total XP needed for level n = (5*n*(2n^2 + 27n + 91)) // 6,
@@ -4575,14 +4667,67 @@ class Db:
         )
         self.conn.commit()
 
-    # ---- webui login / dashboard action log ----
+    # ---- webui session revocation ----
 
-    def record_webui_login(self, ip: str, success: bool) -> None:
+    def create_webui_session(self, session_id: str, ttl_seconds: int = 43200) -> None:
+        now = int(time.time())
+        ttl_seconds = max(1, int(ttl_seconds))
+        self.conn.execute("DELETE FROM webui_sessions WHERE expires_at <= ?", (now,))
+        # An expired session used to leave its stored Discord OAuth tokens behind
+        # forever. Tokens must never outlive the session they belong to.
         self.conn.execute(
-            "INSERT INTO webui_login_events (created_at, ip, success) VALUES (?, ?, ?)",
-            (int(time.time()), ip, int(success)),
+            "DELETE FROM webui_oauth_tokens WHERE session_id NOT IN (SELECT session_id FROM webui_sessions)"
+        )
+        self.conn.execute(
+            "INSERT INTO webui_sessions (session_id, created_at, expires_at) VALUES (?, ?, ?)",
+            (session_id, now, now + ttl_seconds),
         )
         self.conn.commit()
+
+    def is_webui_session_valid(self, session_id: str) -> bool:
+        now = int(time.time())
+        row = self.conn.execute(
+            "SELECT 1 FROM webui_sessions WHERE session_id = ? AND expires_at > ?",
+            (session_id, now),
+        ).fetchone()
+        return row is not None
+
+    def revoke_webui_session(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM webui_sessions WHERE session_id = ?", (session_id,))
+        self.conn.execute("DELETE FROM webui_oauth_tokens WHERE session_id = ?", (session_id,))
+        self.conn.commit()
+
+    def save_webui_oauth_token(self, session_id: str, user_id: str, username: str,
+                               access_token: str, refresh_token: str, expires_at: int) -> None:
+        self.conn.execute(
+            """INSERT INTO webui_oauth_tokens
+               (session_id,user_id,username,access_token,refresh_token,expires_at)
+               VALUES (?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+               user_id=excluded.user_id, username=excluded.username,
+               access_token=excluded.access_token, refresh_token=excluded.refresh_token,
+               expires_at=excluded.expires_at""",
+            (session_id, user_id, username, access_token, refresh_token, int(expires_at)),
+        )
+        self.conn.commit()
+
+    def get_webui_oauth_token(self, session_id: str):
+        return self.conn.execute(
+            "SELECT user_id,username,access_token,refresh_token,expires_at FROM webui_oauth_tokens WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+
+    def revoke_webui_oauth_token(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM webui_oauth_tokens WHERE session_id=?", (session_id,))
+        self.conn.commit()
+
+    # ---- webui login / dashboard action log ----
+
+    def record_webui_login(self, ip: str, success: bool, user_id: str | None = None,
+                           username: str | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO webui_login_events (created_at, ip, success, user_id, username) VALUES (?, ?, ?, ?, ?)",
+            (int(time.time()), ip, int(success), user_id, username),
+        )
         # Keep this table from growing unbounded on a long-lived box - a
         # rolling window of the most recent attempts is all the dashboard
         # log needs; older rows have no ongoing value.
@@ -4591,26 +4736,46 @@ class Db:
         )
         self.conn.commit()
 
-    def list_webui_login_events(self, limit: int = 50) -> list[tuple[int, str, bool]]:
+    def list_webui_login_events(self, limit: int = 50, user_id: str | None = None) -> list[tuple]:
+        """Login events, newest first. Pass ``user_id`` to see only that
+        Discord user's own sign-ins - the log must never show one user other
+        people's IP addresses."""
+        if user_id is None:
+            return self.conn.execute(
+                "SELECT created_at, ip, success FROM webui_login_events ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
         return self.conn.execute(
-            "SELECT created_at, ip, success FROM webui_login_events ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT created_at, ip, success FROM webui_login_events WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
         ).fetchall()
 
-    def record_webui_action(self, guild_id: int | None, ip: str, method: str, path: str, status_code: int) -> None:
+    def record_webui_action(self, guild_id: int | None, ip: str, method: str, path: str, status_code: int,
+                            user_id: str | None = None, username: str | None = None) -> None:
         self.conn.execute(
-            "INSERT INTO webui_action_log (created_at, guild_id, ip, method, path, status_code) VALUES (?, ?, ?, ?, ?, ?)",
-            (int(time.time()), guild_id, ip, method, path, status_code),
+            "INSERT INTO webui_action_log (created_at, guild_id, ip, method, path, status_code, user_id, username)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(time.time()), guild_id, ip, method, path, status_code, user_id, username),
         )
-        self.conn.commit()
         self.conn.execute(
             "DELETE FROM webui_action_log WHERE id NOT IN (SELECT id FROM webui_action_log ORDER BY id DESC LIMIT 1000)"
         )
         self.conn.commit()
 
-    def list_webui_action_log(self, limit: int = 100) -> list[tuple[int, int | None, str, str, str, int]]:
+    def list_webui_action_log(self, limit: int = 100, guild_ids=None) -> list[tuple]:
+        """Dashboard actions, newest first. Pass ``guild_ids`` (the servers the
+        viewer may manage) to restrict the log to those servers only."""
+        if guild_ids is None:
+            return self.conn.execute(
+                "SELECT created_at, guild_id, ip, method, path, status_code, username, user_id FROM webui_action_log"
+                " ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()
+        ids = [int(g) for g in guild_ids]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
         return self.conn.execute(
-            "SELECT created_at, guild_id, ip, method, path, status_code FROM webui_action_log ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT created_at, guild_id, ip, method, path, status_code, username, user_id FROM webui_action_log"
+            f" WHERE guild_id IN ({placeholders}) ORDER BY id DESC LIMIT ?", (*ids, limit),
         ).fetchall()
 
     # ---- temp voice channels ----
@@ -5105,18 +5270,6 @@ class Db:
         )
         self.conn.commit()
 
-    def list_automod_violations(self, guild_id: int, limit: int = 25) -> list[tuple[int, str, int]]:
-        """Most recent AutoMod violations across the whole guild, newest
-        first, as (user_id, reason, created_at) tuples - used by
-        /logging import to backfill the automod log channel."""
-        limit = max(1, min(int(limit), 200))
-        cur = self.conn.execute(
-            """SELECT user_id, reason, created_at FROM automod_violations
-               WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
-            (guild_id, limit),
-        )
-        return cur.fetchall()
-
     def count_recent_automod_violations(self, guild_id: int, user_id: int, since: int) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) FROM automod_violations WHERE guild_id = ? AND user_id = ? AND created_at >= ?",
@@ -5215,6 +5368,70 @@ class Db:
             (guild_id, role_id),
         )
         self.conn.commit()
+
+    # ---- dashboard access (who may open this server's dashboard) ----
+    # Default (no rows, managers_allowed=1) is the original behaviour: the
+    # server owner and anyone with Administrator / Manage Server. Rows here add
+    # people on top of that; turning managers_allowed off narrows it to the
+    # owner plus the people listed.
+
+    def list_dashboard_access(self, guild_id: int) -> list[tuple[str, str, Optional[str], int]]:
+        cur = self.conn.execute(
+            "SELECT user_id, level, added_by, added_at FROM dashboard_access WHERE guild_id = ? ORDER BY added_at",
+            (guild_id,),
+        )
+        return [tuple(row) for row in cur.fetchall()]
+
+    def get_dashboard_access_level(self, guild_id: int, user_id: str) -> Optional[str]:
+        row = self.conn.execute(
+            "SELECT level FROM dashboard_access WHERE guild_id = ? AND user_id = ?",
+            (guild_id, str(user_id)),
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_dashboard_access(self, guild_id: int, user_id: str, level: str, added_by: Optional[str]) -> None:
+        if level not in ("full", "staff"):
+            raise ValueError("level must be 'full' or 'staff'")
+        self.conn.execute(
+            "INSERT INTO dashboard_access (guild_id, user_id, level, added_by, added_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET level = excluded.level",
+            (guild_id, str(user_id), level, added_by, int(time.time())),
+        )
+        self.conn.commit()
+
+    def remove_dashboard_access(self, guild_id: int, user_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM dashboard_access WHERE guild_id = ? AND user_id = ?",
+            (guild_id, str(user_id)),
+        )
+        self.conn.commit()
+
+    def get_dashboard_managers_allowed(self, guild_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT managers_allowed FROM dashboard_guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return True if row is None else bool(row[0])
+
+    def set_dashboard_managers_allowed(self, guild_id: int, allowed: bool) -> None:
+        self.conn.execute(
+            "INSERT INTO dashboard_guild_settings (guild_id, managers_allowed) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET managers_allowed = excluded.managers_allowed",
+            (guild_id, 1 if allowed else 0),
+        )
+        self.conn.commit()
+
+    def find_member_id(self, guild_id: int, query: str) -> Optional[int]:
+        """Resolve a pasted user ID, or an exact username/display name, to a cached member ID."""
+        query = query.strip().lstrip("@")
+        if not query:
+            return None
+        if query.isdigit():
+            return int(query) if 15 <= len(query) <= 21 else None
+        rows = self.conn.execute(
+            "SELECT user_id FROM bot_members WHERE guild_id = ? AND (LOWER(name) = LOWER(?) OR LOWER(display_name) = LOWER(?))",
+            (guild_id, query, query),
+        ).fetchall()
+        return int(rows[0][0]) if len(rows) == 1 else None  # ambiguous names resolve to nothing
 
     # ---- cached Discord objects (used by the web dashboard) ----
 
@@ -5520,6 +5737,97 @@ class Db:
         )
         self.conn.commit()
 
+    def set_guild_info(
+        self, guild_id: int, *, owner_id: int = 0, created_at: int = 0, boost_level: int = 0, boost_count: int = 0,
+        verification_level: str = "", member_total: int = 0, emoji_count: int = 0, bot_permissions: int = 0,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO bot_guilds (guild_id, name, owner_id, created_at, boost_level, boost_count,
+                   verification_level, member_total, emoji_count, bot_permissions)
+               VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET owner_id = excluded.owner_id, created_at = excluded.created_at,
+                   boost_level = excluded.boost_level, boost_count = excluded.boost_count,
+                   verification_level = excluded.verification_level, member_total = excluded.member_total,
+                   emoji_count = excluded.emoji_count, bot_permissions = excluded.bot_permissions""",
+            (guild_id, owner_id, created_at, boost_level, boost_count, verification_level, member_total,
+             emoji_count, bot_permissions),
+        )
+        self.conn.commit()
+
+    def get_guild_info(self, guild_id: int) -> dict:
+        row = self.conn.execute(
+            """SELECT owner_id, created_at, boost_level, boost_count, verification_level, member_total,
+                      emoji_count, bot_permissions FROM bot_guilds WHERE guild_id = ?""",
+            (guild_id,),
+        ).fetchone()
+        keys = ("owner_id", "created_at", "boost_level", "boost_count", "verification_level",
+                "member_total", "emoji_count", "bot_permissions")
+        return dict(zip(keys, row)) if row else dict.fromkeys(keys, 0)
+
+    def get_temp_voice_settings(self, guild_id: int) -> dict:
+        """Settings for what the creator of a temp voice channel gets. Always
+        clamped to TEMP_VOICE_OWNER_MASK on the way out, so a bad stored value
+        can never widen what the bot grants."""
+        row = self.conn.execute(
+            "SELECT owner_perms, create_role, role_hoist, log_channel_id, name_template, max_channels "
+            "FROM temp_voice_settings WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+        if row is None:
+            return {
+                "owner_perms": TEMP_VOICE_DEFAULT_OWNER_PERMS, "create_role": False, "role_hoist": True,
+                "log_channel_id": 0, "name_template": "", "max_channels": 25,
+            }
+        return {
+            "owner_perms": int(row[0]) & TEMP_VOICE_OWNER_MASK,
+            "create_role": bool(row[1]), "role_hoist": bool(row[2]),
+            "log_channel_id": int(row[3]), "name_template": row[4],
+            "max_channels": max(1, min(int(row[5]), TEMP_VOICE_MAX_CHANNELS_CEILING)),
+        }
+
+    def set_temp_voice_settings(
+        self, guild_id: int, *, owner_perms: int, create_role: bool, role_hoist: bool,
+        log_channel_id: int, name_template: str, max_channels: int,
+    ) -> None:
+        name_template = (name_template or "").strip()[:60]
+        self.conn.execute(
+            """INSERT INTO temp_voice_settings
+                   (guild_id, owner_perms, create_role, role_hoist, log_channel_id, name_template, max_channels)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET owner_perms = excluded.owner_perms,
+                   create_role = excluded.create_role, role_hoist = excluded.role_hoist,
+                   log_channel_id = excluded.log_channel_id, name_template = excluded.name_template,
+                   max_channels = excluded.max_channels""",
+            (guild_id, int(owner_perms) & TEMP_VOICE_OWNER_MASK, 1 if create_role else 0, 1 if role_hoist else 0,
+             int(log_channel_id), name_template, max(1, min(int(max_channels), TEMP_VOICE_MAX_CHANNELS_CEILING))),
+        )
+        self.conn.commit()
+
+    def set_temp_voice_role(self, channel_id: int, role_id: int) -> None:
+        self.conn.execute("UPDATE temp_voice_channels SET role_id = ? WHERE channel_id = ?", (role_id, channel_id))
+        self.conn.commit()
+
+    def get_temp_voice_info(self, channel_id: int) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT guild_id, owner_id, user_limit, role_id FROM temp_voice_channels WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {"guild_id": row[0], "owner_id": row[1], "user_limit": row[2], "role_id": row[3]}
+
+    def count_temp_voice_channels(self, guild_id: int) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM temp_voice_channels WHERE guild_id = ?", (guild_id,)
+        ).fetchone()[0]
+
+    def find_temp_voice_by_owner(self, guild_id: int, owner_id: int) -> Optional[int]:
+        row = self.conn.execute(
+            "SELECT channel_id FROM temp_voice_channels WHERE guild_id = ? AND owner_id = ? LIMIT 1",
+            (guild_id, owner_id),
+        ).fetchone()
+        return row[0] if row else None
+
     def get_everyone_permissions(self, guild_id: int) -> int:
         row = self.conn.execute("SELECT everyone_permissions FROM bot_guilds WHERE guild_id = ?", (guild_id,)).fetchone()
         return row[0] if row else 0
@@ -5535,18 +5843,19 @@ class Db:
         for member in members:
             status = getattr(getattr(member, "status", None), "value", "offline")
             self.conn.execute(
-                "INSERT INTO bot_members (guild_id, user_id, name, display_name, status) VALUES (?, ?, ?, ?, ?)",
-                (guild_id, int(member.id), member.name, member.display_name, status),
+                "INSERT INTO bot_members (guild_id, user_id, name, display_name, status, is_bot) VALUES (?, ?, ?, ?, ?, ?)",
+                (guild_id, int(member.id), member.name, member.display_name, status, 1 if getattr(member, "bot", False) else 0),
             )
         self.conn.commit()
 
     def upsert_bot_member(
-        self, guild_id: int, user_id: int, name: str, display_name: str, status: str = "offline"
+        self, guild_id: int, user_id: int, name: str, display_name: str, status: str = "offline", is_bot: bool = False
     ) -> None:
         self.conn.execute(
-            "INSERT INTO bot_members (guild_id, user_id, name, display_name, status) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET name=excluded.name, display_name=excluded.display_name, status=excluded.status",
-            (guild_id, user_id, name, display_name, status),
+            "INSERT INTO bot_members (guild_id, user_id, name, display_name, status, is_bot) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET name=excluded.name, display_name=excluded.display_name, "
+            "status=excluded.status, is_bot=excluded.is_bot",
+            (guild_id, user_id, name, display_name, status, 1 if is_bot else 0),
         )
         self.conn.commit()
 
@@ -6009,25 +6318,6 @@ class Db:
         self.conn.commit()
         return int(cur.rowcount)
 
-    # ---- music (shared vocard_settings table/format with voicelink.SQLiteMusicDB) ----
-    # get_music_settings/update_music_settings didn't previously exist at
-    # all, even though the /guild/{id}/music webui page already called them
-    # - that page has been crashing with an AttributeError on every visit.
-    def get_music_settings(self, guild_id: int) -> dict:
-        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
-        return json.loads(row[0]) if row else {}
-
-    def update_music_settings(self, guild_id: int, **fields) -> None:
-        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
-        settings = json.loads(row[0]) if row else {"_id": guild_id}
-        settings.update(fields)
-        self.conn.execute(
-            "INSERT INTO vocard_settings (guild_id, data) VALUES (?, ?) "
-            "ON CONFLICT(guild_id) DO UPDATE SET data = excluded.data",
-            (guild_id, json.dumps(settings)),
-        )
-        self.conn.commit()
-
     # ---- per-command toggles ----
     def is_command_enabled(self, guild_id: int, command_name: str) -> bool:
         row = self.conn.execute("SELECT enabled FROM command_toggles WHERE guild_id=? AND command_name=?", (guild_id, command_name)).fetchone()
@@ -6081,18 +6371,6 @@ class Db:
         )
         self.conn.commit()
 
-    def release_all_starboard_claims(self) -> int:
-        """Drop every placeholder claim left by a previous process.
-
-        A claim is only meaningful while a send is in flight. If the bot was
-        killed between claim_starboard_post() and the send finishing, the
-        placeholder row stayed forever and that message could never be
-        starboarded. Called once at cog load, when nothing can be in flight.
-        """
-        cur = self.conn.execute("DELETE FROM starboard_messages WHERE starboard_message_id=0")
-        self.conn.commit()
-        return cur.rowcount
-
     def upsert_starboard_message(self,guild_id:int,source_message_id:int,starboard_message_id:int,channel_id:int,star_count:int):
         self.conn.execute("INSERT INTO starboard_messages(guild_id,source_message_id,starboard_message_id,channel_id,star_count) VALUES(?,?,?,?,?) ON CONFLICT(guild_id,source_message_id) DO UPDATE SET starboard_message_id=excluded.starboard_message_id,channel_id=excluded.channel_id,star_count=excluded.star_count",(guild_id,source_message_id,starboard_message_id,channel_id,star_count)); self.conn.commit()
 
@@ -6132,3 +6410,46 @@ class Db:
 
     def set_suggestion_status(self,suggestion_id:int,status:str,staff_id:int,reason:str=''):
         self.conn.execute("UPDATE suggestions SET status=?,staff_id=?,staff_reason=?,updated_at=? WHERE id=?",(status,staff_id,reason,int(time.time()),suggestion_id)); self.conn.commit()
+
+    # ---- music (vocard_settings is the bot process's per-guild music
+    # settings table, written directly by voicelink.SQLiteMusicDB - the
+    # webui reads/writes the same JSON blob shape here since it has no
+    # import path to voicelink, only the shared SQLite file) ----
+    def get_music_settings(self, guild_id: int) -> dict:
+        row = self.conn.execute("SELECT data FROM vocard_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        return json.loads(row[0]) if row else {"_id": guild_id}
+
+    def update_music_settings(self, guild_id: int, **fields) -> None:
+        settings = self.get_music_settings(guild_id)
+        settings.update(fields)
+        settings["_id"] = guild_id
+        self.conn.execute(
+            "INSERT INTO vocard_settings (guild_id, data) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET data = excluded.data",
+            (guild_id, json.dumps(settings)),
+        )
+        self.conn.commit()
+
+    def list_automod_violations(self, guild_id: int, limit: int = 25) -> list[tuple[int, str, int]]:
+        """Most recent AutoMod violations across the whole guild, newest
+        first, as (user_id, reason, created_at) tuples - used by
+        /logging import to backfill the automod log channel."""
+        limit = max(1, min(int(limit), 200))
+        cur = self.conn.execute(
+            """SELECT user_id, reason, created_at FROM automod_violations
+               WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    def release_all_starboard_claims(self) -> int:
+        """Drop every placeholder claim left by a previous process.
+
+        A claim is only meaningful while a send is in flight. If the bot was
+        killed between claim_starboard_post() and the send finishing, the
+        placeholder row stayed forever and that message could never be
+        starboarded. Called once at cog load, when nothing can be in flight.
+        """
+        cur = self.conn.execute("DELETE FROM starboard_messages WHERE starboard_message_id=0")
+        self.conn.commit()
+        return cur.rowcount

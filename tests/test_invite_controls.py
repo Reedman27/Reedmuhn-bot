@@ -136,7 +136,7 @@ class FakeBot:
 def make_cog(db, invites=None):
     pytest.importorskip("discord")
     from collections import defaultdict
-    from cogs.automod import AutoMod
+    from cogs.moderation.automod import AutoMod
     from automod_checks import UserMessageTracker
 
     cog = object.__new__(AutoMod)

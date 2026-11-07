@@ -4,6 +4,22 @@
 <h1>Overview</h1>
 <p class="muted">A snapshot of what's set up for this server.</p>
 
+<h2>Server info</h2>
+{% if server_info.missing_bot_perms %}
+<p class="error">The bot is missing permissions in this server: {{ server_info.missing_bot_perms|join(", ") }}. Features that need them will fail until you grant them.</p>
+{% endif %}
+<div class="stat-grid">
+    <div class="stat-card"><div class="stat-value">{{ server_info.total }}</div><div class="stat-label">Total members</div></div>
+    <div class="stat-card"><div class="stat-value">{{ server_info.humans }}</div><div class="stat-label">People</div></div>
+    <div class="stat-card"><div class="stat-value">{{ server_info.bots }}</div><div class="stat-label">Bots</div></div>
+    <div class="stat-card"><div class="stat-value">{{ server_info.channels }}</div><div class="stat-label">Channels</div></div>
+    <div class="stat-card"><div class="stat-value">{{ server_info.roles }}</div><div class="stat-label">Roles</div></div>
+    <div class="stat-card"><div class="stat-value">{{ server_info.emoji_count }}</div><div class="stat-label">Emoji</div></div>
+    <div class="stat-card"><div class="stat-value">Level {{ server_info.boost_level }}</div><div class="stat-label">{{ server_info.boost_count }} boosts</div></div>
+</div>
+<p class="muted">Owner: {{ server_info.owner_name }} &middot; Created {{ server_info.created }} &middot; Verification: {{ server_info.verification }}</p>
+
+<h2 class="mt-2rem">Setup</h2>
 <div class="stat-grid">
     <div class="stat-card">
         <div class="stat-value">{{ stats.custom_commands }}</div>

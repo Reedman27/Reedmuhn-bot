@@ -10,7 +10,7 @@ import ast
 from pathlib import Path
 
 
-MUSIC_SOURCE = Path(__file__).resolve().parents[2] / "cogs" / "music.py"
+MUSIC_SOURCE = Path(__file__).resolve().parents[2] / "cogs" / "music" / "music.py"
 MUTATING_PLAYER_CONTROLS = {
     "pause",
     "resume",

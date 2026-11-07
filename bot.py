@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from logging.handlers import RotatingFileHandler
 
 import discord
@@ -10,7 +11,10 @@ from discord.ext import commands
 import scheduler
 import utils
 from db import Db
-from framework import Feature, FeatureStore
+from framework import (
+    BootReport, CogResult, Feature, FeatureStore,
+    discover_extensions, is_disabled, missing_requirement, parse_disabled,
+)
 from redis_client import RedisClient
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -84,82 +88,44 @@ def configure_persistent_logging(db_path: str) -> str:
 DISCORD_COMMAND_LIMIT = 100
 DISCORD_COMMAND_WARN_THRESHOLD = 90
 
-INITIAL_COGS = [
-    "cogs.fun",
-    "cogs.extras",
-    "cogs.music",
-    "cogs.moderation",
-    "cogs.customcommands",
-    "cogs.reminders",
-    "cogs.welcome",
-    "cogs.birthdays",
-    "cogs.counting",
-    "cogs.youtube",
-    "cogs.tempvoice",
-    "cogs.automod",
-    "cogs.reactionroles",
-    "cogs.stickyroles",
-    "cogs.logging_cog",
-    "cogs.dashboardtalk",
-    "cogs.dashboardmoderation",
-    "cogs.channelfeed",
-    "cogs.verification",
-    "cogs.tickets",
-    "cogs.polls",
-    "cogs.votekick",
-    "cogs.rules",
-    "cogs.reports",
-    "cogs.emergency",
-    "cogs.userinfo",
-    "cogs.antinuke",
-    "cogs.starboard",
-    "cogs.suggestions",
-    "cogs.ping",
-    "cogs.cases",
-    "cogs.raiddetection",
-    "cogs.invites",
-    "cogs.say",
-    "cogs.modmail",
-    "cogs.ai",
-]
-
 FEATURES = FeatureStore([
-    Feature("moderation", "cogs.moderation", "Warnings, timeouts, kicks, bans, tempbans, and nickname moderation.", "moderation"),
-    Feature("automod", "cogs.automod", "Automated message and spam protection.", "moderation"),
-    Feature("welcome", "cogs.welcome", "Welcome messages, cards, and autoroles.", "community"),
-    Feature("customcommands", "cogs.customcommands", "Per-server custom text commands.", "utility"),
-    Feature("birthdays", "cogs.birthdays", "Birthday storage and announcements.", "community"),
-    Feature("counting", "cogs.counting", "Counting channel and score tracking.", "community"),
-    Feature("youtube", "cogs.youtube", "RSS-based YouTube upload alerts.", "notifications"),
-    Feature("tempvoice", "cogs.tempvoice", "Temporary voice-channel management.", "utility"),
-    Feature("reactionroles", "cogs.reactionroles", "Reaction-based role assignment.", "community"),
-    Feature("reminders", "cogs.reminders", "Scheduled reminders.", "utility"),
-    Feature("fun", "cogs.fun", "Fun and lightweight community commands.", "fun"),
-    Feature("music", "cogs.music", "Vocard-derived music playback with queues, playlists, lyrics, effects, and Lavalink.", "utility"),
-    Feature("verification", "cogs.verification", "Button-based member verification gate.", "moderation"),
-    Feature("tickets", "cogs.tickets", "Private support ticket channels.", "utility"),
-    Feature("polls", "cogs.polls", "Button-based polls with live results.", "fun"),
-    Feature("votekick", "cogs.votekick", "Community vote-to-kick with persistent voting and configurable thresholds.", "moderation"),
-    Feature("rules", "cogs.rules", "Numbered server rules, citable from /warn.", "moderation"),
-    Feature("reports", "cogs.reports", "Member-submitted reports triaged on the dashboard.", "moderation"),
-    Feature("emergency", "cogs.emergency", "Dashboard-triggered server-wide lockdown, invite revoke, and mass timeout.", "moderation"),
-    Feature("userinfo", "cogs.userinfo", "Member lookup with /whois.", "utility"),
-    Feature("antinuke", "cogs.antinuke", "Automatic detection and punishment of mass-destructive action bursts (channel/role deletion, mass ban/kick, rogue webhooks/bots).", "moderation"),
-    Feature("starboard", "cogs.starboard", "Highlight messages that receive enough ⭐ reactions.", "community"),
-    Feature("suggestions", "cogs.suggestions", "Server suggestion intake and staff review.", "community"),
-    Feature("ai", "cogs.ai", "Optional OpenAI-compatible AI assistant connections.", "utility"),
-    Feature("stickyroles", "cogs.stickyroles", "Reapplies configured roles to members who leave and rejoin.", "community"),
-    Feature("logging", "cogs.logging_cog", "Server activity logging (messages, members, moderation, server, voice).", "moderation"),
-    Feature("dashboardtalk", "cogs.dashboardtalk", "Lets the WebUI send/relay messages through the bot.", "utility"),
-    Feature("dashboardmoderation", "cogs.dashboardmoderation", "Applies moderation actions queued from the WebUI.", "moderation"),
-    Feature("channelfeed", "cogs.channelfeed", "Mirrors a channel's messages to the dashboard for read-only monitoring.", "utility"),
-    Feature("cases", "cogs.cases", "Numbered case/infraction system and private staff notes.", "moderation"),
-    Feature("raiddetection", "cogs.raiddetection", "Detects and responds to join-raid bursts.", "moderation"),
-    Feature("invites", "cogs.invites", "Attributes joins to invite codes and tracks leaderboards/milestones.", "community"),
-    Feature("say", "cogs.say", "Owner/Administrator command to post a message as the bot.", "utility"),
-    Feature("modmail", "cogs.modmail", "DM-based modmail threads with staff.", "moderation"),
-    Feature("ping", "cogs.ping", "Basic latency check command.", "utility"),
-    Feature("extras", "cogs.extras", "XP/leveling, economy, giveaways, live counters, Twitch/RSS notifications.", "fun"),
+    Feature("moderation", "cogs.moderation.moderation", "Warnings, timeouts, kicks, bans, tempbans, and nickname moderation.", "moderation"),
+    Feature("automod", "cogs.moderation.automod", "Automated message and spam protection.", "moderation"),
+    Feature("welcome", "cogs.community.welcome", "Welcome messages, cards, and autoroles.", "community"),
+    Feature("customcommands", "cogs.utility.customcommands", "Per-server custom text commands.", "utility"),
+    Feature("birthdays", "cogs.community.birthdays", "Birthday storage and announcements.", "community"),
+    Feature("counting", "cogs.community.counting", "Counting channel and score tracking.", "community"),
+    Feature("youtube", "cogs.notifications.youtube", "RSS-based YouTube upload alerts.", "notifications"),
+    Feature("tempvoice", "cogs.utility.tempvoice", "Temporary voice-channel management.", "utility"),
+    Feature("reactionroles", "cogs.community.reactionroles", "Reaction-based role assignment.", "community"),
+    Feature("reminders", "cogs.utility.reminders", "Scheduled reminders.", "utility"),
+    Feature("fun", "cogs.fun.fun", "Fun and lightweight community commands.", "fun"),
+    Feature("music", "cogs.music.music", "Vocard-derived music playback with queues, playlists, lyrics, effects, and Lavalink.", "utility"),
+    Feature("verification", "cogs.moderation.verification", "Button-based member verification gate.", "moderation"),
+    Feature("tickets", "cogs.utility.tickets", "Private support ticket channels.", "utility"),
+    Feature("polls", "cogs.fun.polls", "Button-based polls with live results.", "fun"),
+    Feature("votekick", "cogs.moderation.votekick", "Community vote-to-kick with persistent voting and configurable thresholds.", "moderation"),
+    Feature("rules", "cogs.moderation.rules", "Numbered server rules, citable from /warn.", "moderation"),
+    Feature("reports", "cogs.moderation.reports", "Member-submitted reports triaged on the dashboard.", "moderation"),
+    Feature("emergency", "cogs.moderation.emergency", "Dashboard-triggered server-wide lockdown, invite revoke, and mass timeout.", "moderation"),
+    Feature("userinfo", "cogs.utility.userinfo", "Member lookup with /whois.", "utility"),
+    Feature("serverinfo", "cogs.utility.serverinfo", "/serverinfo: people vs bots, channels, roles, boosts.", "utility"),
+    Feature("antinuke", "cogs.moderation.antinuke", "Automatic detection and punishment of mass-destructive action bursts (channel/role deletion, mass ban/kick, rogue webhooks/bots).", "moderation"),
+    Feature("starboard", "cogs.community.starboard", "Highlight messages that receive enough ⭐ reactions.", "community"),
+    Feature("suggestions", "cogs.community.suggestions", "Server suggestion intake and staff review.", "community"),
+    Feature("ai", "cogs.utility.ai", "Optional OpenAI-compatible AI assistant connections.", "utility"),
+    Feature("stickyroles", "cogs.community.stickyroles", "Reapplies configured roles to members who leave and rejoin.", "community"),
+    Feature("logging", "cogs.moderation.logging_cog", "Server activity logging (messages, members, moderation, server, voice).", "moderation"),
+    Feature("dashboardtalk", "cogs.dashboard.dashboardtalk", "Lets the WebUI send/relay messages through the bot.", "utility"),
+    Feature("dashboardmoderation", "cogs.dashboard.dashboardmoderation", "Applies moderation actions queued from the WebUI.", "moderation"),
+    Feature("channelfeed", "cogs.dashboard.channelfeed", "Mirrors a channel's messages to the dashboard for read-only monitoring.", "utility"),
+    Feature("cases", "cogs.moderation.cases", "Numbered case/infraction system and private staff notes.", "moderation"),
+    Feature("raiddetection", "cogs.moderation.raiddetection", "Detects and responds to join-raid bursts.", "moderation"),
+    Feature("invites", "cogs.community.invites", "Attributes joins to invite codes and tracks leaderboards/milestones.", "community"),
+    Feature("say", "cogs.utility.say", "Owner/Administrator command to post a message as the bot.", "utility"),
+    Feature("modmail", "cogs.moderation.modmail", "DM-based modmail threads with staff.", "moderation"),
+    Feature("ping", "cogs.utility.ping", "Basic latency check command.", "utility"),
+    Feature("extras", "cogs.fun.extras", "XP/leveling, economy, giveaways, live counters, Twitch/RSS notifications.", "fun"),
 ])
 
 intents = discord.Intents.default()
@@ -201,6 +167,8 @@ class MyBot(commands.Bot):
         self.redis = RedisClient(os.environ.get("REDIS_URL"))
         self.webui_wake_handlers: dict[str, list] = {}
         self._webui_wake_task = None
+        self.boot_report = BootReport()
+        self._boot_report_posted = False
 
     def register_webui_wake(self, topic: str, handler) -> None:
         """Register a one-shot poll handler for WebUI -> bot wakeups."""
@@ -231,20 +199,93 @@ class MyBot(commands.Bot):
                 await self.redis.close()
                 await asyncio.sleep(2)
 
+    async def _load_all_cogs(self) -> BootReport:
+        """Find every cog under cogs/<folder>/ and load it, recording the result.
+
+        No list to maintain: a new file in a feature folder is picked up on the
+        next boot. A cog that fails to import is logged and skipped - it never
+        stops the others from loading.
+        """
+        report = BootReport()
+        disabled = parse_disabled(os.environ.get("DISABLED_COGS"))
+        extensions = discover_extensions()
+        registered = {f.extension for f in FEATURES.all()}
+        report.unregistered = [e for e in extensions if e not in registered]
+        for extension in extensions:
+            result = CogResult(extension)
+            report.results.append(result)
+            if is_disabled(extension, disabled):
+                result.skipped = True
+                logger.info("Cog %s disabled via DISABLED_COGS", extension)
+                continue
+            needs = missing_requirement(extension, os.environ)
+            if needs:
+                result.skipped = True
+                result.reason = f"off - set {needs} in .env to turn on"
+                logger.info("Cog %s is off: %s is not set", extension, needs)
+                continue
+            started = time.monotonic()
+            try:
+                await self.load_extension(extension)
+                result.ok = True
+            except Exception as exc:
+                result.error = f"{type(exc).__name__}: {exc}"[:300]
+                logger.exception("Skipping %s: failed to load", extension)
+            result.seconds = time.monotonic() - started
+        for extension in report.unregistered:
+            logger.warning("%s loaded but is not described in FEATURES in bot.py", extension)
+        logger.info("Cogs: %s", report.summary_line())
+        return report
+
+    def build_boot_embed(self) -> discord.Embed:
+        report = self.boot_report
+        failed = bool(report.failed)
+        embed = discord.Embed(
+            title="ReedMuhn started" if not failed else "ReedMuhn started with errors",
+            description=f"**{report.summary_line()}** across {len(report.by_folder())} folders",
+            colour=discord.Colour.red() if failed else discord.Colour.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        for folder, results in report.by_folder().items():
+            lines = []
+            for r in results:
+                if r.skipped:
+                    lines.append(f"\u23f8\ufe0f `{r.file}` {r.reason or 'disabled'}")
+                elif r.ok:
+                    lines.append(f"\u2705 `{r.file}` {r.seconds * 1000:.0f}ms")
+                else:
+                    lines.append(f"\u274c `{r.file}`\n\u2003{r.error}")
+            value = "\n".join(lines)
+            if len(value) > 1000:
+                value = value[:990] + "\n\u2026"
+            embed.add_field(name=f"cogs/{folder}/", value=value, inline=False)
+        if report.unregistered:
+            embed.add_field(
+                name="Not in FEATURES registry",
+                value="\n".join(f"`{e}`" for e in report.unregistered)[:1000],
+                inline=False,
+            )
+        embed.set_footer(text=f"{len(self.tree.get_commands())} top-level commands | boot took {time.monotonic() - report.started:.1f}s")
+        return embed
+
+    async def _post_boot_report(self) -> None:
+        """Post the cog load report to BOOT_LOG_CHANNEL_ID (once per process)."""
+        if self._boot_report_posted:
+            return
+        self._boot_report_posted = True
+        raw = os.environ.get("BOOT_LOG_CHANNEL_ID", "").strip()
+        if not raw:
+            return
+        try:
+            channel = self.get_channel(int(raw)) or await self.fetch_channel(int(raw))
+            await channel.send(embed=self.build_boot_embed())
+        except (ValueError, discord.HTTPException, AttributeError):
+            logger.warning("Could not post the boot report to BOOT_LOG_CHANNEL_ID=%r (bad ID, or no access)", raw)
+
     async def setup_hook(self):
         await self.redis.connect()
         self.db.record_bot_event("bot.startup", None, None, None, "process starting")
-        for cog in INITIAL_COGS:
-            try:
-                await self.load_extension(cog)
-            except commands.ExtensionNotFound:
-                logger.error(
-                    "Skipping %s: no such cog file. If this was intentional, "
-                    "also remove it from INITIAL_COGS in bot.py.",
-                    cog,
-                )
-            except Exception:
-                logger.exception("Skipping %s: failed to load", cog)
+        self.boot_report = await self._load_all_cogs()
 
         # Always start the wake listener. The listener itself reconnects when
         # Redis is unavailable, so a temporary Redis outage during bot startup
@@ -311,6 +352,7 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         logger.info("Logged in as %s", self.user)
+        await self._post_boot_report()
         # Full resync on every connect. Cached Discord objects let the WebUI
         # show human-readable names instead of making administrators copy IDs.
         self.db.sync_bot_guilds([(g.id, g.name) for g in self.guilds])
@@ -322,6 +364,19 @@ class MyBot(commands.Bot):
         self.db.sync_guild_roles(guild.id, list(guild.roles))
         self.db.sync_guild_members(guild.id, list(guild.members))
         self.db.set_everyone_permissions(guild.id, guild.default_role.permissions.value)
+        # Server facts the dashboard shows read-only (Overview > Server info).
+        me = guild.me
+        self.db.set_guild_info(
+            guild.id,
+            owner_id=guild.owner_id or 0,
+            created_at=int(guild.created_at.timestamp()),
+            boost_level=guild.premium_tier,
+            boost_count=guild.premium_subscription_count or 0,
+            verification_level=str(guild.verification_level.name),
+            member_total=guild.member_count or 0,
+            emoji_count=len(guild.emojis),
+            bot_permissions=me.guild_permissions.value if me else 0,
+        )
 
     async def on_guild_join(self, guild: discord.Guild):
         self.db.upsert_bot_guild(guild.id, guild.name)
@@ -358,10 +413,10 @@ class MyBot(commands.Bot):
         self.db.remove_bot_role(role.guild.id, role.id)
 
     async def on_member_join(self, member: discord.Member):
-        self.db.upsert_bot_member(member.guild.id, member.id, member.name, member.display_name, getattr(getattr(member, 'status', None), 'value', 'offline'))
+        self.db.upsert_bot_member(member.guild.id, member.id, member.name, member.display_name, getattr(getattr(member, 'status', None), 'value', 'offline'), bool(member.bot))
 
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        self.db.upsert_bot_member(after.guild.id, after.id, after.name, after.display_name, getattr(getattr(after, 'status', None), 'value', 'offline'))
+        self.db.upsert_bot_member(after.guild.id, after.id, after.name, after.display_name, getattr(getattr(after, 'status', None), 'value', 'offline'), bool(after.bot))
 
     async def on_member_remove(self, member: discord.Member):
         self.db.remove_bot_member(member.guild.id, member.id)

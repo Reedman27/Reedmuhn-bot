@@ -30,7 +30,8 @@ This is a self-hosted personal/hobby project that gets iterated on a lot, includ
 - 📺 YouTube notifications
 - 📡 Twitch and RSS/Atom notifications, live member/online/bot/channel counters
 - 🧮 XP levels, economy (coins), and giveaways
-- 🎙️ Temporary voice channels
+- 🎙️ Temporary voice channels (creator permissions, temporary role, logging, one room per person)
+- 📊 Server info on the dashboard Overview and `/serverinfo`
 - 🎵 Music playback — queues, playlists, lyrics, effects, DJ role, 24/7 mode
 - ⭐ Starboard
 - 💡 Suggestions
@@ -39,6 +40,10 @@ This is a self-hosted personal/hobby project that gets iterated on a lot, includ
 - 🖥️ Full web dashboard
 - 🤖 Optional AI integrations
 - 💾 Persistent SQLite storage
+
+---
+
+**New here?** Read [QUICKSTART.md](QUICKSTART.md). Cogs are organized in feature folders - see [cogs/README.md](cogs/README.md).
 
 ---
 
@@ -85,8 +90,8 @@ DISCORD_CLIENT_SECRET=your_application_client_secret
 DISCORD_REDIRECT_URI=https://YOUR-TAILSCALE-FUNNEL-DOMAIN/auth/discord/callback
 WEBUI_HTTPS_ONLY=1
 DEV_GUILD_ID=
-# Required shared secret between bot and bundled Lavalink; generate with `openssl rand -hex 32`.
-# Keep it private. Compose refuses to start if any required secret is blank.
+# Optional (music only): shared secret between the bot and Lavalink, generate with `openssl rand -hex 32`.
+# Leave blank to run without music. To start the bundled Lavalink: docker compose --profile music up -d
 LAVALINK_PASSWORD=
 ```
 
@@ -210,6 +215,16 @@ http://YOUR-SERVER-IP:8490
 
 The dashboard lets you configure most ReedMuhn features without manually entering Discord IDs.
 
+### Screenshots
+
+Not included yet - drop your own in `docs/screenshots/` (see that folder's
+README) and link them here, e.g.:
+
+```markdown
+![Dashboard overview](docs/screenshots/overview.png)
+![Temporary Voice settings](docs/screenshots/tempvoice.png)
+```
+
 ---
 
 # 🎵 Music
@@ -235,7 +250,7 @@ defaults are set via optional environment variables in `.env`:
 |---|---|---|
 | `LAVALINK_HOST` | `lavalink` | Hostname of the Lavalink node (the compose service name) |
 | `LAVALINK_PORT` | `2333` | Lavalink's REST/WS port |
-| `LAVALINK_PASSWORD` | `youshallnotpass` | Shared secret with the Lavalink container (internal network only; set your own if you expose the port) |
+| `LAVALINK_PASSWORD` | *(none - optional)* | Turns music on. Shared secret with the Lavalink container (start it with `docker compose --profile music up -d`). Blank = the bot runs normally and the music cog shows as off in the boot report. |
 | `MUSIC_SEARCH_PLATFORM` | `youtube` | Default source for bare (non-URL) search queries |
 | `MUSIC_LYRICS_PLATFORM` | `lrclib` | Lyrics provider |
 | `MUSIC_MAX_QUEUE` | `1000` | Max tracks per guild queue |
@@ -293,8 +308,7 @@ of effort:
 ### Credit
 
 The project gives explicit credit to Vocard Development / ChocoMeow (MIT) and
-keeps the original Vocard license. DingoLingo is credited as a historical GPLv3
-reference for music-bot design; it is not a runtime dependency. The counting
+keeps the original Vocard license. The counting
 game (`/counting`) is modeled on count-bot (AGPL-3.0); ReedMuhn is itself
 AGPL-3.0, so no relicensing is needed. See `THIRD_PARTY_NOTICES.md`.
 
@@ -349,6 +363,14 @@ WebUI publishes a small `webui:wake` notification after queueing an action, and
 the bot immediately wakes the matching worker instead of waiting for its next
 poll interval. The normal SQLite polling loop remains in place as the reliable
 fallback.
+
+# 🔐 Security
+
+See [`SECURITY.md`](SECURITY.md) for the current security model and the
+history of vulnerabilities found and fixed. See
+[`CHANGELOG.md`](CHANGELOG.md) for everything else that's changed, and
+[`UPGRADING.md`](UPGRADING.md) if you're updating an existing checkout rather
+than starting fresh.
 
 # 🤝 Contributing
 

@@ -14,6 +14,7 @@ WORKDIR /opt/Lavalink
 
 ADD https://github.com/lavalink-devs/Lavalink/releases/download/${LAVALINK_VERSION}/Lavalink.jar /opt/Lavalink/Lavalink.jar
 COPY application.yml /opt/Lavalink/application.yml
+COPY --chmod=755 entrypoint.sh /opt/Lavalink/entrypoint.sh
 
 # Matches the uid/gid the official Lavalink image uses, so a mounted
 # ./plugins volume with those ownership bits (see Lavalink's docs) works
@@ -24,4 +25,4 @@ RUN groupadd -g 322 lavalink \
 USER lavalink
 
 EXPOSE 2333
-ENTRYPOINT ["java", "-jar", "Lavalink.jar"]
+ENTRYPOINT ["/opt/Lavalink/entrypoint.sh"]

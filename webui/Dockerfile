@@ -6,10 +6,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Build context is the repo root (see docker-compose.yml) so the files shared
+# with the bot can be copied in: one db.py, not two.
+COPY webui/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY db.py redis_client.py safe_feed.py ./
+COPY webui/ .
 
 VOLUME ["/app/data"]
 

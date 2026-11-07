@@ -23,6 +23,8 @@ SOFTWARE.
 
 from __future__ import annotations
 
+import ast
+import operator
 import re
 import discord
 
@@ -44,6 +46,72 @@ def ensure_track(func) -> Callable:
             return "None"
         return func(self, current, *args, **kwargs)
     return wrapper
+
+
+_MAX_CONDITION_LENGTH = 200
+_COMPARE_OPS = {
+    ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt, ast.LtE: operator.le,
+    ast.Gt: operator.gt, ast.GtE: operator.ge,
+    ast.In: lambda a, b: a in b, ast.NotIn: lambda a, b: a not in b,
+}
+
+
+def safe_condition(expression: str, variables: dict) -> bool:
+    """Evaluate a ``{{ condition ?? a // b }}`` condition without ``eval``.
+
+    Only literals, ``@@variable@@`` values, comparisons, and/or/not are
+    allowed. Variable values (track titles, authors, ...) come from outside
+    sources, so they are NEVER spliced into the expression text - they are
+    passed in separately as plain values. Anything else raises ValueError.
+    """
+    if len(expression) > _MAX_CONDITION_LENGTH:
+        raise ValueError("condition too long")
+    values: dict[str, object] = {}
+
+    def as_value(raw) -> object:
+        if callable(raw):
+            raw = raw()
+        text = "" if raw is None else str(raw)
+        return int(text) if text.isdigit() else text
+
+    def to_name(match: re.Match) -> str:
+        name = f"__v{len(values)}"
+        values[name] = as_value(variables.get(match.group(1), ""))
+        return name
+
+    tree = ast.parse(re.sub(r"@@(.*?)@@", to_name, expression.strip()), mode="eval")
+
+    def ev(node: ast.AST):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, bool, type(None))):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id in values:
+                return values[node.id]
+            if node.id in variables:  # bare variable name, as the old syntax allowed
+                return as_value(variables[node.id])
+            raise ValueError(f"unknown name {node.id!r}")
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not ev(node.operand)
+        if isinstance(node, ast.BoolOp):
+            results = (ev(v) for v in node.values)
+            return all(results) if isinstance(node.op, ast.And) else any(results)
+        if isinstance(node, ast.Compare):
+            left = ev(node.left)
+            for op, comparator in zip(node.ops, node.comparators, strict=True):
+                compare = _COMPARE_OPS.get(type(op))
+                if compare is None:
+                    raise ValueError("operator not allowed")
+                right = ev(comparator)
+                if not compare(left, right):
+                    return False
+                left = right
+            return True
+        raise ValueError(f"{type(node).__name__} not allowed")
+
+    return bool(ev(tree))
+
 
 class PlayerPlaceholder:
     def __init__(self, bot: commands.Bot, player: Player = None) -> None:
@@ -169,31 +237,17 @@ class PlayerPlaceholder:
         matches: list[str] = re.findall(r"\{\{(.*?)\}\}", text)
 
         for match in matches:
-            parts: list[str] = match.split("??")
-            expression = parts[0].strip()
-            true_value, false_value = "", ""
-
-            # Split the true and false values
-            if "//" in parts[1]:
-                true_value, false_value = [part.strip() for part in parts[1].split("//")]
-            else:
-                true_value = parts[1].strip()
+            # {{ condition ?? if true // if false }}
+            condition, _, branches = match.partition("??")
+            true_value, _, false_value = branches.partition("//")
+            true_value, false_value = true_value.strip(), false_value.strip()
 
             try:
-                # Replace variable placeholders with their values
-                expression = re.sub(r'@@(.*?)@@', lambda x: "'" + variables.get(x.group(1), '') + "'", expression)
-                expression = re.sub(r"'(\d+)'", lambda x: str(int(x.group(1))), expression)
-                expression = re.sub(r"'(\d+)'\s*([><=!]+)\s*(\d+)", lambda x: f"{int(x.group(1))} {x.group(2)} {int(x.group(3))}", expression)
-
-                # Evaluate the expression
-                result = eval(expression, {"__builtins__": None}, variables)
-
-                # Replace the match with the true or false value based on the result
+                result = safe_condition(condition, variables)
                 replacement = true_value if result else false_value
-                text = text.replace("{{" + match + "}}", replacement)
-
-            except:
-                text = text.replace("{{" + match + "}}", "")
+            except Exception:
+                replacement = ""
+            text = text.replace("{{" + match + "}}", replacement)
 
         for regex_pattern, func in self.regexes.items():
             text = re.sub(regex_pattern, lambda m: func(m.group(1)), text)

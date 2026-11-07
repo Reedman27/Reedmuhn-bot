@@ -13,9 +13,9 @@
 </head>
 <body class="app">
     {% set nav_groups = [
-        ("overview", "Overview", [("", "overview", "📊", "Dashboard"), ("search", "search", "🔎", "Search")]),
+        ("overview", "Overview", [("", "overview", "📊", "Dashboard"), ("search", "search", "🔎", "Search"), ("quickstart", "quickstart", "🚀", "Quickstart")]),
         ("insights", "Insights", [("analytics", "analytics", "📈", "Analytics"), ("staffstats", "staffstats", "📋", "Staff Activity"), ("invites", "invites", "🔗", "Invites"), ("snapshots", "snapshots", "📸", "Snapshots")]),
-        ("moderation", "Moderation & Safety", [("moderation", "moderation", "🛡️", "Moderation"), ("automod", "automod", "🚨", "AutoMod"), ("moderationqueue", "moderationqueue", "⏳", "Moderation Queue"), ("reports", "reports", "🚩", "Reports"), ("verification", "verification", "✅", "Verification"), ("rules", "rules", "📜", "Rules"), ("emergency", "emergency", "🆘", "Emergency"), ("antinuke", "antinuke", "🧨", "Anti-Nuke"), ("raid", "raid", "🛑", "Raid Detection"), ("logging", "logging", "🗒️", "Logging"), ("permissions", "permissions", "🔐", "Permissions")]),
+        ("moderation", "Moderation & Safety", [("moderation", "moderation", "🛡️", "Moderation"), ("automod", "automod", "🚨", "AutoMod"), ("moderationqueue", "moderationqueue", "⏳", "Moderation Queue"), ("reports", "reports", "🚩", "Reports"), ("verification", "verification", "✅", "Verification"), ("rules", "rules", "📜", "Rules"), ("emergency", "emergency", "🆘", "Emergency"), ("antinuke", "antinuke", "🧨", "Anti-Nuke"), ("raid", "raid", "🛑", "Raid Detection"), ("logging", "logging", "🗒️", "Logging"), ("permissions", "permissions", "🔐", "Permissions"), ("access", "access", "🗝️", "Dashboard Access")]),
         ("community", "Community", [("welcome", "welcome", "👋", "Welcome & Roles"), ("reactionroles", "reactionroles", "🎭", "Reaction Roles"), ("stickyroles", "stickyroles", "🧷", "Sticky Roles"), ("suggestions", "suggestions", "💡", "Suggestions"), ("birthdays", "birthdays", "🎂", "Birthdays"), ("polls", "polls", "🗳️", "Polls"), ("starboard", "starboard", "⭐", "Starboard")]),
         ("fun", "Fun & Economy", [("fun-commands", "funcommands", "🎮", "Fun Commands"), ("economy", "economy", "💰", "Economy"), ("leveling", "leveling", "⬆️", "Leveling"), ("giveaways", "giveaways", "🎉", "Giveaways"), ("counting", "counting", "🔢", "Counting Game"), ("music", "music", "🎵", "Music")]),
         ("tools", "Server Tools", [("commands", "commands", "⚡", "Custom Commands"), ("scheduled", "scheduled", "⏰", "Scheduled Tasks"), ("tickets", "tickets", "🎫", "Tickets"), ("modmail", "modmail", "📬", "Modmail"), ("tempvoice", "tempvoice", "🎙️", "Temporary Voice"), ("counters", "counters", "🧮", "Live Counters")]),
@@ -26,10 +26,14 @@
         <aside class="sidebar">
             {% if guild_id %}
             <nav class="sidebar-nav" id="sidebar-nav">
-                {% for gid, glabel, items in nav_groups %}
+                {% set level = request.state.guild_level|default('full') %}
+                {% for gid, glabel, all_items in nav_groups %}
+                {% set items = all_items|nav_visible(level) %}
+                {% if items %}
                 <section class="nav-group" data-group="{{ gid }}"><button class="nav-group-title" type="button" aria-expanded="true">{{ glabel }} <span>⌄</span></button><div class="nav-group-items">
-                    {% for slug, aid, icon, label in items %}<a class="nav-link {{ 'active' if active == aid else '' }}" href="/guild/{{ guild_id }}{{ '/' + slug if slug else '' }}">{{ icon }} {{ label }}</a>{% endfor %}
+                    {% for slug, aid, icon, label in items %}{% if slug != 'access' or request.state.can_grant_access|default(true) %}<a class="nav-link {{ 'active' if active == aid else '' }}" href="/guild/{{ guild_id }}{{ '/' + slug if slug else '' }}">{{ icon }} {{ label }}</a>{% endif %}{% endfor %}
                 </div></section>
+                {% endif %}
                 {% endfor %}
             </nav>
             {% else %}
@@ -42,10 +46,13 @@
 
         <header class="topnav-bar">
             <div class="topnav-brand">🤖 Reedmuhn Bot</div>
-            {% if guild_id %}<div class="server-name" title="{{ guild_name }}">{{ guild_name }}</div>{% endif %}
+            {% if guild_id %}<div class="server-name" title="{{ guild_name }}">{{ guild_name }}{% if request.state.guild_level|default('full') == 'staff' %} <span class="muted">· staff view</span>{% endif %}</div>{% endif %}
         </header>
 
-        <main>{% block content %}{% endblock %}</main>
+        <main>
+        {% if request.query_params.get('error') == 'staff_only' %}<section class="card"><p>That page is for full-access users. Your staff access covers moderation, reports, tickets, modmail, suggestions and search.</p></section>{% endif %}
+        {% block content %}{% endblock %}
+        </main>
     </div>
 </body>
 </html>

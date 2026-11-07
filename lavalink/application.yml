@@ -11,10 +11,10 @@ lavalink:
       repository: "https://maven.lavalink.dev/releases"
 
   server:
-    # Overridable at runtime via the LAVALINK_SERVER_PASSWORD env var - see
-    # docker-compose.yml. Change this from the default before exposing the
-    # port outside your own docker network.
-    password: "youshallnotpass"
+    # Always overridden at runtime by LAVALINK_SERVER_PASSWORD (set from
+    # LAVALINK_PASSWORD in docker-compose.yml; the container's entrypoint
+    # refuses to start without it). This placeholder is never a usable password.
+    password: "overridden-by-LAVALINK_SERVER_PASSWORD"
     sources:
       youtube: false # handled by the youtube-source plugin above instead
       bandcamp: true

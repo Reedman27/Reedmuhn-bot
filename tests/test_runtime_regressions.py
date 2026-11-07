@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_closing_already_closed_poll_still_retries_message_update():
     pytest.importorskip("discord")
-    from cogs.polls import Polls
+    from cogs.fun.polls import Polls
 
     class FakeDB:
         def __init__(self):
@@ -71,7 +71,7 @@ async def test_closing_already_closed_poll_still_retries_message_update():
 async def test_giveaway_announcement_failure_releases_claim_for_retry():
     pytest.importorskip("discord")
     pytest.importorskip("feedparser")
-    from cogs.extras import Extras
+    from cogs.fun.extras import Extras
 
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -122,7 +122,7 @@ async def test_giveaway_announcement_failure_releases_claim_for_retry():
 @pytest.mark.asyncio
 async def test_scheduled_poll_close_propagates_discord_edit_failure(monkeypatch):
     discord = pytest.importorskip("discord")
-    from cogs.polls import Polls
+    from cogs.fun.polls import Polls
 
     class FakeForbidden(Exception):
         pass

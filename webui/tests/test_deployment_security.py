@@ -9,11 +9,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_compose_requires_exposed_service_secrets():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    # The bot token and OAuth credentials must be set. Lavalink is internal-only
-    # (expose, not ports), so it keeps a working default instead of blocking boot.
+    # No well-known default passwords: every secret must be set explicitly.
     for secret in ("DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_REDIRECT_URI"):
         assert f"${{{secret}:?{secret}_required_in_.env}}" in compose
-    assert "LAVALINK_PASSWORD:-youshallnotpass" in compose
+    assert "youshallnotpass" not in compose
+
+
+def test_lavalink_is_optional():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "LAVALINK_PASSWORD:?" not in compose  # the bot must start without music
+    bot_block = compose[compose.index("discord-bot:"):compose.index("  redis:")]
+    assert "lavalink" not in bot_block.split("depends_on:")[-1]
+    lavalink_block = compose[compose.index("  lavalink:"):compose.index("  webui:")]
+    assert 'profiles: ["music"]' in lavalink_block
+    entrypoint = (ROOT / "lavalink" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "-z \"$LAVALINK_SERVER_PASSWORD\"" in entrypoint and "exit 1" in entrypoint
 
 
 def test_lavalink_is_not_published_to_the_host():

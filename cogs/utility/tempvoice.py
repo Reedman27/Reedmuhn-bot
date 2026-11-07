@@ -4,19 +4,54 @@ channels. Joining any hub creates a fresh voice channel for that member
 own channel), moves them into it, and deletes it automatically once
 everyone leaves.
 
-Implemented entirely via on_voice_state_update - no slash command needed to
-use it as a member, just join a hub channel.
+What the creator gets is set per server on the dashboard (Temporary Voice >
+Creator permissions): which of a short, fixed list of channel-only permissions
+they hold, an optional temporary role (shown separately in the member list),
+and a log channel. The list in db.TEMP_VOICE_OWNER_PERMS is a hard ceiling that
+the bot re-applies when it builds the permission overwrite, so the creator can
+never be handed server-wide powers. Anyone can read the current setup with
+/voicehub perms.
+
+Guard rails so it cannot spiral: one live channel per person, a per-server cap,
+a short per-person cooldown, and invites that expire.
 """
 import logging
+import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from db import TEMP_VOICE_OWNER_MASK, TEMP_VOICE_OWNER_PERMS
+from utils import manager_or_permission
+
 logger = logging.getLogger("tempvoice")
 
+CREATE_COOLDOWN_SECONDS = 5
+INVITE_MAX_AGE_SECONDS = 3600
+INVITE_MAX_USES = 10
 
-from utils import manager_or_permission
+
+def owner_perm_names(owner_perms: int) -> list[str]:
+    """Names of the permissions set in ``owner_perms``, after clamping to the
+    allowed list. Anything outside TEMP_VOICE_OWNER_PERMS is dropped."""
+    owner_perms &= TEMP_VOICE_OWNER_MASK
+    return [name for name, (bit, _label) in TEMP_VOICE_OWNER_PERMS.items() if owner_perms & bit]
+
+
+def owner_has(owner_perms: int, perm_name: str) -> bool:
+    return perm_name in owner_perm_names(owner_perms)
+
+
+def build_owner_overwrite(owner_perms: int) -> discord.PermissionOverwrite:
+    return discord.PermissionOverwrite(**{name: True for name in owner_perm_names(owner_perms)})
+
+
+def channel_name_for(template: str, display_name: str) -> str:
+    template = template.strip() or "{user}'s Channel"
+    if "{user}" not in template:
+        template += " {user}"
+    return template.replace("{user}", display_name)[:100]
 
 class TempVoice(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -24,6 +59,7 @@ class TempVoice(commands.Cog):
         bot.register_webui_wake("tempvoice_delete", self._delete_request_worker)
         bot.register_webui_wake("tempvoice_limit", self._limit_request_worker)
         self._cleaned_up = False
+        self._last_create: dict[int, float] = {}
         self._delete_request_worker.start()
         self._limit_request_worker.start()
 
@@ -44,7 +80,7 @@ class TempVoice(commands.Cog):
                     channel = guild.get_channel(channel_id)
                     if channel is None:
                         # Discord channel was deleted externally; clean stale DB state.
-                        self.bot.db.remove_temp_voice_channel(channel_id)
+                        await self._forget_channel(guild, channel_id)
                         continue
                     if isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id):
                         if not await self._delete_temp_channel(channel):
@@ -76,14 +112,14 @@ class TempVoice(commands.Cog):
                 try:
                     channel = guild.get_channel(channel_id)
                     if channel is None:
-                        self.bot.db.remove_temp_voice_channel(channel_id)
+                        await self._forget_channel(guild, channel_id)
                         continue
                     if not (isinstance(channel, discord.VoiceChannel) and self.bot.db.is_temp_voice_channel(channel_id, guild.id)):
                         continue
                     try:
                         await channel.edit(user_limit=user_limit, reason="Dashboard-requested channel limit change")
                     except discord.NotFound:
-                        self.bot.db.remove_temp_voice_channel(channel_id)
+                        await self._forget_channel(guild, channel_id)
                     except discord.HTTPException:
                         logger.exception("failed to apply dashboard user-limit change to temp voice channel %s", channel_id)
                         # Keep it queued so the worker retries on its next pass.
@@ -168,13 +204,13 @@ class TempVoice(commands.Cog):
                 "Join your temporary voice channel first, then run this again.", ephemeral=True
             )
             return
-        if not channel.permissions_for(interaction.user).manage_channels:
+        if not self._may_manage(interaction.user, channel, "manage_channels"):
             await interaction.response.send_message(
                 "Only that channel's owner (or a moderator) can change its limit.", ephemeral=True
             )
             return
         try:
-            await channel.edit(user_limit=user_limit, reason=f"Set via /vclimit by {interaction.user}")
+            await channel.edit(user_limit=user_limit, reason=f"Set via /voicehub limit by {interaction.user}")
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to edit that channel.", ephemeral=True)
             return
@@ -186,6 +222,84 @@ class TempVoice(commands.Cog):
         await interaction.response.send_message(
             f"Set {channel.mention}'s limit to {user_limit if user_limit else 'unlimited'}."
         )
+
+    # ---- creator tools -------------------------------------------------
+
+    def _may_manage(self, member: discord.Member, channel: discord.VoiceChannel, perm_name: str) -> bool:
+        """True for the channel's creator (when the server's creator
+        permissions include ``perm_name``) and for staff with Manage Channels."""
+        if member.guild_permissions.manage_channels:
+            return True
+        info = self.bot.db.get_temp_voice_info(channel.id)
+        if not info or info["owner_id"] != member.id:
+            return False
+        return owner_has(self.bot.db.get_temp_voice_settings(member.guild.id)["owner_perms"], perm_name)
+
+    def _own_channel(self, interaction: discord.Interaction) -> discord.VoiceChannel | None:
+        member = interaction.user
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            return None
+        channel = member.voice.channel if member.voice else None
+        if channel is None or not self.bot.db.is_temp_voice_channel(channel.id, interaction.guild.id):
+            return None
+        return channel
+
+    @voicehub.command(name="rename", description="Rename your temporary voice channel")
+    @app_commands.describe(name="New channel name")
+    async def vcrename(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 100]):
+        channel = self._own_channel(interaction)
+        if channel is None:
+            await interaction.response.send_message("Join your temporary voice channel first.", ephemeral=True)
+            return
+        if not self._may_manage(interaction.user, channel, "manage_channels"):
+            await interaction.response.send_message("You can't rename this channel.", ephemeral=True)
+            return
+        try:
+            await channel.edit(name=name.strip()[:100], reason=f"Renamed by {interaction.user}")
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "Discord refused the rename (it allows only a couple per 10 minutes). Try again shortly.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(f"Renamed to **{channel.name}**.", ephemeral=True)
+
+    @voicehub.command(name="invite", description="Make a temporary invite link to your voice channel")
+    async def vcinvite(self, interaction: discord.Interaction):
+        channel = self._own_channel(interaction)
+        if channel is None:
+            await interaction.response.send_message("Join your temporary voice channel first.", ephemeral=True)
+            return
+        if not self._may_manage(interaction.user, channel, "create_instant_invite"):
+            await interaction.response.send_message("This server doesn't let channel owners create invites.", ephemeral=True)
+            return
+        try:
+            invite = await channel.create_invite(
+                max_age=INVITE_MAX_AGE_SECONDS, max_uses=INVITE_MAX_USES, unique=True,
+                reason=f"Voice invite by {interaction.user}",
+            )
+        except discord.HTTPException:
+            await interaction.response.send_message("I couldn't create an invite for that channel.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"{invite.url}\nExpires in {INVITE_MAX_AGE_SECONDS // 60} minutes, up to {INVITE_MAX_USES} uses.",
+            ephemeral=True,
+        )
+
+    @voicehub.command(name="perms", description="See what the creator of a temporary voice channel can do here")
+    async def vcperms(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        settings = self.bot.db.get_temp_voice_settings(interaction.guild.id)
+        granted = set(owner_perm_names(settings["owner_perms"]))
+        lines = [
+            f"{'✅' if name in granted else '❌'} {label}"
+            for name, (_bit, label) in TEMP_VOICE_OWNER_PERMS.items()
+        ]
+        lines.append(f"{'✅' if settings['create_role'] else '❌'} A temporary role while the channel exists")
+        lines.append(f"Max live channels in this server: {settings['max_channels']} (one per person)")
+        lines.append("These only apply inside your own channel. Admins change them on the dashboard.")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -205,13 +319,53 @@ class TempVoice(commands.Cog):
             if len(before.channel.members) == 0:
                 await self._delete_temp_channel(before.channel)
 
-    async def _create_temp_channel(self, member: discord.Member, hub: discord.VoiceChannel):
-        name = f"{member.display_name}'s Channel"[:100]
-        hub_limit = self.bot.db.get_voice_hub_limit(member.guild.id, hub.id)
+    async def _log(self, guild: discord.Guild, settings: dict, text: str) -> None:
+        channel_id = settings.get("log_channel_id") or 0
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "send"):
+            return
         try:
-            temp_channel = await member.guild.create_voice_channel(name=name, category=hub.category, user_limit=hub_limit)
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            logger.warning("temp voice: could not write to log channel %s in guild %s", channel_id, guild.id)
+
+    async def _create_temp_channel(self, member: discord.Member, hub: discord.VoiceChannel):
+        guild = member.guild
+        db = self.bot.db
+        settings = db.get_temp_voice_settings(guild.id)
+
+        # One live channel per person: send them back to it instead of making
+        # another, so nobody can fill the server with channels.
+        existing_id = db.find_temp_voice_by_owner(guild.id, member.id)
+        if existing_id is not None:
+            existing = guild.get_channel(existing_id)
+            if isinstance(existing, discord.VoiceChannel):
+                try:
+                    await member.move_to(existing)
+                except discord.HTTPException:
+                    pass
+                return
+            await self._forget_channel(guild, existing_id)
+
+        now = time.monotonic()
+        if now - self._last_create.get(member.id, -1e9) < CREATE_COOLDOWN_SECONDS:
+            return
+        self._last_create[member.id] = now
+        if len(self._last_create) > 1000:
+            self._last_create = {k: v for k, v in self._last_create.items() if now - v < CREATE_COOLDOWN_SECONDS}
+
+        if db.count_temp_voice_channels(guild.id) >= settings["max_channels"]:
+            await self._log(guild, settings, f"⚠️ {member.mention} tried to create a voice channel but the server limit ({settings['max_channels']}) is reached.")
+            return
+
+        name = channel_name_for(settings["name_template"], member.display_name)
+        hub_limit = db.get_voice_hub_limit(guild.id, hub.id)
+        try:
+            temp_channel = await guild.create_voice_channel(name=name, category=hub.category, user_limit=hub_limit)
         except discord.Forbidden:
-            logger.warning("missing permissions to create temp voice channel in guild %s", member.guild.id)
+            logger.warning("missing permissions to create temp voice channel in guild %s", guild.id)
             return
         except discord.HTTPException:
             logger.exception("failed to create temp voice channel for %s", member.id)
@@ -221,40 +375,65 @@ class TempVoice(commands.Cog):
         # this point leaves a row the startup sweep can find - previously the
         # row was only written at the very end, so a failed permission edit or
         # move left an untracked, permanently orphaned voice channel in Discord.
-        self.bot.db.add_temp_voice_channel(member.guild.id, temp_channel.id, member.id, hub_limit)
+        db.add_temp_voice_channel(guild.id, temp_channel.id, member.id, hub_limit)
 
         try:
-            await temp_channel.set_permissions(
-                member,
-                manage_channels=True,
-                move_members=True,
-                mute_members=True,
-                deafen_members=True,
-            )
+            await temp_channel.set_permissions(member, overwrite=build_owner_overwrite(settings["owner_perms"]))
             await member.move_to(temp_channel)
         except (discord.Forbidden, discord.HTTPException) as exc:
             logger.warning(
                 "temp voice: setup failed after creating channel %s in guild %s (%s) - removing it",
-                temp_channel.id, member.guild.id, exc,
+                temp_channel.id, guild.id, exc,
             )
             # Nobody is in it and the member never got moved, so take it back
             # down rather than leaving an empty stray channel behind. If the
             # delete itself fails, the DB row (written above) means the startup
             # sweep will clear it later.
             await self._delete_temp_channel(temp_channel)
+            return
+
+        role_note = ""
+        if settings["create_role"]:
+            try:
+                role = await guild.create_role(
+                    name=f"VC: {member.display_name}"[:100], hoist=settings["role_hoist"],
+                    permissions=discord.Permissions.none(), reason="Temporary voice channel role",
+                )
+                await member.add_roles(role, reason="Temporary voice channel creator")
+                db.set_temp_voice_role(temp_channel.id, role.id)
+                role_note = f" with role {role.name}"
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("temp voice: could not create the creator role in guild %s", guild.id)
+        await self._log(
+            guild, settings,
+            f"🎙️ {member.mention} created **{temp_channel.name}**{role_note} "
+            f"(can: {', '.join(owner_perm_names(settings['owner_perms'])) or 'nothing extra'}).",
+        )
+
+    async def _forget_channel(self, guild: discord.Guild, channel_id: int) -> None:
+        """Drop a channel's database row and delete its temporary role."""
+        info = self.bot.db.get_temp_voice_info(channel_id)
+        self.bot.db.remove_temp_voice_channel(channel_id)
+        if info and info["role_id"]:
+            role = guild.get_role(info["role_id"])
+            if role is not None:
+                try:
+                    await role.delete(reason="Temporary voice channel removed")
+                except discord.HTTPException:
+                    logger.warning("temp voice: could not delete role %s in guild %s", role.id, guild.id)
 
     async def _delete_temp_channel(self, channel: discord.VoiceChannel) -> bool:
         try:
             await channel.delete(reason="Temp voice channel emptied")
         except discord.NotFound:
             # It is already gone, so its database record can safely disappear.
-            self.bot.db.remove_temp_voice_channel(channel.id)
+            await self._forget_channel(channel.guild, channel.id)
             return True
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("failed to delete temp voice channel %s", channel.id)
             return False
 
-        self.bot.db.remove_temp_voice_channel(channel.id)
+        await self._forget_channel(channel.guild, channel.id)
         return True
 
     @commands.Cog.listener()
@@ -274,7 +453,7 @@ class TempVoice(commands.Cog):
             for channel_id, _owner_id, _user_limit in self.bot.db.list_temp_voice_channels(guild.id):
                 channel = guild.get_channel(channel_id)
                 if channel is None:
-                    self.bot.db.remove_temp_voice_channel(channel_id)
+                    await self._forget_channel(guild, channel_id)
                 elif len(channel.members) == 0:
                     await self._delete_temp_channel(channel)
 

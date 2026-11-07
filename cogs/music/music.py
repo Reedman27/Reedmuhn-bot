@@ -40,10 +40,10 @@ from discord.ext import commands, tasks
 import voicelink
 from voicelink import Config, LangHandler, SQLiteMusicDB
 from voicelink.enums import LoopType, SearchType
-from voicelink.filters import Equalizer, Filter, Filters, Timescale
+from voicelink.filters import Filters
 from voicelink.lyrics import LYRICS_PLATFORMS
 from voicelink.pool import NodePool
-from voicelink.exceptions import NodeCreationError, NoNodesAvailable, VoicelinkException
+from voicelink.exceptions import NodeCreationError, VoicelinkException
 from voicelink.utils import format_ms, format_to_ms
 
 logger = logging.getLogger("music")
@@ -72,12 +72,15 @@ class Music(commands.Cog, name="Music"):
         db_path = getattr(self.bot.db, "path", os.environ.get("DB_PATH", "data/bot.db"))
         await SQLiteMusicDB.init(db_path)
         LangHandler.init()
+        lavalink_password = os.environ.get("LAVALINK_PASSWORD", "").strip()
+        if not lavalink_password:
+            raise RuntimeError("LAVALINK_PASSWORD is not set - music is optional; add a long random string to .env to enable it")
         settings = {
             "nodes": {
                 "DEFAULT": {
                     "host": os.environ.get("LAVALINK_HOST", "lavalink"),
                     "port": int(os.environ.get("LAVALINK_PORT", "2333")),
-                    "password": os.environ.get("LAVALINK_PASSWORD", "youshallnotpass"),
+                    "password": lavalink_password,
                     "secure": os.environ.get("LAVALINK_SECURE", "0").lower() in {"1", "true", "yes"},
                     "identifier": "DEFAULT",
                 }

@@ -11,7 +11,8 @@ services:
       - LAVALINK_HOST=${LAVALINK_HOST:-lavalink}
       - LAVALINK_PORT=${LAVALINK_PORT:-2333}
       - LAVALINK_SECURE=${LAVALINK_SECURE:-0}
-      - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      # Music is optional: with no password the music cog stays off (boot report says so).
+      - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-}
       - MUSIC_SEARCH_PLATFORM=${MUSIC_SEARCH_PLATFORM:-youtube}
       - MUSIC_LYRICS_PLATFORM=${MUSIC_LYRICS_PLATFORM:-lrclib}
       - MUSIC_MAX_QUEUE=${MUSIC_MAX_QUEUE:-1000}
@@ -27,7 +28,6 @@ services:
     volumes:
       - ./data:/app/data:z
     depends_on:
-      - lavalink
       - redis
 
   redis:
@@ -43,7 +43,10 @@ services:
     expose:
       - "6379" # only reachable from other containers on this compose network - never publish this port to the host
 
+  # Optional - only started with:  docker compose --profile music up -d
+  # (or COMPOSE_PROFILES=music in .env). The bot runs fine without it.
   lavalink:
+    profiles: ["music"]
     image: ${LAVALINK_IMAGE:-docker.io/reedman27/reedmuhn-bot:lavalink}
     build: ./lavalink
     # Docker/Podman can use the published :lavalink tag (same reedmuhn-bot
@@ -52,7 +55,8 @@ services:
     container_name: mybot-lavalink
     restart: unless-stopped
     environment:
-      - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      # The Lavalink container refuses to start if this is empty (see lavalink/entrypoint.sh).
+      - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-}
       # Lavalink itself is a Java process - give it real headroom (default
       # is 25% of container memory / 1GB, whichever is lower).
       - _JAVA_OPTIONS=-Xmx1G
@@ -65,7 +69,9 @@ services:
 
   webui:
     image: ${DOCKERHUB_USERNAME:-reedman27}/reedmuhn-bot:webui
-    build: ./webui
+    build:
+      context: .
+      dockerfile: webui/Dockerfile
     container_name: mybot-webui
     restart: unless-stopped
     environment:
