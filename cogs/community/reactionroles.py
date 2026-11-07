@@ -14,8 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import utils
-
+from core import utils
 logger = logging.getLogger("reactionroles")
 
 MESSAGE_LINK_RE = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
@@ -89,7 +88,7 @@ def parse_menu_pairs(raw: str) -> list[tuple[str, int]]:
         raise ValueError("Add at least one emoji=role pair.")
     return pairs
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 class ReactionRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):

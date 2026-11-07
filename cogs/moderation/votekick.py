@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils import can_moderate, manager_or_permission
+from core.utils import can_moderate, manager_or_permission
 
 logger = logging.getLogger("votekick")
 

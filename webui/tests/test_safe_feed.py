@@ -4,7 +4,7 @@ import ipaddress
 
 import pytest
 
-from safe_feed import PublicOnlyResolver, validate_feed_url
+from core.safe_feed import PublicOnlyResolver, validate_feed_url
 
 
 @pytest.mark.parametrize("url", [

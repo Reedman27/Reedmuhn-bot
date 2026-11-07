@@ -8,14 +8,14 @@ from logging.handlers import RotatingFileHandler
 import discord
 from discord.ext import commands
 
-import scheduler
-import utils
-from db import Db
-from framework import (
+from core import scheduler
+from core import utils
+from core.db import Db
+from core.framework import (
     BootReport, CogResult, Feature, FeatureStore,
     discover_extensions, is_disabled, missing_requirement, parse_disabled,
 )
-from redis_client import RedisClient
+from core.redis_client import RedisClient
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -160,7 +160,7 @@ class MyBot(commands.Bot):
         # safe no-op adapter rather than letting player construction fail.
         self.ipc_client = _NullMusicIPC()
         # Fast/temporary state (cooldowns, rate limits, automod counters,
-        # future webui<->bot signaling) - see redis_client.py. SQLite (self.db
+        # future webui<->bot signaling) - see core/redis_client.py. SQLite (self.db
         # above) remains the source of truth for anything permanent. Works
         # with REDIS_URL unset or unreachable; it just falls back to an
         # in-memory store for that run.

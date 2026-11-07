@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 # Plain whole numbers only (no maths, no text). Capped at 18 digits.
 _NUMBER_ONLY = re.compile(r"[0-9]{1,18}", re.ASCII)

@@ -35,8 +35,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import utils
-from utils import manager_or_permission
+from core import utils
+from core.utils import manager_or_permission
 
 logger = logging.getLogger("invites")
 

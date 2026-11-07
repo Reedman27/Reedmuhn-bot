@@ -1,8 +1,7 @@
 """Cog discovery, the DISABLED_COGS switch, and registry/boot-report consistency."""
 from pathlib import Path
 
-import framework
-
+from core import framework
 ROOT = Path(__file__).resolve().parents[1]
 
 

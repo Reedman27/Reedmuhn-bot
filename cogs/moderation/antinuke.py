@@ -26,7 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import can_moderate, manager_or_permission, removable_roles_for_strip
+from core.utils import can_moderate, manager_or_permission, removable_roles_for_strip
 
 logger = logging.getLogger("antinuke")
 

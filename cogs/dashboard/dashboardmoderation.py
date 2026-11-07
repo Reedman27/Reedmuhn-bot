@@ -14,15 +14,15 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-import scheduler
-from utils import format_duration, restore_stripped_roles
+from core import scheduler
+from core.utils import format_duration, restore_stripped_roles
 
 logger = logging.getLogger("dashboardmoderation")
 
 # Actions the WebUI can queue for a member, and how they're described back
 # in the dashboard's action log. Kept in sync with the choices rendered in
 # webui/main.py's MOD_ACTION_LABELS (a separate dict since the dashboard is
-# a separate process - see the note atop db.py about this codebase's
+# a separate process - see the note atop core/db/__init__.py about this codebase's
 # process split).
 MOD_ACTION_LABELS = {
     "kick": "kicked",

@@ -13,8 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import scheduler
-
+from core import scheduler
 logger = logging.getLogger("polls")
 
 MAX_OPTIONS = 5

@@ -26,7 +26,7 @@ MONTH_CHOICES = [
 ]
 
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 class Birthdays(commands.Cog):
     def __init__(self, bot: commands.Bot):

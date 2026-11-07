@@ -11,8 +11,8 @@ import feedparser
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import utils
-from safe_feed import fetch_feed_bytes, validate_feed_url
+from core import utils
+from core.safe_feed import fetch_feed_bytes, validate_feed_url
 
 logger = logging.getLogger(__name__)
 

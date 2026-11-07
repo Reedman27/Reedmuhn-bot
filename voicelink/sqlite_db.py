@@ -23,7 +23,7 @@ SOFTWARE.
 
 ReedMuhn music integration derived from the MIT-licensed Vocard project.
 
-See THIRD_PARTY_NOTICES.md and voicelink/VOCARD_LICENSE for full attribution.
+See docs/THIRD_PARTY_NOTICES.md and voicelink/VOCARD_LICENSE for full attribution.
 """
 
 import copy

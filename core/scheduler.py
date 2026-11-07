@@ -13,7 +13,7 @@ import discord
 
 from cogs.community.reactionroles import parse_menu_pairs, resolve_emoji_key
 from cogs.notifications.youtube import resolve_youtube_channel
-from utils import restore_stripped_roles
+from core.utils import restore_stripped_roles
 
 logger = logging.getLogger("scheduler")
 

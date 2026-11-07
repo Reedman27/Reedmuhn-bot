@@ -43,7 +43,7 @@ credentials and does not use it.
 - Security headers: `X-Content-Type-Options`, `X-Frame-Options: DENY`,
   `Referrer-Policy`, a restrictive `Content-Security-Policy`.
 - SQL goes through parameterized queries; the handful of f-string-built
-  statements in `db.py` only interpolate fixed column/table names from code,
+  statements in `core/db/` only interpolate fixed column/table names from code,
   never request data.
 - Jinja2 autoescaping is on everywhere; no `|safe`/`Markup` used, so no
   template renders unescaped user text into HTML.
@@ -65,7 +65,7 @@ credentials and does not use it.
 - Request bodies are capped (8 MiB) as they stream in, not after buffering.
 - Temp-voice creator permissions are enforced as a hard allow-list in three
   places (dashboard form, database read/write, bot overwrite builder) — see
-  `TEMP_VOICE_OWNER_PERMS` in `db.py`. Administrator, Manage Server and
+  `TEMP_VOICE_OWNER_PERMS` in `core/db/`. Administrator, Manage Server and
   server-wide Manage Roles can never be granted this way, even from a
   hand-edited database.
 - GitHub Actions are pinned to full commit SHAs; workflows use
@@ -110,7 +110,7 @@ here is fixed in the current tree, whatever an older snapshot said.
 | 2026-11-02 | High | The CSRF/same-origin check compared `http://host` (what the app saw behind a reverse proxy) against the browser's `https://host`, so every POST 403'd behind such a proxy. | Also accepts the origin of `DISCORD_REDIRECT_URI`. | `webui/main.py` |
 | 2026-11-02 | High | A comment promised a Discord guild-list cache; there wasn't one. Every page view/POST called the Discord API, which rate-limited and bounced managers out as "no permission". | 60s per-session cache, 5-minute stale grace on 429/outage, fail closed with no cache. | `webui/main.py` |
 | 2026-11-02 | High | Concurrent requests could refresh the same rotating OAuth refresh token at once, killing the session. | Refresh is serialised per session. | `webui/main.py` |
-| 2026-11-02 | Medium | OAuth tokens of expired sessions stayed in SQLite forever. | Purged with the session. | `db.py` |
+| 2026-11-02 | Medium | OAuth tokens of expired sessions stayed in SQLite forever. | Purged with the session. | `core/db/` |
 | 2026-11-02 | Medium | Logout only deleted local session rows; Discord kept the OAuth grant's tokens valid. | Best-effort revoke at Discord on logout. | `webui/main.py` |
 | 2026-11-02 | Medium | A revoked OAuth grant (Discord 400/401) just returned "no servers" forever instead of ending the session. | Session is ended and the user sent to login. | `webui/main.py` |
 | 2026-11-02 | Medium | No HTTP timeout on Discord API calls (library default is 5 minutes). | 10s timeout on every call. | `webui/main.py` |
@@ -123,15 +123,15 @@ here is fixed in the current tree, whatever an older snapshot said.
 | 2026-10-12 | Low | `GET /logout` changed state (a GET request should be side-effect-free). | Logout moved behind a POST with CSRF. | `webui/main.py`, `webui/templates/base.html` |
 | 2026-10-12 | Low | Non-ASCII password attempts on the local-dev password login could raise `TypeError`, possibly bypassing the login lockout. | Fixed comparison; lockout applies regardless. | `webui/main.py` |
 | 2026-10-12 | Low | `WEBUI_HTTPS_ONLY=true` (the string) wasn't interpreted as true. | Parsed as a real boolean. | `webui/main.py`, `.env.example` |
-| 2026-10-12 | Low | Signed, stateless session cookies couldn't be revoked after logout if a copy of one existed. | Server-side session records with expiry/revocation checks. | `webui/main.py`, `db.py` |
+| 2026-10-12 | Low | Signed, stateless session cookies couldn't be revoked after logout if a copy of one existed. | Server-side session records with expiry/revocation checks. | `webui/main.py`, `core/db/` |
 | 2026-10-12 | Low | Request body size was only checked after the whole body was buffered. | Enforced as chunks stream in (8 MiB cap). | `webui/main.py` |
 | 2026-10-12 | Low | Build contexts could pick up `.env` and runtime data. | `.dockerignore` added/fixed. | `.dockerignore` |
 | 2026-10-12 | Low | GitHub Actions used floating tags and lacked least-privilege permissions. | Pinned to commit SHAs; `contents: read`. | `.github/workflows/` |
 | 2026-10-12 | Low | Compose could pass empty deployment secrets into containers instead of failing before startup. | Superseded by OAuth requiring non-empty client ID/secret/redirect URI via Compose's required-variable syntax. | `docker-compose.yml` |
-| 2026-10-12 | Privacy | Disabling the Channel Feed left stored message content behind; pruning only capped row counts, not age. | Disabling purges that guild's rows; retention capped at 7 days / 300 rows per channel. | `db.py`, `cogs/dashboard/channelfeed.py` |
+| 2026-10-12 | Privacy | Disabling the Channel Feed left stored message content behind; pruning only capped row counts, not age. | Disabling purges that guild's rows; retention capped at 7 days / 300 rows per channel. | `core/db/`, `cogs/dashboard/channelfeed.py` |
 | 2026-10-12 | Per advisory | `dnspython` was pinned to a version with a known advisory. | Updated to 2.6.1. | `requirements.txt` |
-| 2026-10-22 | — (hardening, not a vuln) | RSS feed fetching tightened further: nonstandard-port and cross-scheme-port checks. | See "In place today" above. | `safe_feed.py` |
-| 2026-10-22 | Low (race) | A poll vote could land after the poll had already closed (a write/close race). | Vote writes verify the poll is still open and the option index is valid inside one SQLite `BEGIN IMMEDIATE` transaction. | `db.py` |
+| 2026-10-22 | — (hardening, not a vuln) | RSS feed fetching tightened further: nonstandard-port and cross-scheme-port checks. | See "In place today" above. | `core/safe_feed.py` |
+| 2026-10-22 | Low (race) | A poll vote could land after the poll had already closed (a write/close race). | Vote writes verify the poll is still open and the option index is valid inside one SQLite `BEGIN IMMEDIATE` transaction. | `core/db/` |
 
 ## Not run against live Discord
 

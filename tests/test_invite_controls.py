@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from db import Db
+from core.db import Db
 
 GUILD = 1
 OWN_GUILD_ID = GUILD
@@ -137,7 +137,7 @@ def make_cog(db, invites=None):
     pytest.importorskip("discord")
     from collections import defaultdict
     from cogs.moderation.automod import AutoMod
-    from automod_checks import UserMessageTracker
+    from core.automod_checks import UserMessageTracker
 
     cog = object.__new__(AutoMod)
     cog.bot = FakeBot(db, invites)

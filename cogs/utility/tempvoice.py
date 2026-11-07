@@ -22,8 +22,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from db import TEMP_VOICE_OWNER_MASK, TEMP_VOICE_OWNER_PERMS
-from utils import manager_or_permission
+from core.db import TEMP_VOICE_OWNER_MASK, TEMP_VOICE_OWNER_PERMS
+from core.utils import manager_or_permission
 
 logger = logging.getLogger("tempvoice")
 

@@ -1,6 +1,6 @@
 """Thin async Redis wrapper for ReedMuhn's fast/temporary state layer.
 
-SQLite (db.py / voicelink/sqlite_db.py) stays the source of truth for
+SQLite (core/db.py / voicelink/sqlite_db.py) stays the source of truth for
 anything permanent - warnings, cases, tickets, economy balances, music
 settings, etc. Redis is only for data that's fine to lose: cooldowns,
 rate limits, spam/automod counters, and short-lived cross-process

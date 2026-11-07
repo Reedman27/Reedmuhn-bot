@@ -10,7 +10,7 @@ import pytest
 
 from cogs.utility import tempvoice
 from cogs.utility.tempvoice import TempVoice, build_owner_overwrite, channel_name_for, owner_has, owner_perm_names
-from db import TEMP_VOICE_DEFAULT_OWNER_PERMS, TEMP_VOICE_OWNER_MASK, Db
+from core.db import TEMP_VOICE_DEFAULT_OWNER_PERMS, TEMP_VOICE_OWNER_MASK, Db
 
 GUILD = 10
 ADMINISTRATOR = 1 << 3

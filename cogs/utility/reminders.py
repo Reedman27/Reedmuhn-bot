@@ -4,8 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import scheduler
-from utils import format_duration, parse_duration
+from core import scheduler
+from core.utils import format_duration, parse_duration
 
 
 class Reminders(commands.Cog):

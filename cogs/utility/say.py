@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import owner_or_administrator
+from core.utils import owner_or_administrator
 
 
 class Say(commands.Cog):

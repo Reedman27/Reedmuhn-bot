@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from db import Db
+from core.db import Db
 
 GUILD = 1
 ALICE, BOB, CARA = 101, 102, 103

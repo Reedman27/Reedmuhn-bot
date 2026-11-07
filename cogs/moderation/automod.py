@@ -1,5 +1,5 @@
 """Automod - message filtering ported from YAGPDB's automod module.
-Detection algorithms live in automod_checks.py (pure, unit-tested);
+Detection algorithms live in core/automod_checks.py (pure, unit-tested);
 this file is just the Discord-facing wiring: per-message checks, deleting
 violations, and escalating through a configurable ladder of punishments
 (warn, mute role, timeout, kick, ban, temp ban) once someone racks up
@@ -16,8 +16,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import scheduler
-from automod_checks import (
+from core import scheduler
+from core.automod_checks import (
     UserMessageTracker,
     caps_violation,
     contains_banned_word,
@@ -26,7 +26,7 @@ from automod_checks import (
     find_invite_codes,
     sliding_window_count,
 )
-from utils import format_duration
+from core.utils import format_duration
 
 logger = logging.getLogger("automod")
 
@@ -55,7 +55,7 @@ RESOLVING_ACTIONS = {"mute_role", "timeout", "kick", "ban", "tempban"}
 MAX_TIMEOUT_SECONDS = 28 * 86400
 
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -447,7 +447,7 @@ class AutoMod(commands.Cog):
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
 
-        from utils import parse_duration
+        from core.utils import parse_duration
 
         if action.value == "warn":
             await interaction.response.send_message(

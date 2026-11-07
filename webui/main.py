@@ -31,13 +31,13 @@ import hmac
 import asyncio
 import aiohttp
 
-# db.py, redis_client.py and safe_feed.py are shared with the bot: one copy at
+# core/db/, core/redis_client.py and core/safe_feed.py are shared with the bot: one copy at
 # the repo root. In the image they sit next to this file; from a checkout they
 # are one folder up.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from db import Db, TEMP_VOICE_OWNER_PERMS
-from redis_client import RedisClient
-from safe_feed import validate_feed_url
+from core.db import Db, TEMP_VOICE_OWNER_PERMS
+from core.redis_client import RedisClient
+from core.safe_feed import validate_feed_url
 
 SESSION_TTL_SECONDS = 12 * 60 * 60
 
@@ -1229,8 +1229,8 @@ EXTRAS_MAX_AMOUNT = 1_000_000_000
 
 def format_duration(seconds: int) -> str:
     """Same rounding behavior as the bot's utils.format_duration, kept as a
-    small local copy since the webui container doesn't have utils.py (see
-    the note atop db.py about this codebase's process split)."""
+    small local copy since the webui container doesn't have core/utils.py (see
+    the note atop core/db/__init__.py about this codebase's process split)."""
     for unit, size in (("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
         if seconds >= size and seconds % size == 0:
             return f"{seconds // size}{unit}"
@@ -1321,7 +1321,7 @@ def _check_confirm_phrase(action: str, confirm_text: str) -> bool:
 
 # ---- config snapshots ----
 # Scoped to ReedMuhn's own settings tables, not live Discord role/channel
-# permissions - see capture_config_snapshot_data's docstring in db.py.
+# permissions - see capture_config_snapshot_data's docstring in core/db/snapshots.py.
 
 def _flatten_snapshot(data: dict, prefix: str = "") -> dict:
     """Flattens a snapshot's nested dict into {dotted.path: value} - lists

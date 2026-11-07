@@ -11,7 +11,8 @@ RUN apt-get update \
 COPY webui/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY db.py redis_client.py safe_feed.py ./
+COPY core/__init__.py core/redis_client.py core/safe_feed.py ./core/
+COPY core/db/ ./core/db/
 COPY webui/ .
 
 VOLUME ["/app/data"]

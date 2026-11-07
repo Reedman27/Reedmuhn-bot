@@ -1,6 +1,6 @@
 """Automod detection logic, ported from YAGPDB's automod/triggers.go. The
 algorithms here are deliberately kept as plain functions with no discord.py
-objects involved, mirroring the approach in utils.py's tempnick_self_allowed
+objects involved, mirroring the approach in core/utils.py's tempnick_self_allowed
 - easy to unit test the actual decision logic directly, separate from
 Discord API calls or event wiring.
 """

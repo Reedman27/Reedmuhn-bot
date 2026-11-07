@@ -43,7 +43,28 @@ This is a self-hosted personal/hobby project that gets iterated on a lot, includ
 
 ---
 
-**New here?** Read [QUICKSTART.md](QUICKSTART.md). Cogs are organized in feature folders - see [cogs/README.md](cogs/README.md).
+**New here?** Read [docs/QUICKSTART.md](docs/QUICKSTART.md). Cogs are organized in feature folders - see [cogs/README.md](cogs/README.md).
+
+## 🗂️ Repo layout
+
+```
+bot.py              entry point for the Discord bot
+core/               shared code: db/ (the one database layer, one file per feature),
+                    utils, scheduler, framework (cog loader), automod_checks,
+                    redis_client, safe_feed, welcome_card
+cogs/               bot features, one folder per area (moderation, community, fun,
+                    music, notifications, utility, dashboard) - see cogs/README.md
+webui/              FastAPI dashboard: main.py, routes/, templates/, static/, tests/
+voicelink/          music engine (ported from Vocard, MIT)
+lavalink/           Lavalink image for the music feature
+langs/  assets/     translations and fonts
+tests/              bot tests (dashboard tests live in webui/tests/)
+docs/               QUICKSTART.md, THIRD_PARTY_NOTICES.md, screenshots/
+third_party/        license texts for bundled third-party code
+```
+
+Run the tests with `pip install -r requirements-dev.txt`, then `pytest tests`
+and `cd webui && pytest tests`.
 
 ---
 
@@ -310,7 +331,7 @@ of effort:
 The project gives explicit credit to Vocard Development / ChocoMeow (MIT) and
 keeps the original Vocard license. The counting
 game (`/counting`) is modeled on count-bot (AGPL-3.0); ReedMuhn is itself
-AGPL-3.0, so no relicensing is needed. See `THIRD_PARTY_NOTICES.md`.
+AGPL-3.0, so no relicensing is needed. See `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Lavalink image
 
@@ -368,9 +389,7 @@ fallback.
 
 See [`SECURITY.md`](SECURITY.md) for the current security model and the
 history of vulnerabilities found and fixed. See
-[`CHANGELOG.md`](CHANGELOG.md) for everything else that's changed, and
-[`UPGRADING.md`](UPGRADING.md) if you're updating an existing checkout rather
-than starting fresh.
+[`CHANGELOG.md`](CHANGELOG.md) for everything else that's changed.
 
 # 🤝 Contributing
 

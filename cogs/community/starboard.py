@@ -4,7 +4,7 @@ import logging
 import discord
 from discord.ext import commands
 from discord import app_commands
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 STAR = "⭐"
 

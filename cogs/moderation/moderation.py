@@ -6,11 +6,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import scheduler
-from utils import format_duration, parse_duration, tempnick_self_allowed, can_moderate, removable_roles_for_strip, restore_stripped_roles
+from core import scheduler
+from core.utils import format_duration, parse_duration, tempnick_self_allowed, can_moderate, removable_roles_for_strip, restore_stripped_roles
 
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 logger = logging.getLogger("moderation")
 

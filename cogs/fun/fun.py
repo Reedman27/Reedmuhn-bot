@@ -4,8 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import utils
-
+from core import utils
 JOKES = [
     "What do you call cheese that isn't yours? Nacho cheese.",
     "I only know 25 letters of the alphabet. I don't know y.",

@@ -3,6 +3,21 @@
 Security fixes have their own history in `SECURITY.md`. This file is
 everything else: features, behavior changes, reorganizations.
 
+## 2026-11-07
+
+- **Repo tidy-up.** The eight loose modules that sat in the repo root
+  (`db.py`, `utils.py`, `scheduler.py`, `framework.py`, `automod_checks.py`,
+  `redis_client.py`, `safe_feed.py`, `welcome_card.py`) now live in a `core/`
+  package; imports are `from core.x import ...`. `QUICKSTART.md` and
+  `THIRD_PARTY_NOTICES.md` moved to `docs/`. Removed `UPGRADING.md` (a one-off
+  note for overlaying a zip on an old checkout).
+- **`core/db.py` (6,455 lines) split into the `core/db/` package**, one mixin
+  per feature area (`moderation.py`, `automod.py`, `community.py`,
+  `engagement.py`, `tickets.py`, `tempvoice.py`, `dashboard.py`, ...).
+  `from core.db import Db` is unchanged, `Db` still has exactly the same 463
+  methods, and every method body is identical.
+- No behavior changes; same tests, same results.
+
 ## 2026-11-06
 
 - **Repo cleanup:** removed scattered dated audit/change-log files in favor of
@@ -15,9 +30,9 @@ everything else: features, behavior changes, reorganizations.
   `docker compose --profile music up -d`). With no `LAVALINK_PASSWORD` set,
   the bot starts normally and the music cog shows as **off** (not failed) in
   the boot report; set the password to turn it on.
-- **One shared `db.py`.** The bot and dashboard used to each carry their own
+- **One shared `core/db.py`.** The bot and dashboard used to each carry their own
   copy of the database layer, and they had drifted apart. There is now a
-  single `db.py` at the repo root that both import; the dashboard's Dockerfile
+  single `core/db.py` that both import; the dashboard's Dockerfile
   copies it in at build time.
 - **`webui/main.py` split into per-section routers** (mirroring `cogs/`), so a
   single ~3,900-line file isn't the only way to find a route.

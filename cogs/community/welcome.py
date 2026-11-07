@@ -5,12 +5,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import welcome_card
-
+from core import welcome_card
 logger = logging.getLogger("welcome")
 
 
-from utils import format_welcome_message, manager_or_permission
+from core.utils import format_welcome_message, manager_or_permission
 
 class Welcome(commands.Cog):
     def __init__(self, bot: commands.Bot):

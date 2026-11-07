@@ -196,7 +196,7 @@ def extract_new_videos(feed_text: str, last_video_id, limit: int = MAX_BACKLOG_P
     return newer
 
 
-from utils import manager_or_permission
+from core.utils import manager_or_permission
 
 class YouTube(commands.Cog):
     def __init__(self, bot: commands.Bot):
