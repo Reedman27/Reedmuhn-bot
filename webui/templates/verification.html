@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Verification · Reedmuhn Bot{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>✅ Verification</h1>
+        <p class="muted">Posts a button in a channel; clicking it gives the member a role. Restrict other channels to that role in Discord's own permissions to actually gate access.</p>
+    </div>
+</div>
+
+{% if request.query_params.get("error") == "channel" %}<p class="error">Choose a valid text channel.</p>
+{% elif request.query_params.get("error") == "role" %}<p class="error">Choose a valid role.</p>
+{% elif request.query_params.get("saved") %}<p class="success">Saved. {% if cfg.enabled %}The verify message will update shortly.{% endif %}</p>{% endif %}
+
+<section class="card">
+    <h2>Settings</h2>
+    <p class="muted">Currently: {{ channel_label }} / {{ role_label }} - {% if cfg.enabled %}<span class="badge">Enabled</span>{% else %}Disabled{% endif %}</p>
+    <form method="post" action="/guild/{{ guild_id }}/verification">
+        <label class="toggle">
+            <input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}>
+            <span>Enable verification</span>
+        </label>
+        <label for="channel_id">Channel for the Verify button</label>
+        <select id="channel_id" name="channel_id" required>
+            <option value="" disabled {% if not cfg.channel_id %}selected{% endif %}>Choose a text channel…</option>
+            {% for cid, name, ctype, pos in text_channels %}
+            <option value="{{ cid }}" {% if cid == cfg.channel_id %}selected{% endif %}>#{{ name }}</option>
+            {% endfor %}
+        </select>
+        <label for="role_id">Role given on verify</label>
+        <select id="role_id" name="role_id" required>
+            <option value="" disabled {% if not cfg.role_id %}selected{% endif %}>Choose a role…</option>
+            {% for rid, name, position in roles %}
+            <option value="{{ rid }}" {% if rid == cfg.role_id %}selected{% endif %}>@{{ name }}</option>
+            {% endfor %}
+        </select>
+        <label for="message">Message shown above the button</label>
+        <textarea id="message" name="message" rows="3" maxlength="1000">{{ cfg.message }}</textarea>
+        <button type="submit">Save</button>
+    </form>
+    <p class="hint">Saving with verification enabled (re)posts or edits the button message in that channel - the bot picks the request up within a couple seconds.</p>
+</section>
+
+<section class="card">
+    <h2>Recent verifications</h2>
+    {% if recent %}
+    <div class="table-wrap">
+    <table><thead><tr><th>Member</th><th>When</th></tr></thead><tbody>
+    {% for r in recent %}
+    <tr><td>{{ r.user }}</td><td>{{ r.created_at }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    </div>
+    {% else %}<p class="muted">No one has verified yet.</p>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,17 @@
+# Runtime state / secrets
+data/
+webui/data/
+*.db
+*.db-shm
+*.db-wal
+webui_secret_key
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local logs
+*.log
+logs/

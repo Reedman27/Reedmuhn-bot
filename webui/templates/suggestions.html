@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Suggestions · ReedMuhn Bot{% endblock %}
+{% block content %}
+<h1>💡 Suggestions</h1>
+<section class="card">
+<form method="post" action="/guild/{{ guild_id }}/suggestions/config" class="stack-form">
+<label><input type="checkbox" name="enabled" value="on" {% if enabled %}checked{% endif %}> Enable suggestions</label>
+<label>Suggestion channel<select name="channel_id"><option value="">Select a channel</option>{% for id,name,ctype,pos in channels %}<option value="{{ id }}" {% if id==channel_id %}selected{% endif %}>#{{ name }}</option>{% endfor %}</select></label>
+<label>Staff review role<select name="staff_role_id"><option value="">Anyone with Manage Server</option>{% for id,name,pos in roles %}<option value="{{ id }}" {% if id==staff_role_id %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+<button type="submit">Save Suggestions</button>
+</form>
+</section>
+<section class="card"><h2>Recent suggestions</h2>
+{% if suggestions %}{% for s in suggestions %}<div class="suggestion-item"><strong>#{{ s.id }}</strong> <span class="badge">{{ s.status }}</span><p>{{ s.content }}</p><small class="muted">by {{ s.author_id }} · {{ s.created_at }}</small><form method="post" action="/guild/{{ guild_id }}/suggestions/status" class="inline-form"><input type="hidden" name="suggestion_id" value="{{ s.id }}"><select name="status"><option value="pending">Pending</option><option value="approved">Approved</option><option value="denied">Denied</option></select><input name="reason" placeholder="Optional staff note" value="{{ s.reason or '' }}"><button type="submit">Update</button></form></div>{% endfor %}{% else %}<p class="muted">No suggestions yet.</p>{% endif %}
+</section>
+{% endblock %}

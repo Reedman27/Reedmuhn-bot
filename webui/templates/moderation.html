@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}Moderation - {{ guild_name }}{% endblock %}
+{% block content %}
+<h1>Moderation</h1>
+<p class="muted">Manage warnings and temporary punishments from one place. Discord IDs stay behind the scenes; choose members by name.</p>
+
+<div class="tabs">
+    <a class="tab {{ 'active' if tab == 'overview' else '' }}" href="/guild/{{ guild_id }}/moderation">Overview</a>
+    <a class="tab {{ 'active' if tab == 'warnings' else '' }}" href="/guild/{{ guild_id }}/moderation?tab=warnings">Warnings</a>
+    <a class="tab {{ 'active' if tab == 'cases' else '' }}" href="/guild/{{ guild_id }}/moderation?tab=cases">Cases{% if recent_cases %} <span class="tab-count">{{ recent_cases|length }}</span>{% endif %}</a>
+    <a class="tab {{ 'active' if tab == 'tempbans' else '' }}" href="/guild/{{ guild_id }}/moderation?tab=tempbans">Temp Bans{% if tempbans %} <span class="tab-count">{{ tempbans|length }}</span>{% endif %}</a>
+</div>
+
+{% if tab == 'overview' %}
+<section class="stat-grid">
+    <div class="stat-card"><div class="stat-value">{{ tempbans|length }}</div><div class="stat-label">Active temp bans</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=tempbans">Manage temp bans →</a></div>
+    <div class="stat-card"><div class="stat-value">{{ members|length }}</div><div class="stat-label">Cached members</div><a class="stat-link" href="/guild/{{ guild_id }}/moderation?tab=warnings">Review warnings →</a></div>
+    <div class="stat-card"><div class="stat-value">{{ active_temp_nicknames }}</div><div class="stat-label">Active temp nicknames</div><a class="stat-link" href="/guild/{{ guild_id }}/scheduled">Manage on Scheduled →</a></div>
+</section>
+<section class="card">
+    <h2>Muted role</h2>
+    {% if mute_sync %}
+    <p class="hint {{ 'error' if mute_sync.status == 'failed' else '' }}">
+        {% if mute_sync.status == 'completed' %}
+            ✅ Last sync ({{ mute_sync.created_at }}): applied to {{ mute_sync.changed }} channel(s){% if mute_sync.failed %}, {{ mute_sync.failed }} could not be updated{% endif %}.
+        {% elif mute_sync.status == 'failed' %}
+            ⚠️ Last sync ({{ mute_sync.created_at }}) failed: {{ mute_sync.error }}
+        {% else %}
+            ⏳ Applying your latest change to every channel - this updates within a couple seconds, refresh to check.
+        {% endif %}
+    </p>
+    {% endif %}
+    <p class="muted">Choose an existing role or let the bot create/reuse a <strong>Muted</strong> role. The same configuration is used by <code>/moderation mute</code> in Discord and by the dashboard.</p>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role">
+        <label for="role_id">Role</label>
+        <select id="role_id" name="role_id">
+            <option value="auto" {% if not muted_role_id %}selected{% endif %}>Automatic — create/reuse “Muted”</option>
+            {% for rid, name, _position in roles %}
+            <option value="{{ rid }}" {% if muted_role_id == rid %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Save muted role</button>
+    </form>
+
+    <hr>
+    <h3>Quick presets</h3>
+    <p class="muted">Each button below sets all the checkboxes for you - review and click "Save mute policy" after picking one if you want to tweak anything further.</p>
+    <div class="preset-buttons">
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="visible_no_talk"><button type="submit">A: See channels + join VC, can't talk</button></form>
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="visible_no_voice_no_type"><button type="submit">B: See channels, no VC, no typing</button></form>
+        <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-preset" class="inline"><input type="hidden" name="preset" value="fully_isolated"><button type="submit">C: Fully isolated - can't see or join anything</button></form>
+    </div>
+
+    <hr>
+    <h3>What should the Muted role block?</h3>
+    <p class="muted">Checked options are denied for members who have the Muted role. These settings are pushed to every existing channel a few seconds after you save (and again whenever <code>/moderation mute</code> is used).</p>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/muted-role-settings">
+        <label><input type="checkbox" name="view_channel" {% if muted_config.muted_deny_view_channel %}checked{% endif %}> Hide channels entirely (can't view)</label>
+        <label><input type="checkbox" name="messages" {% if muted_config.muted_deny_send_messages %}checked{% endif %}> Send messages</label>
+        <label><input type="checkbox" name="reactions" {% if muted_config.muted_deny_reactions %}checked{% endif %}> Add reactions</label>
+        <label><input type="checkbox" name="threads" {% if muted_config.muted_deny_threads %}checked{% endif %}> Create threads</label>
+        <label><input type="checkbox" name="connect" {% if muted_config.muted_deny_connect %}checked{% endif %}> Connect to voice</label>
+        <label><input type="checkbox" name="speak" {% if muted_config.muted_deny_speak %}checked{% endif %}> Speak in voice</label>
+        <label><input type="checkbox" name="stream" {% if muted_config.muted_deny_stream %}checked{% endif %}> Stream in voice</label>
+        <hr>
+        <label><input type="checkbox" name="strip_roles" {% if muted_config.muted_strip_roles %}checked{% endif %}> Also strip all other roles while muted</label>
+        <p class="hint">Removes every removable role a member has when they're muted (booster/bot-managed roles and anything above the bot's own role are left alone since the bot can't touch those anyway), then adds them back automatically when the mute ends - whether that's the timer running out or <code>/moderation unmute</code>/the dashboard's Unmute. This stops a member from leaning on some other role's permissions to get around the Muted role.</p>
+        <button type="submit">Save mute policy</button>
+    </form>
+    <p class="hint">Discord Administrators and your configured moderation exemptions are still subject to your normal server rules; the Muted role only controls the permissions listed above.</p>
+</section>
+<section class="card">
+    <h2>Vote Kick</h2>
+    <p class="muted">Let members vote to kick someone. Votes survive a bot restart. This does not bypass the bot's normal Discord role hierarchy: the bot still must be able to kick the target.</p>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/votekick">
+        <label><input type="checkbox" name="enabled" {% if votekick_cfg.enabled %}checked{% endif %}> Enable Vote Kick</label>
+        <label for="votekick_required_votes">Yes votes required</label>
+        <input id="votekick_required_votes" type="number" name="required_votes" min="1" max="100" value="{{ votekick_cfg.required_votes }}" required>
+        <label for="votekick_duration">Vote duration (minutes)</label>
+        <input id="votekick_duration" type="number" name="duration_minutes" min="1" max="1440" value="{{ votekick_cfg.duration_seconds // 60 }}" required>
+        <button type="submit">Save Vote Kick settings</button>
+    </form>
+</section>
+<section class="card">
+    <h2>Purge messages</h2>
+    <p class="muted">Queue the same purge action as <code>/moderation purge</code>, including targeted purges. The bot executes it in Discord and checks its own Manage Messages permission.</p>
+    {% if request.query_params.get("purge") == "queued" %}<p class="success">Purge queued. The bot will process it shortly.</p>{% endif %}
+    {% if request.query_params.get("error") == "purge" %}<p class="error">Invalid purge settings. Choose a text channel and an amount from 1 to 1000.</p>{% endif %}
+    <form method="post" action="/guild/{{ guild_id }}/moderation/purge" class="add-form" data-confirm="Queue this purge? This will permanently delete matching Discord messages.">
+        <label for="purge_channel_id">Channel</label>
+        <select id="purge_channel_id" name="channel_id" required><option value="" disabled selected>Choose a text channel…</option>{% for cid, name, ctype, pos in text_channels %}<option value="{{ cid }}"># {{ name }}</option>{% endfor %}</select>
+        <label for="purge_amount">Messages to delete</label>
+        <input id="purge_amount" name="amount" type="number" min="1" max="1000" value="100" required>
+        <label for="purge_user_id">Only this member (optional)</label>
+        <select id="purge_user_id" name="user_id"><option value="">Everyone</option>{% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}</select>
+        <label for="purge_reason">Reason</label>
+        <input id="purge_reason" name="reason" type="text" maxlength="500" value="WebUI message purge">
+        <button type="submit" class="danger">Queue purge</button>
+    </form>
+    {% if purge_requests %}
+    <hr><h3>Recent dashboard purges</h3>
+    <table><thead><tr><th>Channel</th><th>Target</th><th>Requested</th><th>Deleted</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+    {% for p in purge_requests %}
+    <tr>
+        <td>{{ p.channel_id }}</td>
+        <td>{% if p.user_id %}{{ purge_member_names.get(p.user_id, p.user_id) }}{% else %}Everyone{% endif %}</td>
+        <td>{{ p.amount }}</td>
+        <td>{{ p.deleted_count if p.deleted_count is not none else "—" }}</td>
+        <td>{{ p.status }}{% if p.error %}: {{ p.error }}{% endif %}</td>
+        <td>{{ p.reason }}</td>
+    </tr>
+    {% if p.breakdown %}
+    <tr class="purge-breakdown-row"><td></td><td colspan="5" class="muted">
+        Deleted by:
+        {% for name, count in p.breakdown[:10] %}{{ name }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
+        {% if p.breakdown|length > 10 %}, and {{ p.breakdown|length - 10 }} more{% endif %}
+    </td></tr>
+    {% endif %}
+    {% endfor %}
+    </tbody></table>
+    {% endif %}
+</section>
+<section class="card"><h2>Moderation tools</h2><p>Discord commands and the dashboard use the same moderation data. Live destructive actions such as purges are executed by the bot process so Discord permissions remain authoritative.</p></section>
+
+<section class="card">
+    <h2>Take action on a member</h2>
+    {% if request.query_params.get("action") == "queued" %}<p class="success">Action queued. The bot will process it shortly.</p>{% endif %}
+    {% if request.query_params.get("error") == "action" %}<p class="error">Invalid action settings - check the member, action, and duration (if required).</p>{% endif %}
+    <form method="post" action="/guild/{{ guild_id }}/moderation/action" class="add-form" data-confirm="Apply this moderation action?">
+        <label for="modaction_user_id">Member</label>
+        <select id="modaction_user_id" name="user_id">
+            <option value="" {% if not members %}selected{% endif %}>Choose a member…</option>
+            {% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}
+        </select>
+        <label for="modaction_user_id_manual">Or a Discord user ID (for members no longer in the server, e.g. to unban)</label>
+        <input type="text" id="modaction_user_id_manual" name="user_id_manual" placeholder="e.g. 123456789012345678">
+        <label for="modaction_action">Action</label>
+        <select id="modaction_action" name="action">
+            {% for value, label in mod_action_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+        </select>
+        <div id="modaction-duration-fields" class="js-hidden">
+            <label for="modaction_duration_value">Duration</label>
+            <div class="inline">
+                <input type="number" id="modaction_duration_value" name="duration_value" min="1" placeholder="10">
+                <select id="modaction_duration_unit" name="duration_unit">
+                    <option value="m">minutes</option>
+                    <option value="h">hours</option>
+                    <option value="d">days</option>
+                    <option value="w">weeks</option>
+                    <option value="mo">months</option>
+                    <option value="y">years</option>
+                </select>
+            </div>
+            <p class="hint" id="modaction-duration-hint">Timeouts are capped at 28 days by Discord.</p>
+        </div>
+        <label for="modaction_reason">Reason</label>
+        <input type="text" id="modaction_reason" name="reason" maxlength="500" placeholder="WebUI moderation action">
+        <button type="submit" class="danger">Queue action</button>
+    </form>
+    <p class="hint">Kick/ban/mute/timeout etc. are executed by the bot process, same as purges above - the dashboard only queues the request.</p>
+    {% if mod_action_requests %}
+    <table><thead><tr><th>Member</th><th>Action</th><th>Duration</th><th>Reason</th><th>Status</th><th>Queued</th></tr></thead><tbody>
+    {% for a in mod_action_requests %}
+    <tr>
+        <td>{{ a.user_name }}</td>
+        <td>{{ a.action_label }}</td>
+        <td>{{ a.duration or "—" }}</td>
+        <td>{{ a.reason }}</td>
+        <td>{{ a.status }}{% if a.error %}: {{ a.error }}{% endif %}</td>
+        <td>{{ a.created_at }}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table>
+    {% endif %}
+</section>
+{% elif tab == 'warnings' %}
+<section class="card">
+    <h2>Members with warnings</h2>
+    {% if warned_users %}
+    <table><thead><tr><th>Member</th><th>Warnings</th><th>Most recent</th><th></th></tr></thead><tbody>
+        {% for uid, name, count, last_date in warned_users %}
+        <tr><td>{{ name }}</td><td>{{ count }}</td><td>{{ last_date }}</td><td><a href="/guild/{{ guild_id }}/moderation?tab=warnings&user_id={{ uid }}">View →</a></td></tr>
+        {% endfor %}
+    </tbody></table>
+    {% else %}
+    <p class="muted">No members have warnings.</p>
+    {% endif %}
+</section>
+<section class="card">
+    <h2>Add a warning</h2>
+    <form method="post" action="/guild/{{ guild_id }}/moderation/add-warn" class="add-form">
+        <label for="warn_user_id">Member</label>
+        <select id="warn_user_id" name="user_id" required><option value="" disabled selected>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}">{{ display }}</option>{% endfor %}</select>
+        <label for="reason">Reason</label>
+        <input type="text" id="reason" name="reason" maxlength="500" required placeholder="Why is this member being warned?">
+        <button type="submit" class="danger">Add warning</button>
+    </form>
+    <p class="hint">Warnings added here show as issued by "Dashboard" rather than a specific Discord moderator.</p>
+</section>
+<section class="card">
+    <h2>Look up warnings</h2>
+    <form method="get" action="/guild/{{ guild_id }}/moderation"><input type="hidden" name="tab" value="warnings"><label for="user_id">Member</label><select id="user_id" name="user_id" required><option value="" disabled {% if not looked_up_user_id %}selected{% endif %}>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}" {% if looked_up_user_id == uid %}selected{% endif %}>{{ display }}</option>{% endfor %}</select><button type="submit">Look up warnings</button></form>
+    {% if looked_up_user_id %}<hr><p><strong>{{ looked_up_user_name }}</strong></p>{% if warns %}<table><thead><tr><th>Date</th><th>Moderator</th><th>Reason</th><th>Notes</th><th></th></tr></thead><tbody>{% for w in warns %}<tr><td>{{ w.date_str }}</td><td>{{ w.moderator_name }}</td><td>{{ w.reason }}{% if w.rule_label %}<br><span class="muted">{{ w.rule_label }}</span>{% endif %}</td><td><form method="post" action="/guild/{{ guild_id }}/moderation/warn-notes" class="inline"><input type="hidden" name="warn_id" value="{{ w.id }}"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><input type="text" name="notes" value="{{ w.notes or '' }}" placeholder="Evidence, links, context…" class="w-14em"><button type="submit">Save</button></form></td><td><form method="post" action="/guild/{{ guild_id }}/moderation/remove-warn" class="inline"><input type="hidden" name="warn_id" value="{{ w.id }}"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><button type="submit" class="danger">Remove</button></form></td></tr>{% endfor %}</tbody></table><form method="post" action="/guild/{{ guild_id }}/moderation/clear-warns" class="add-form"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><button type="submit" class="danger">Clear all {{ warns|length }} warning{{ 's' if warns|length != 1 }}</button></form>{% else %}<p class="muted">No warnings for this member.</p>{% endif %}{% endif %}
+</section>
+{% elif tab == 'cases' %}
+<section class="card">
+    <h2>Recent cases</h2>
+    <p class="muted">Every /moderation warn, /moderation kick, /moderation mute, and /moderation tempban gets a numbered case here - same numbers Discord moderators see when they use /case or /history.</p>
+    {% if recent_cases %}
+    <table><thead><tr><th>Case</th><th>Member</th><th>Action</th><th>Moderator</th><th>Reason</th><th>Date</th></tr></thead><tbody>
+        {% for c in recent_cases %}
+        <tr {% if c.voided %}class="muted"{% endif %}>
+            <td>#{{ c.case_number }}{% if c.voided %} <span class="tab-count">voided</span>{% endif %}</td>
+            <td><a href="/guild/{{ guild_id }}/moderation?tab=cases&user_id={{ c.user_id }}">{{ c.user_name }}</a></td>
+            <td>{{ c.action_label }}</td>
+            <td>{{ c.moderator_name }}</td>
+            <td>{{ c.reason }}</td>
+            <td>{{ c.date_str }}</td>
+        </tr>
+        {% endfor %}
+    </tbody></table>
+    {% else %}
+    <p class="muted">No cases yet.</p>
+    {% endif %}
+</section>
+<section class="card">
+    <h2>Look up a member's cases</h2>
+    <form method="get" action="/guild/{{ guild_id }}/moderation"><input type="hidden" name="tab" value="cases"><label for="case_user_id">Member</label><select id="case_user_id" name="user_id" required><option value="" disabled {% if not looked_up_user_id %}selected{% endif %}>Choose a member…</option>{% for uid, display, name in members %}<option value="{{ uid }}" {% if looked_up_user_id == uid %}selected{% endif %}>{{ display }}</option>{% endfor %}</select><button type="submit">Look up cases</button></form>
+    {% if looked_up_user_id %}
+    <hr><p><strong>{{ looked_up_user_name }}</strong></p>
+    {% if user_cases %}
+    <table><thead><tr><th>Case</th><th>Action</th><th>Moderator</th><th>Reason</th><th>Date</th><th></th><th></th></tr></thead><tbody>
+        {% for c in user_cases %}
+        <tr {% if c.voided %}class="muted"{% endif %}>
+            <td>#{{ c.case_number }}{% if c.voided %} <span class="tab-count">voided</span>{% endif %}</td>
+            <td>{{ c.action_label }}</td>
+            <td>{{ c.moderator_name }}</td>
+            <td>{{ c.reason }}</td>
+            <td>{{ c.date_str }}</td>
+            <td><form method="post" action="/guild/{{ guild_id }}/moderation/case-edit" class="inline"><input type="hidden" name="case_number" value="{{ c.case_number }}"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><input type="text" name="reason" value="{{ c.reason }}" class="w-14em"><button type="submit">Save</button></form></td>
+            <td>{% if not c.voided %}<form method="post" action="/guild/{{ guild_id }}/moderation/case-void" class="inline"><input type="hidden" name="case_number" value="{{ c.case_number }}"><input type="hidden" name="user_id" value="{{ looked_up_user_id }}"><button type="submit" class="danger">Void</button></form>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody></table>
+    {% else %}
+    <p class="muted">No cases for this member.</p>
+    {% endif %}
+    {% endif %}
+</section>
+{% elif tab == 'tempbans' %}
+<section class="card"><h2>Active temporary bans</h2><p class="muted">Temporary bans automatically expire through the bot scheduler. You can lift one early without copying a Discord ID.</p>{% if tempbans %}<table><thead><tr><th>Member</th><th>Auto-unban</th><th>Action</th></tr></thead><tbody>{% for t in tempbans %}<tr><td>{{ t.user_name }}</td><td>{{ t.unban_at }}</td><td><form method="post" action="/guild/{{ guild_id }}/moderation/tempbans/unban" class="inline"><input type="hidden" name="event_id" value="{{ t.id }}"><button type="submit">Unban now</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">No active temporary bans.</p>{% endif %}</section>
+{% endif %}
+<script src="/static/modaction.js"></script>
+{% endblock %}

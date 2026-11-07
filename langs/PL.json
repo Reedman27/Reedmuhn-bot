@@ -1,0 +1,266 @@
+{
+    "common": {
+        "errors": {
+            "unknown": "⚠️ Coś poszło nie tak podczas wykonywania polecenia. Spróbuj ponownie później lub dołąćz do serwera discord w celu uzyskania pomocy.",
+            "missingIntents": "Niestety to polecenie nie może zostać wykonane, ponieważ bot nie posiada wymaganej intencji żądania: `({0})`."
+        },
+        "status": {
+            "enabled": "włączony",
+            "disabled": "wyłączony",
+            "live": "LIVE"
+        }
+    },
+    "player": {
+        "errors": {
+            "nodeReconnect": "Spróbuj ponownie! Trwa ponowne łącznie z node'm.",
+            "noPlaySource": "Nie można znaleźć żadnych odtwarzalnych źródeł!",
+            "noPlayer": "Nie znaleziono żadnego odtwarzacza na tym serwerze.",
+            "noTrackPlaying": "Aktualnie nic nie jest odtwarzane",
+            "noTrackFound": "Nie znaleziono utworu! Podaj poprawny adres URL."
+        },
+        "dropdown": {
+            "trackSelect": "Wybierz pozycję do której pominąć ...",
+            "filterSelect": "Wybierz efekt który chesz nałożyć ..."
+        },
+        "buttons": {
+            "back": "Cofnij",
+            "pause": "Pauza",
+            "resume": "Wznów",
+            "skip": "Pomiń",
+            "leave": "Opuść",
+            "loopOff": "Wyłącz",
+            "loopTrack": "Ścieżka",
+            "loopQueue": "Kolejka",
+            "volumeUp": "Głośność +",
+            "volumeDown": "Głośność -",
+            "volumeMute": "Wycisz",
+            "volumeUnmute": "Odcisz",
+            "autoPlay": "Autoodtwarzanie",
+            "shuffle": "Losowe odtwarzanie",
+            "forward": "Przewiń do przodu",
+            "rewind": "Przewiń do tyłu",
+            "lyrics": "Tekst utworu"
+        },
+        "playback": {
+            "nowplayingDesc": "**Aktualnie odtwarzane:**\n```{0}```",
+            "nowplayingField": "Następne:",
+            "nowplayingLink": "Słuchaj na: {0}",
+            "playlistLoad": " 🎶 Dodano playlistę **{0}** z `{1}` pozycjami do kolejki.",
+            "trackLoad": "Rozpoczęto odtwarzanie **[{0}](<{1}>)** autorstwa **{2}** (`{3}`).\n",
+            "trackLoadPos": "Dodano **[{0}](<{1}>)** autorstwa **{2}** (`{3}`) do kolejki na pozycji **{4}**\n"
+        },
+        "controls": {
+            "pause": {
+                "error": "Odtwarzacz jest już zapauzowany.",
+                "vote": "{0} zagłosował nad zapauzowaniem odtwarzania. [{1}/{2}]",
+                "success": "`{0}` zapauzował odtwarznaie."
+            },
+            "resume": {
+                "error": "Odtwarzacz nie jest zapauzowany.",
+                "vote": "{0} zagłosował nad wznowieniem odtwarzania. [{1}/{2}]",
+                "success": "`{0}` wznowił odtwarzanie."
+            },
+            "shuffle": {
+                "error": "Dodaj więcej utworów przed przemieszaniem kolejki.",
+                "vote": "{0} zagłosował nad przemieszaniem kolejki. [{1}/{2}]",
+                "success": "Kolejka została przemieszana."
+            },
+            "skip": {
+                "error": "Nie ma utworu, do którego można by pominąć.",
+                "vote": "{0} zagłosował za pominięciem tego utworu. [{1}/{2}]",
+                "success": "`{0}` pominął utwór."
+            },
+            "back": {
+                "vote": "{0} zagłosował za przejściem do poprzedniego utworu. [{1}/{2}]",
+                "success": "`{0}` cofnął do poprzedniego utworu."
+            },
+            "leave": {
+                "vote": "{0} zagłosował nad zatrzyamniem odtwarzaza. [{1}/{2}]",
+                "success": "`{0}` zatrzymał odtwarzacz."
+            },
+            "seek": "Ustawiono odtwarzacz na **{0}**",
+            "repeat": "Tryb pętli został ustawiony na: `{0}`",
+            "forward": "Przewinięto odtwarzacz do **{0}**",
+            "rewind": "Cofnięto odtwarzacz do **{0}**",
+            "replay": "Ponowne odtwarzanie bieżącego utworu.",
+            "autoplay": "Tryb autoodwarzania jest teraz **{0}**"
+        }
+    },
+    "voice": {
+        "connection": {
+            "noChannel": "Brak kanału głosowego do dołącznia. Dołącz do jakiegoś, lub wskaż kanał komendą /connect",
+            "alreadyConnected": "Już połączono z kanałem głosowym.",
+            "noPermission": "Niestety nie mam uprawnień, aby dołączyć do Twojego kanału głosowego lub na nim mówić.",
+            "notInChannel": "{0}, musisz być na kanale {1} by używać komend głosowych. Jeżeli jesteś na kanale połącz się ponownie!",
+            "connect": "Połączono do {0}"
+        },
+        "stageChannel": {
+            "setAnnounceTemplate": "Gotowe! Od tego momentu status kanału w którym znajduje się bot będzie wyglądał tak jak podany szablon. Aktualizacja powinna nastąpić za kilka sekund."
+        }
+    },
+    "permissions": {
+        "noCreatePermission": "Niestety, nie mam uprawnień, aby stworzyć kanał do żądania utworów.",
+        "missingPosition": "Tylko DJ lub administracja może zmieniać pozycje.",
+        "missingMode": "Tylko DJ lub administracja może zmieniać tryb pętli.",
+        "missingQueue": "Tylko DJ lub administracja może usuwać pozycje z kolejki.",
+        "missingAutoPlay": "Tylko DJ lub administracja może włączać lub wyłączać tryb autoplay!",
+        "missingFunction": "Tylko DJ lub administracja może używać tej funkcji.",
+        "notDj": "Nie jesteś DJ'em. Obecnym DJ'em jest {0}.",
+        "djToSelf": "Nie możesz przekazać roli DJ'a sobie lub botu.",
+        "djNotInChannel": "`{0}` nie jest na kanale głosowym.",
+        "djSwapped": "Przekazałeś rolę DJ'a użytkownikowi `{0}`."
+    },
+    "settings": {
+        "actions": {
+            "languageNotFound": "Nie znaleziono pakietu językowego! wybierz istniejący pakiet językowy.",
+            "languageChanged": "Pomyślnie zmieniono pakiet językowy na: `{0}` .",
+            "prefixSet": "Gotowe! Mój prefix na tym serwerze to teraz `{0}`. Spróbuj uruchomić polecenie `{1}ping`, aby go przetestować.",
+            "djSet": "Ustawiono DJ jako {0}.",
+            "queueModeSet": "Zmienionio tryb kolejki na `{0}`.",
+            "mode247": "Tryb 24/7: `{0}`",
+            "bypassVote": "System głosowania: `{0}`",
+            "volumeSet": "Ustawiono głośność na `{0}`%",
+            "controllerToggled": "Kontroler muzyki: `{0}`",
+            "duplicateTrackToggled": "Unikanie duplikowania pozycji w kolejce: `{0}`",
+            "controllerMsgToggled": "Wiadomości od kontrolera muzyki: `{0}`",
+            "silentMsgToggled": "Masz {0} ciche wiadomości.",
+            "resetDone": "`{0}` zostało zresetowane na domyślne ustawienia serwera.",
+            "resetNotFound": "Nieprawidłowa nazwa ustawienia. Proszę użyć jednej z następujących opcji: {0}"
+        },
+        "menu": "Ustawnienia serwera | {0}",
+        "basic": {
+            "title": "❤️ Podstawowe informacje:",
+            "value": "```Prefix: {0}\nJęzyk: {1}\nKontroler muzyki: {2}\nRola DJ: @{3}\nOminięcie głosowania: {4}\n24/7: {5}\nDomyślna głośność: {6}%\nCzas odtwarzania: {7}```"
+        },
+        "queue": {
+            "title": "🔗 Informacje o kolejce:",
+            "value": "```Tryb kolejki: {0}\nMaksymlna liczba utworów: {1}\nZduplikowane pozycje: {2}```"
+        },
+        "voice": {
+            "title": "🎤 Informacie w statusie kanału głosowego:"
+        },
+        "permissions": {
+            "title": "✨ Uprawnienia:",
+            "value": "```{0} Administrator\n{1} Zarządzanie_serwerem\n{2} Zarządzanie_kanałem\n{3} Zarządzanie_wiadomościami```"
+        }
+    },
+    "ping": {
+        "title1": "Informacje o bocie:",
+        "title2": "Infomracje o odtwarzaczu:",
+        "field1": "```ID Shard'a: {0}/{1}\nOpóźnienie shard'a: {2:.3f}s {3}\nRegion: {4}```",
+        "field2": "```Węzeł: {0} - {1:.3f}s\nOdtwarzacze: {2}\nRegion: {3}```"
+    },
+    "effects": {
+        "added": "Nałożono efekt: `{0}`",
+        "cleared": "Efekty dźwiękowe zostały wyczyszczone.",
+        "tagInUse": "Ten efekt dźwiękowy jest już w używany! Użyj /cleareffect <Efekt> aby go wyłączyć."
+    },
+    "playlist": {
+        "view": {
+            "title": "Playlisty użytkownika {0}:",
+            "headers": "ID:,Czas:,Nazwa:,Ilość pozycji:",
+            "footer": "Użyj /playlist play [nazwa_playlisty] by dodać playlistę do kolejki.",
+            "detailTitle": "Szczegóły playlisty",
+            "detailDesc": "```Nazwa: {0} [{1}]\nLiczba utworów: {2}\nWłaściciel: {3}\nTyp: {4}\n```",
+            "permsValue": "📖 Odczyt: ✓    ✍🏽 Zapis: {0}    🗑️ Usuwanie: {1}",
+            "permsValue2": "📖 Odczyt: {0}",
+            "trackList": "Utwory",
+            "footer2": "Całkowity czas trwania: {0}",
+            "playlistSelect": "Wybierz listę odtwarzania do wyświetlenia ..."
+        },
+        "errors": {
+            "notFound": "Playlista [`{0}`] nie została znaleziona. Użyj /playlist view by zobaczyć wszystkie swoje playlisty.",
+            "noAccess": "Przepraszamy! Nie masz uprawnień do tej playlisty!",
+            "noTrack": "Bład! W playliście [`{0}`] nie ma utworów.",
+            "notAllowed": "Ta komenda jest niedozwolona w odniesienu do udostępnionych playlist.",
+            "nameOverLimit": "Bład! Nazwa playlisty nie może być dłuższa niż 10 znaków.",
+            "sameName": "Bład! Nowa nazwa musi się różnić od starej.",
+            "deleteDefault": "Nie możesz usuwać domyślnej playlisty",
+            "limitReached": "Nie możesz stworzyć więcej niż `{0}` playlist!",
+            "exists": "Playlista [`{0}`] już istnieje.",
+            "invalidUrl": "Proszę podać prawidłowy link do publicznej playlisty.",
+            "trackLimitReached": "Osiągnąłeś limit! Możesz dodać maksymalnie `{0}` pozycji do playlisty.",
+            "playlistLinkNotAllowed": "Linki do playlist są nie obsługiwane.",
+            "streamNotAllowed": "Nie możesz dodać transmisji na żywo do playlisty.",
+            "positionNotFound": "Pozycja `{0}` z playlisty [`{1}`] nie została znaleziona!",
+            "streaming": "Niemożesz dodawać transmisji na żywo do playlisty!",
+            "track": "Podczas dodawania utworu do playlisty wystąpił błąd!",
+            "trackLimited": "Osiągnąłeś limit! Możesz dodać maksymalnie `{0}` pozycji do playlisty.",
+            "trackRepeated": "Ten utwór znajduje sie już na playliście!"
+        },
+        "actions": {
+            "play": "Dodano playlistę [`{0}`] z `{1}` pozycjami do kolejki.",
+            "removed": "Usunąłeś playlistę [`{0}`].",
+            "created": "Stworzyłeś playlistę: `{0}`. Użyj /playlist view by uzyskać więcej informacji.",
+            "renamed": "Zmieniłeś nazwę `{0}` na `{1}`.",
+            "trackRemoved": "👋 Usunięto **{0}** z playlisty [`{2}`] użytkownika {1}.",
+            "cleared": "Pomyślnie wyczyściłeś swoja playlistę: [`{0}`].",
+            "trackAdded": "❤️ Dodano **{0}** do playlisty [`{2}`] użytkownika {1}!"
+        },
+        "sharing": {
+            "sendErrorPlayer": "Błąd! Nie możesz wysłać zaproszenia do samego siebie.",
+            "sendErrorBot": "Błąd! Nie możesz wysyłać zaproszeń do bota.",
+            "belongs": "Błąd! Ta playlista należy do <@{0}>.",
+            "alreadyShared": "Błąd! Ta playlista została udostępniona {0}.",
+            "alreadySent": "Błąd! Zaproszenie zostało już wcześniej wysłane.",
+            "noAccount": "{0} nie stworzył konta do przechowywania playlist.",
+            "invitationSent": "Zaproszenie wysłane do {0}."
+        },
+        "inbox": {
+            "full": "Błąd! Skrzynka odbiorcza {0} jest pełna.",
+            "noMessages": "W twojej skrzynce odbiorczej nie ma wiadomości."
+        }
+    },
+    "search": {
+        "noLinkSupport": "Komenda /search nie obsługuje linków!",
+        "title": "Wyszukiwana fraza: {0}",
+        "desc": "➥ Platforma: {0} **{1}**\n➥ Wyniki: **{2}**\n\n{3}",
+        "wait": "Wybierz utwór, który chcesz dodać do playlisty.",
+        "success": "Dodano utwór do kolejki."
+    },
+    "voting": {
+        "voted": "Zagłosowałeś!"
+    },
+    "time": {
+        "formatError": "Niepoprawny format czasu. Przykład: 2:42 lub 12:39:31",
+        "invalidStartTime": "Niepoprawny czas startu, musi on mieścić się pomiędzy `00:00` a `{0}`",
+        "invalidEndTime": "Niepoprawny czas końca, musi on mieścić się pomiędzy `00:00` a `{0}`"
+    },
+    "lyrics": {
+        "notFound": "Tekst nie został znaleziony. Użyj /lyrics <nazwa utworu> <autor> by znaleźć tekst piosenki."
+    },
+    "queue": {
+        "management": {
+            "title": "Nadchodząca kolejka:",
+            "cleared": "Wyczyszczono wszystkie utwory w: `{0}`",
+            "removed": "`{0}` utworów zostało usunięte z kolejki.",
+            "swapped": "`{0}` oraz `{1}` są zamienione",
+            "moved": "Przeniesiono `{0}` do `{1}`"
+        },
+        "view": {
+            "historyTitle": "Historia kolejki:",
+            "title": "Kolejka utworów",
+            "desc": "**Aktualnie odtwarzane: [Kliknij mnie]({0}) ⮯**\n{1}"
+        },
+        "errors": {
+            "queueFull": "Przepraszamy osiągnięto limit `{0}` pozycji w kolejce!",
+            "outOfList": "Podaj właściwy indeks utworu!",
+            "duplicateTrack": "Błąd! Ten utwór znajduje się już w kolejce."
+        }
+    },
+    "songRequest": {
+        "channelCreated": "Utworzono kanał do obsługi bota - ({0})! Możesz w nim dodawać utwory po nazwie lub adresie URL bez dodawnia prefixu"
+    },
+    "pagination": {
+        "prev": "Poprzedni",
+        "next": "Następny",
+        "play": "Odtwórz",
+        "share": "Udostępnij",
+        "export": "Eksportuj",
+        "delete": "Usuń",
+        "page": {
+            "title": "Wprowadź numer strony",
+            "field": "Numer strony"
+        }
+    }
+}
