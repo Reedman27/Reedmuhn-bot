@@ -395,7 +395,7 @@ If you find a bug or have an idea, open an issue on GitHub.
 
 # 📜 License
 
-ReedMuhn Bot is licensed under **AGPL-3.0**.
+ReedMuhn Bot is licensed under **MIT**.
 
 See [`LICENSE`](LICENSE) for the full license.
 
