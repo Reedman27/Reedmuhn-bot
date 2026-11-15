@@ -9,17 +9,19 @@ messages are pruned down to a fixed number per channel to keep it from
 growing without bound.
 """
 import logging
-import os
 
 import discord
 from discord.ext import commands, tasks
 
+from core.envconfig import env_int
+
 logger = logging.getLogger("channelfeed")
 
-KEEP_PER_CHANNEL = 300
+# Most recent messages kept per channel (FEED_KEEP_PER_CHANNEL in .env).
+KEEP_PER_CHANNEL = env_int("FEED_KEEP_PER_CHANNEL", 300, minimum=10, maximum=100_000)
 # 0 (default) keeps the original behavior: only the per-channel cap applies.
 # Set FEED_RETENTION_DAYS=N in the bot environment to also expire rows after N days.
-RETENTION_DAYS = max(0, int(os.environ.get("FEED_RETENTION_DAYS", "0") or 0))
+RETENTION_DAYS = env_int("FEED_RETENTION_DAYS", 0, minimum=0, maximum=36_500)
 PRUNE_INTERVAL_MINUTES = 15
 
 

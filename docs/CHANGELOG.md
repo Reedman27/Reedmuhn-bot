@@ -3,6 +3,26 @@
 Security fixes have their own history in `.github/SECURITY.md`. This file is
 everything else: features, behavior changes, reorganizations.
 
+## 2026-11-15
+
+- **More settings are yours to change.** XP and economy values (XP per message
+  and cooldown, `/extras daily` amount, streak bonus/cap/grace, `/extras work`
+  cooldown), the channel-feed cap, the YouTube poll interval, `LOG_LEVEL`, the
+  dashboard session length and the server-list cache time are now `.env`
+  settings instead of hardcoded numbers. Defaults are unchanged. See
+  "Settings you control" in the README.
+- **`DISABLED_COGS` and `BOOT_LOG_CHANNEL_ID` now actually work in Docker.**
+  Both were documented in `.env.example` but never passed through
+  `docker-compose.yml`, so setting them did nothing.
+- **A typo in `.env` can no longer stop the bot.** Numeric settings go through
+  `core/envconfig.py`: bad values fall back to the default (or are clamped to
+  a safe range) with a warning in the log. `FEED_RETENTION_DAYS` used to crash
+  the channel-feed cog on a non-number.
+- **CI runs the tests before publishing.** The image-publish workflow now has a
+  `test` job (bot + dashboard suites) and the publish job waits for it. New
+  guard tests fail if a documented setting isn't forwarded by compose, or if
+  the dashboard image is missing a `core/` module it imports.
+
 ## 2026-11-07
 
 - **Repo tidy-up.** The eight loose modules that sat in the repo root

@@ -15,10 +15,14 @@ import feedparser
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from core.envconfig import env_int
+
 logger = logging.getLogger("youtube")
 
 FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-CHECK_INTERVAL_MINUTES = 10
+# How often every watched channel's feed is polled (YOUTUBE_CHECK_INTERVAL_MINUTES
+# in .env). The floor keeps a typo from hammering YouTube.
+CHECK_INTERVAL_MINUTES = env_int("YOUTUBE_CHECK_INTERVAL_MINUTES", 10, minimum=2, maximum=1_440)
 # Most announcements one channel can produce in a single poll. The feed only
 # carries ~15 entries anyway; this is a guard against a channel that
 # republishes its back catalogue.

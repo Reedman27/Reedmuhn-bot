@@ -11,6 +11,7 @@ from discord.ext import commands
 from core import scheduler
 from core import utils
 from core.db import Db
+from core.envconfig import env_choice, env_int
 from core.framework import (
     BootReport, CogResult, Feature, FeatureStore,
     discover_extensions, is_disabled, missing_requirement, parse_disabled,
@@ -18,7 +19,10 @@ from core.framework import (
 from core.redis_client import RedisClient
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+# LOG_LEVEL in .env: DEBUG, INFO (default), WARNING, ERROR or CRITICAL. Sets both
+# the console/container log and system.log; errors.log always keeps ERROR and up.
+LOG_LEVEL = getattr(logging, env_choice("LOG_LEVEL", "INFO", ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")))
+logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 
 
 class RedactingFormatter(logging.Formatter):
@@ -71,15 +75,15 @@ def configure_persistent_logging(db_path: str) -> str:
             return
         handler = RotatingFileHandler(
             path,
-            maxBytes=int(os.environ.get("LOG_MAX_BYTES", 10 * 1024 * 1024)),
-            backupCount=int(os.environ.get("LOG_BACKUP_COUNT", 10)),
+            maxBytes=env_int("LOG_MAX_BYTES", 10 * 1024 * 1024, minimum=65_536, maximum=1 << 30),
+            backupCount=env_int("LOG_BACKUP_COUNT", 10, minimum=1, maximum=1_000),
             encoding="utf-8",
         )
         handler.setLevel(level)
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
 
-    add_rotating(system_path, logging.INFO)
+    add_rotating(system_path, LOG_LEVEL)
     add_rotating(error_path, logging.ERROR)
     return system_path
 

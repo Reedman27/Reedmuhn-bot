@@ -36,10 +36,13 @@ import aiohttp
 # are one folder up.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from core.db import Db, TEMP_VOICE_OWNER_PERMS
+from core.envconfig import env_int
 from core.redis_client import RedisClient
 from core.safe_feed import validate_feed_url
 
-SESSION_TTL_SECONDS = 12 * 60 * 60
+# How long a dashboard login lasts before signing in again (WEBUI_SESSION_HOURS
+# in .env). Shorter is safer on a shared or exposed dashboard.
+SESSION_TTL_SECONDS = env_int("WEBUI_SESSION_HOURS", 12, minimum=1, maximum=720) * 60 * 60
 
 MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
@@ -325,8 +328,11 @@ HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
 # Demoting someone in Discord therefore takes up to GUILD_CACHE_TTL seconds to
 # be noticed. If Discord is briefly unreachable, a cached answer up to
 # GUILD_CACHE_STALE_GRACE seconds old is still used rather than failing open.
-GUILD_CACHE_TTL = 60
-GUILD_CACHE_STALE_GRACE = 300
+# WEBUI_GUILD_CACHE_SECONDS in .env tunes the TTL (lower = demotions take
+# effect sooner but Discord rate-limits sooner); the grace window scales with it
+# and is never shorter than the original 5 minutes.
+GUILD_CACHE_TTL = env_int("WEBUI_GUILD_CACHE_SECONDS", 60, minimum=5, maximum=3_600)
+GUILD_CACHE_STALE_GRACE = max(300, GUILD_CACHE_TTL * 5)
 _guild_cache: dict[str, tuple[float, list[dict]]] = {}
 _session_locks: dict[str, asyncio.Lock] = {}
 

@@ -25,6 +25,21 @@ services:
       - LOG_BACKUP_COUNT=${LOG_BACKUP_COUNT:-10}
       - REDIS_URL=redis://redis:6379/0
       - FEED_RETENTION_DAYS=${FEED_RETENTION_DAYS:-0}
+      # Boot / cogs. Blank = off (no boot report, every cog loads).
+      - BOOT_LOG_CHANNEL_ID=${BOOT_LOG_CHANNEL_ID:-}
+      - DISABLED_COGS=${DISABLED_COGS:-}
+      # Optional tuning. Blank = the built-in default (see .env.example); an
+      # invalid value is ignored with a warning in the log, never a crash.
+      - LOG_LEVEL=${LOG_LEVEL:-}
+      - FEED_KEEP_PER_CHANNEL=${FEED_KEEP_PER_CHANNEL:-}
+      - YOUTUBE_CHECK_INTERVAL_MINUTES=${YOUTUBE_CHECK_INTERVAL_MINUTES:-}
+      - XP_COOLDOWN_SECONDS=${XP_COOLDOWN_SECONDS:-}
+      - XP_PER_MESSAGE=${XP_PER_MESSAGE:-}
+      - DAILY_AMOUNT=${DAILY_AMOUNT:-}
+      - DAILY_STREAK_BONUS=${DAILY_STREAK_BONUS:-}
+      - DAILY_STREAK_BONUS_CAP=${DAILY_STREAK_BONUS_CAP:-}
+      - DAILY_STREAK_GRACE_HOURS=${DAILY_STREAK_GRACE_HOURS:-}
+      - WORK_COOLDOWN_SECONDS=${WORK_COOLDOWN_SECONDS:-}
     volumes:
       - ./data:/app/data:z
     depends_on:
@@ -81,6 +96,9 @@ services:
       - DB_PATH=/app/data/bot.db
       - WEBUI_HTTPS_ONLY=${WEBUI_HTTPS_ONLY:-0}
       - WEBUI_TRUST_PROXY=${WEBUI_TRUST_PROXY:-0}
+      # Optional tuning. Blank = the built-in default (see .env.example).
+      - WEBUI_SESSION_HOURS=${WEBUI_SESSION_HOURS:-}
+      - WEBUI_GUILD_CACHE_SECONDS=${WEBUI_GUILD_CACHE_SECONDS:-}
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID:-}
       - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET:-}
       - REDIS_URL=redis://redis:6379/0

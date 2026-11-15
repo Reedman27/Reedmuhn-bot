@@ -10,7 +10,30 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # ubuntu-latest already ships Python 3; a venv avoids the system-pip
+      # "externally managed" error and needs no third-party action.
+      - name: Install dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -r requirements.txt -r webui/requirements.txt -r tests/requirements.txt
+
+      - name: Bot tests
+        run: $RUNNER_TEMP/venv/bin/python -m pytest tests -q
+
+      - name: Dashboard tests
+        working-directory: webui
+        run: $RUNNER_TEMP/venv/bin/python -m pytest tests -q
+
   build-and-push:
+    # Never publish an image from a commit whose tests fail.
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

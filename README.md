@@ -165,7 +165,8 @@ cd Reedmuhn-bot
 cp .env.example .env
 ```
 
-Edit `.env` and add your Discord bot token and dashboard password.
+Edit `.env` and fill in the required values: your Discord bot token and the
+OAuth credentials the dashboard signs in with (see the Docker Hub steps above).
 
 ### 3. Build and start
 
@@ -245,6 +246,36 @@ README) and link them here, e.g.:
 ```
 
 ---
+
+# ⚙️ Settings you control
+
+Everything below is optional and lives in `.env` (documented in
+`.env.example`). Leave a value blank to keep the built-in default. A value that
+isn't a number, or is outside the allowed range, is **ignored with a warning in
+the log** (or clamped to the nearest allowed value) - a typo never stops the
+bot or the dashboard from starting. Restart the containers after changing `.env`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DISABLED_COGS` | *(none)* | Comma-separated cogs to skip, e.g. `music,fun.polls` |
+| `BOOT_LOG_CHANNEL_ID` | *(off)* | Private channel the bot posts its start-up report to |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+| `FEED_KEEP_PER_CHANNEL` | `300` | Channel Feed: messages kept per channel (min 10) |
+| `FEED_RETENTION_DAYS` | `0` | Channel Feed: also delete messages older than N days (0 = keep) |
+| `YOUTUBE_CHECK_INTERVAL_MINUTES` | `10` | Minutes between YouTube upload checks (min 2) |
+| `XP_COOLDOWN_SECONDS` | `60` | Seconds between XP-earning messages per member |
+| `XP_PER_MESSAGE` | `10` | Base XP per message (each message adds up to 5 more) |
+| `DAILY_AMOUNT` | `250` | Coins from `/extras daily` |
+| `DAILY_STREAK_BONUS` | `25` | Extra coins per streak day (`0` disables streak bonuses) |
+| `DAILY_STREAK_BONUS_CAP` | `500` | Most the streak bonus can add |
+| `DAILY_STREAK_GRACE_HOURS` | `48` | Hours allowed between dailies before the streak resets |
+| `WORK_COOLDOWN_SECONDS` | `3600` | Seconds between `/extras work` uses |
+| `WEBUI_SESSION_HOURS` | `12` | How long a dashboard login lasts |
+| `WEBUI_GUILD_CACHE_SECONDS` | `60` | How long a user's server list is cached; lower = a demoted admin loses access sooner |
+
+Per-server options (XP boost roles, no-XP channels, level roles, automod,
+logging, welcome, and so on) are set from the dashboard, not `.env`. Music
+settings are in the Music section below.
 
 # 🎵 Music
 

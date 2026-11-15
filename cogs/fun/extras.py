@@ -12,17 +12,24 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core import utils
+from core.envconfig import env_int
 from core.safe_feed import fetch_feed_bytes, validate_feed_url
 
 logger = logging.getLogger(__name__)
 
-XP_COOLDOWN = 60
-XP_PER_MESSAGE = 10
-DAILY_AMOUNT = 250
-DAILY_STREAK_BONUS = 25       # extra coins per consecutive daily streak day, capped below
-DAILY_STREAK_BONUS_CAP = 500  # streak bonus never adds more than this on top of DAILY_AMOUNT
-DAILY_STREAK_GRACE = 48 * 3600  # claim again within this long to keep the streak alive
-WORK_COOLDOWN = 3600
+# Bot-wide economy/XP tuning. Each can be overridden in .env (see .env.example);
+# a blank or invalid value falls back to the default shown. Cooldowns have a
+# floor of 1 second because Redis rejects a zero-second expiry.
+XP_COOLDOWN = env_int("XP_COOLDOWN_SECONDS", 60, minimum=1, maximum=86_400)
+XP_PER_MESSAGE = env_int("XP_PER_MESSAGE", 10, minimum=1, maximum=1_000)
+DAILY_AMOUNT = env_int("DAILY_AMOUNT", 250, minimum=1, maximum=1_000_000)
+# extra coins per consecutive daily streak day, capped below (0 turns streak bonuses off)
+DAILY_STREAK_BONUS = env_int("DAILY_STREAK_BONUS", 25, minimum=0, maximum=100_000)
+# streak bonus never adds more than this on top of DAILY_AMOUNT
+DAILY_STREAK_BONUS_CAP = env_int("DAILY_STREAK_BONUS_CAP", 500, minimum=0, maximum=1_000_000)
+# claim again within this many hours to keep the streak alive
+DAILY_STREAK_GRACE = env_int("DAILY_STREAK_GRACE_HOURS", 48, minimum=1, maximum=8_760) * 3600
+WORK_COOLDOWN = env_int("WORK_COOLDOWN_SECONDS", 3600, minimum=1, maximum=604_800)
 # Upper bound on how many unseen RSS/Atom entries one poll will announce, so a
 # feed that republishes its whole history can't spam a channel. Exceeding it is
 # logged rather than silently skipped.
