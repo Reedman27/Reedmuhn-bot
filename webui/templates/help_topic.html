@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ topic.title }} - Help - {{ guild_name }}{% endblock %}
+{% block content %}
+<p class="hint"><a href="/guild/{{ guild_id }}/help">&larr; All help topics</a></p>
+<h1>{{ topic.title }}</h1>
+
+<article class="man">
+    <section class="card">
+        <h2>Name</h2>
+        <p><strong>{{ topic.title }}</strong> - {{ topic.summary }}</p>
+    </section>
+
+    {% if commands %}
+    <section class="card">
+        <h2>Synopsis</h2>
+        <table class="man-commands"><thead><tr><th>Command</th><th>What it does</th><th>Needs</th></tr></thead><tbody>
+        {% for command, description, requirement in commands %}
+            <tr><td><code>/{{ command }}</code></td><td>{{ description }}</td><td class="muted">{{ requirement or "-" }}</td></tr>
+        {% endfor %}
+        </tbody></table>
+        <p class="hint">"-" means the command has no Discord permission requirement of its own. Some commands still check things inside, such as who started a poll or whether you are in a voice channel.</p>
+    </section>
+    {% endif %}
+
+    {% for section in topic.sections %}
+    <section class="card">
+        <h2>{{ section.title }}</h2>
+        {% for paragraph in section.text %}<p>{{ paragraph }}</p>{% endfor %}
+        {% if section.bullets %}<ul>{% for item in section.bullets %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+    </section>
+    {% endfor %}
+
+    {% if topic.page is not none %}
+    <section class="card">
+        <h2>Dashboard</h2>
+        {% if can_open_page %}
+        <p><a href="/guild/{{ guild_id }}{{ '/' + topic.page if topic.page else '' }}">{{ topic.page_label }}</a></p>
+        {% else %}
+        <p class="muted">{{ topic.page_label }} (not available with Staff access)</p>
+        {% endif %}
+    </section>
+    {% endif %}
+
+    {% if see_also %}
+    <section class="card">
+        <h2>See also</h2>
+        <ul class="help-topics">
+        {% for t in see_also %}<li><a href="/guild/{{ guild_id }}/help?topic={{ t.slug }}">{{ t.title }}</a></li>{% endfor %}
+        </ul>
+    </section>
+    {% endif %}
+</article>
+{% endblock %}

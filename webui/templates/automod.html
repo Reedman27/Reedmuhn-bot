@@ -155,10 +155,10 @@
 
 <section class="card">
     <h2>Warning window</h2>
-    <p class="hint">Every removed message counts as one warning. This is how long (in seconds) recent warnings stick around before they age out and stop counting toward the escalation tiers below.</p>
+    <p class="hint">Every removed message counts as one warning, and so does every manual warning. This is how long (in seconds) recent warnings count toward the escalation tiers below. <strong>0 means they never age out</strong> (the default); a punishment that resets the cycle still starts the count over. Saved warnings are never deleted either way.</p>
     <form method="post" action="/guild/{{ guild_id }}/automod/escalation">
-        <label for="esc_window">Within seconds</label>
-        <input type="number" id="esc_window" name="window_seconds" min="1" max="604800" value="{{ cfg.violation_window_seconds }}" required>
+        <label for="esc_window">Within seconds (0 = never expire)</label>
+        <input type="number" id="esc_window" name="window_seconds" min="0" max="604800" value="{{ cfg.violation_window_seconds }}" required>
         <button type="submit">Save</button>
     </form>
 </section>

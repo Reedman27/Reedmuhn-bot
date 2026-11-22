@@ -182,7 +182,7 @@ class SnapshotsMixin:
                 data.get("caps_percent", 70), data.get("caps_min_len", 10), data.get("mention_threshold", 5),
                 data.get("spam_count", 5), data.get("spam_window_seconds", 5), data.get("duplicate_count", 3),
                 data.get("duplicate_window_seconds", 30), data.get("violation_mute_threshold", 3),
-                data.get("violation_window_seconds", 3600), data.get("violation_mute_duration_seconds", 600),
+                data.get("violation_window_seconds", 0), data.get("violation_mute_duration_seconds", 600),
                 int(bool(data.get("fuzzy_words"))), int(bool(data.get("queue_fuzzy_matches"))),
                 int(bool(data.get("block_gifs"))), guild_id,
             ),

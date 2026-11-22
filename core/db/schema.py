@@ -701,7 +701,7 @@ class SchemaMixin:
                 duplicate_count INTEGER NOT NULL DEFAULT 4,
                 duplicate_window_seconds INTEGER NOT NULL DEFAULT 30,
                 violation_mute_threshold INTEGER NOT NULL DEFAULT 3,
-                violation_window_seconds INTEGER NOT NULL DEFAULT 3600,
+                violation_window_seconds INTEGER NOT NULL DEFAULT 0,
                 violation_mute_duration_seconds INTEGER NOT NULL DEFAULT 600,
                 fuzzy_words INTEGER NOT NULL DEFAULT 0
             )"""

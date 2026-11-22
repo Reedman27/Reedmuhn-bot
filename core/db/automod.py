@@ -30,8 +30,13 @@ class AutomodMixin:
 
         if row is None:
             # insert a default row so future updates have something to
-            # UPDATE against, then re-read it
-            self.conn.execute("INSERT INTO automod_config (guild_id) VALUES (?)", (guild_id,))
+            # UPDATE against, then re-read it. The warning window is passed
+            # explicitly (0 = warnings never age out of the escalation count)
+            # because databases created before that default changed still
+            # carry the old 1-hour column default.
+            self.conn.execute(
+                "INSERT INTO automod_config (guild_id, violation_window_seconds) VALUES (?, 0)", (guild_id,)
+            )
             self.conn.commit()
             row = self.conn.execute(
                 f"SELECT {cols} FROM automod_config WHERE guild_id = ?", (guild_id,)
@@ -48,6 +53,16 @@ class AutomodMixin:
             result["invite_mode"] = "strike"
         result["banned_words"] = [w for w in result["banned_words"].split(",") if w.strip()]
         return result
+
+    @staticmethod
+    def violation_window_start(cfg: dict, now: int) -> int:
+        """Earliest timestamp that still counts toward the escalation ladder.
+
+        A warning window of 0 (the default) means warnings never age out, so
+        everything since the member's last escalation reset counts.
+        """
+        window = int(cfg.get("violation_window_seconds") or 0)
+        return now - window if window > 0 else 0
 
     def set_automod_enabled(self, guild_id: int, enabled: bool) -> None:
         self.get_automod_config(guild_id)  # ensures a row exists

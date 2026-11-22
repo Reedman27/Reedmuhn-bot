@@ -719,7 +719,8 @@ async def save_automod_duplicates(request: Request, guild_id: int, count: int = 
 async def save_automod_escalation(request: Request, guild_id: int, window_seconds: int = Form(...)):
     if (r := await require_auth(request)):
         return r
-    if not 1 <= window_seconds <= 604800:
+    # 0 = warnings never age out of the escalation count (the default).
+    if not 0 <= window_seconds <= 604800:
         return RedirectResponse(f"/guild/{guild_id}/automod?error=invalid", status_code=303)
     db.set_automod_violation_window(guild_id, window_seconds)
     return RedirectResponse(f"/guild/{guild_id}/automod", status_code=303)

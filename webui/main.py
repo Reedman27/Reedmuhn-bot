@@ -384,7 +384,7 @@ def _is_local_admin(request: Request) -> bool:
 # Pages are GET sections; actions are "section/sub" POST paths.
 STAFF_PAGES = frozenset({
     "", "quickstart", "search", "moderation", "moderationqueue", "reports",
-    "tickets", "modmail", "suggestions", "staffstats",
+    "tickets", "modmail", "suggestions", "staffstats", "help",
 })
 STAFF_ACTIONS = frozenset({
     "moderation/purge", "moderation/clear-warns", "moderation/add-warn", "moderation/remove-warn",
@@ -1373,4 +1373,4 @@ def diff_snapshot_data(old: dict, new: dict) -> list[dict]:
 # Route handlers for each feature area live in webui/routes/ (mirrors cogs/),
 # imported here purely to register them on `app` above. Order doesn't matter;
 # everything these modules need already exists on `main` by this point.
-from routes import community, dashboard, fun, moderation, music, notifications, utility  # noqa: E402,F401
+from routes import community, dashboard, fun, manual, moderation, music, notifications, utility  # noqa: E402,F401

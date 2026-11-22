@@ -86,7 +86,7 @@ class AutoMod(commands.Cog):
         self.bot.db.record_member_history(
             guild.id, member.id, "automod_violation", self.bot.user.id if self.bot.user else None, reason
         )
-        recent = self.bot.db.count_recent_automod_violations(guild.id, member.id, now - cfg["violation_window_seconds"])
+        recent = self.bot.db.count_recent_automod_violations(guild.id, member.id, self.bot.db.violation_window_start(cfg, now))
         tiers = self.bot.db.list_automod_escalation_tiers(guild.id)
         tier = next((t for t in tiers if t["threshold"] == recent), None)
         if tier is None and tiers and recent > tiers[-1]["threshold"]:
@@ -411,7 +411,7 @@ class AutoMod(commands.Cog):
             f"Mention spam: {cfg['mention_threshold']} unique mentions per message",
             f"Message spam: {cfg['spam_count']} messages in {cfg['spam_window_seconds']}s",
             f"Duplicate spam: {cfg['duplicate_count']} identical in a row within {cfg['duplicate_window_seconds']}s",
-            f"Warning window: {cfg['violation_window_seconds']}s",
+            "Warning window: " + (f"{cfg['violation_window_seconds']}s" if cfg["violation_window_seconds"] > 0 else "never expires"),
         ]
         if tiers:
             lines.append("Escalation tiers:")
@@ -766,7 +766,7 @@ class AutoMod(commands.Cog):
         self.bot.db.record_member_history(message.guild.id, message.author.id, "automod_violation", self.bot.user.id if self.bot.user else None, reason)
 
         recent = self.bot.db.count_recent_automod_violations(
-            message.guild.id, message.author.id, now - cfg["violation_window_seconds"]
+            message.guild.id, message.author.id, self.bot.db.violation_window_start(cfg, now)
         )
 
         tiers = self.bot.db.list_automod_escalation_tiers(message.guild.id)
@@ -821,7 +821,7 @@ class AutoMod(commands.Cog):
         harshest punishment forever.
         """
         cfg = self.bot.db.get_automod_config(guild.id)
-        recent = self.bot.db.count_recent_escalation_warnings(guild.id, member.id, int(time.time()) - cfg["violation_window_seconds"])
+        recent = self.bot.db.count_recent_escalation_warnings(guild.id, member.id, self.bot.db.violation_window_start(cfg, int(time.time())))
         tiers = self.bot.db.list_automod_escalation_tiers(guild.id)
         tier = next((t for t in tiers if t["threshold"] == recent), None)
         if tier is None:

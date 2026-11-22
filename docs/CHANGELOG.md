@@ -3,6 +3,25 @@
 Security fixes have their own history in `.github/SECURITY.md`. This file is
 everything else: features, behavior changes, reorganizations.
 
+## 2026-11-21
+
+- **Warnings no longer age out of the escalation count by default.** The
+  AutoMod "Warning window" used to default to 3600 seconds, so a member's
+  warnings stopped counting toward the escalation tiers after an hour (saved
+  warnings were never deleted; they just stopped counting). The window is now
+  `0` for new servers, meaning warnings never age out. Enter a number of
+  seconds (up to 604800) on the AutoMod page to get the rolling window back.
+  **Servers that already have a window saved keep it**; set it to `0` on the
+  AutoMod page if you want warnings to count forever. A punishment that
+  resolves an escalation cycle still starts the count over.
+- **Help pages in the dashboard.** A new *Help* entry under Overview opens
+  short manual pages for each feature: what it does, its slash commands and
+  the permission each needs, defaults, and where to configure it. Staff access
+  can read them. The command lists are generated from `cogs/` by
+  `scripts/gen_help_commands.py` into `webui/help_commands.py`; a test fails if
+  they drift, so after adding or renaming a slash command run
+  `python scripts/gen_help_commands.py`.
+
 ## 2026-11-07
 
 - **Repo tidy-up.** The eight loose modules that sat in the repo root
