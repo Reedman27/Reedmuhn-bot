@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Help - {{ guild_name }}{% endblock %}
+{% block title %}Wiki - {{ guild_name }}{% endblock %}
 {% block content %}
-<h1>Help</h1>
+<h1>Wiki</h1>
 <section class="card">
     <p class="hint">Short manual pages for each feature: what it does, the slash commands that go with it, the defaults, and where to configure it. Slash command lists are generated from the bot's code.</p>
 </section>
@@ -9,9 +9,9 @@
 {% if topics %}
 <section class="card">
     <h2>{{ group }}</h2>
-    <ul class="help-topics">
+    <ul class="wiki-topics">
     {% for t in topics %}
-        <li><a href="/guild/{{ guild_id }}/help?topic={{ t.slug }}">{{ t.title }}</a> <span class="muted">- {{ t.summary }}</span></li>
+        <li><a href="/guild/{{ guild_id }}/wiki?topic={{ t.slug }}">{{ t.title }}</a> <span class="muted">- {{ t.summary }}</span></li>
     {% endfor %}
     </ul>
 </section>

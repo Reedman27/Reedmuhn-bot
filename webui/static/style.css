@@ -728,7 +728,7 @@ code {
 
 .add-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 
-/* ---- help ("manual") pages ---- */
+/* ---- wiki pages ---- */
 
 .man h2 {
     font-size: 0.8rem;
@@ -739,8 +739,8 @@ code {
 }
 .man p { line-height: 1.55; }
 .man-commands td:first-child { white-space: nowrap; }
-.help-topics { list-style: none; margin: 0.5rem 0 0; padding: 0; }
-.help-topics li { padding: 0.3rem 0; line-height: 1.45; }
+.wiki-topics { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.wiki-topics li { padding: 0.3rem 0; line-height: 1.45; }
 
 /* ---- youtube watch settings ---- */
 

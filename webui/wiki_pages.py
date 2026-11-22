@@ -1,6 +1,6 @@
-"""Content for the dashboard Help pages ("manual pages").
+"""Content for the dashboard Wiki pages.
 
-Plain data, rendered by templates/help_topic.html with Jinja autoescaping, so
+Plain data, rendered by templates/wiki_topic.html with Jinja autoescaping, so
 nothing in here is ever treated as HTML. The slash-command lists are not
 written here: each topic names command prefixes and the lines come from the
 generated help_commands.py, so they follow the code.
@@ -97,7 +97,7 @@ TOPICS = [
                     "everything.",
                     "Full: everything except the Dashboard Access page.",
                     "Staff: a trimmed menu (Dashboard, Search, Moderation, Moderation Queue, Reports, Tickets, "
-                    "Modmail, Suggestions, Staff Activity, Quickstart and Help). Staff can act on cases, warnings, "
+                    "Modmail, Suggestions, Staff Activity, Quickstart and Wiki). Staff can act on cases, warnings, "
                     "reports and tickets, but cannot change settings.",
                 ],
             ),
@@ -877,3 +877,20 @@ def commands_for(prefixes) -> list[tuple[str, str, str]]:
 
 def grouped_topics() -> list[tuple[str, list[dict]]]:
     return [(group, [t for t in TOPICS if t["group"] == group]) for group in GROUPS]
+
+
+def search_topics(query: str) -> list[dict]:
+    """Topics whose title, summary, text or command names contain every word of the query."""
+    words = [w for w in query.lower().split() if w]
+    if not words:
+        return []
+    hits = []
+    for t in TOPICS:
+        parts = [t["title"], t["summary"], t["page_label"], t["slug"]]
+        for s in t["sections"]:
+            parts += [s["title"], *s["text"], *s["bullets"]]
+        parts += [c[0] + " " + c[1] for c in commands_for(t["commands"])]
+        haystack = " ".join(parts).lower()
+        if all(w in haystack for w in words):
+            hits.append(t)
+    return hits

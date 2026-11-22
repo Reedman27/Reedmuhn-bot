@@ -4,7 +4,7 @@
 <h1>Search</h1>
 <section class="card">
     <form method="get" action="/guild/{{ guild_id }}/search" class="add-form">
-        <label for="q">Search pages, warnings, reports, rules, tickets, polls, and the moderation queue</label>
+        <label for="q">Search pages, the wiki, warnings, reports, rules, tickets, polls, and the moderation queue</label>
         <input type="text" id="q" name="q" value="{{ query }}" placeholder="Search…" autofocus autocomplete="off">
         <button type="submit">Search</button>
     </form>
@@ -20,6 +20,15 @@
 {% if results.total == 0 %}
 <section class="card"><p class="muted">No results for "{{ query }}".</p></section>
 {% else %}
+
+{% if results.wiki %}
+<section class="card">
+    <h2>Wiki</h2>
+    <ul class="wiki-topics">
+    {% for t in results.wiki %}<li><a href="/guild/{{ guild_id }}/wiki?topic={{ t.slug }}">{{ t.title }}</a> <span class="muted">- {{ t.summary }}</span></li>{% endfor %}
+    </ul>
+</section>
+{% endif %}
 
 {% if results.warns %}
 <section class="card">

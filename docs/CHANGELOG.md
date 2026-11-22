@@ -14,7 +14,7 @@ everything else: features, behavior changes, reorganizations.
   **Servers that already have a window saved keep it**; set it to `0` on the
   AutoMod page if you want warnings to count forever. A punishment that
   resolves an escalation cycle still starts the count over.
-- **Help pages in the dashboard.** A new *Help* entry under Overview opens
+- **Wiki pages in the dashboard.** A new *Wiki* entry under Overview opens
   short manual pages for each feature: what it does, its slash commands and
   the permission each needs, defaults, and where to configure it. Staff access
   can read them. The command lists are generated from `cogs/` by

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}{{ topic.title }} - Help - {{ guild_name }}{% endblock %}
+{% block title %}{{ topic.title }} - Wiki - {{ guild_name }}{% endblock %}
 {% block content %}
-<p class="hint"><a href="/guild/{{ guild_id }}/help">&larr; All help topics</a></p>
+<p class="hint"><a href="/guild/{{ guild_id }}/wiki">&larr; All wiki topics</a></p>
 <h1>{{ topic.title }}</h1>
 
 <article class="man">
@@ -44,8 +44,8 @@
     {% if see_also %}
     <section class="card">
         <h2>See also</h2>
-        <ul class="help-topics">
-        {% for t in see_also %}<li><a href="/guild/{{ guild_id }}/help?topic={{ t.slug }}">{{ t.title }}</a></li>{% endfor %}
+        <ul class="wiki-topics">
+        {% for t in see_also %}<li><a href="/guild/{{ guild_id }}/wiki?topic={{ t.slug }}">{{ t.title }}</a></li>{% endfor %}
         </ul>
     </section>
     {% endif %}

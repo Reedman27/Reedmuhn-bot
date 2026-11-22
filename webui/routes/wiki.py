@@ -1,4 +1,4 @@
-"""Help ("manual") pages for the dashboard.
+"""Wiki pages for the dashboard.
 
 Read-only: one index page and one page per topic, selected with ?topic=.
 A query parameter rather than a sub-path keeps these inside the single-segment
@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from main import *  # noqa: F401,F403 - shares app/db/templates/helpers with main.py
 from main import STAFF_PAGES  # noqa: F401 - names a bare `import *` doesn't re-export
 
-from help_pages import BY_SLUG, commands_for, grouped_topics
+from wiki_pages import BY_SLUG, commands_for, grouped_topics
 
 
 def _can_open(request: Request, page) -> bool:
@@ -23,17 +23,17 @@ def _can_open(request: Request, page) -> bool:
     return True
 
 
-@app.get("/guild/{guild_id}/help")
-async def help_page(request: Request, guild_id: int, topic: str = ""):
+@app.get("/guild/{guild_id}/wiki")
+async def wiki_page(request: Request, guild_id: int, topic: str = ""):
     if (r := await require_auth(request)):
         return r
     if not topic:
-        return render(request, "help_index.html", guild_id, "help", groups=grouped_topics())
+        return render(request, "wiki_index.html", guild_id, "wiki", groups=grouped_topics())
     entry = BY_SLUG.get(topic)
     if entry is None:
-        raise HTTPException(status_code=404, detail="No such help topic")
+        raise HTTPException(status_code=404, detail="No such wiki topic")
     return render(
-        request, "help_topic.html", guild_id, "help",
+        request, "wiki_topic.html", guild_id, "wiki",
         topic=entry,
         commands=commands_for(entry["commands"]),
         see_also=[BY_SLUG[slug] for slug in entry["see_also"] if slug in BY_SLUG],

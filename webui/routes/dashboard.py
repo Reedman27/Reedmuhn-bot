@@ -402,6 +402,8 @@ async def search_page(request: Request, guild_id: int, q: str = ""):
                 for row in raw["automod_queue"]
             ],
         }
+        from wiki_pages import search_topics
+        results["wiki"] = [{"slug": t["slug"], "title": t["title"], "summary": t["summary"]} for t in search_topics(q)]
         results["total"] = sum(len(v) for v in results.values())
     return render(request, "search.html", guild_id, "search", query=q, results=results)
 
